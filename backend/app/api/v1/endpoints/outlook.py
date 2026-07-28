@@ -1,0 +1,116 @@
+"""Outlook sync and emails endpoints."""
+
+from typing import List
+
+from fastapi import APIRouter, Query
+
+from app.dependencies.rbac import RequireAdmin, RequireUser
+from app.dependencies.services import OutlookSyncServiceDep
+from app.schemas.common import DataResponse
+from app.schemas.email import (
+    FrontendEmailRecord,
+    OutlookSyncRequest,
+    OutlookSyncResponse,
+    SyncJobListResponse,
+    SyncJobResponse,
+)
+
+router = APIRouter(tags=["Outlook Sync"])
+
+
+@router.post(
+    "/outlook/sync",
+    response_model=OutlookSyncResponse,
+    summary="Trigger Outlook mailbox sync",
+    tags=["Outlook Sync"],
+)
+def trigger_outlook_sync(
+    service: OutlookSyncServiceDep,
+    current: RequireAdmin,
+    payload: OutlookSyncRequest | None = None,
+) -> OutlookSyncResponse:
+    """
+    Sync unread Outlook emails, download Excel attachments, ingest sales data,
+    and mark messages as read on success (Admin).
+    """
+    request = payload or OutlookSyncRequest()
+    job = service.sync(request, actor=current.name)
+    return OutlookSyncResponse(
+        message=f"Outlook sync {job.status}",
+        job=SyncJobResponse.model_validate(job),
+    )
+
+
+@router.get(
+    "/outlook/sync/jobs",
+    response_model=SyncJobListResponse,
+    summary="List sync jobs",
+)
+def list_sync_jobs(
+    service: OutlookSyncServiceDep,
+    _: RequireAdmin,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+) -> SyncJobListResponse:
+    """List Outlook sync jobs (Admin)."""
+    jobs = service.list_sync_jobs(skip=skip, limit=limit)
+    return SyncJobListResponse(
+        data=[SyncJobResponse.model_validate(j) for j in jobs],
+        total=service.count_sync_jobs(),
+    )
+
+
+@router.get(
+    "/outlook/sync/jobs/{job_id}",
+    response_model=DataResponse[SyncJobResponse],
+    summary="Get sync job",
+)
+def get_sync_job(
+    job_id: int,
+    service: OutlookSyncServiceDep,
+    _: RequireAdmin,
+) -> DataResponse[SyncJobResponse]:
+    """Get a sync job by id (Admin)."""
+    job = service.get_sync_job(job_id)
+    return DataResponse(data=SyncJobResponse.model_validate(job))
+
+
+@router.get(
+    "/emails",
+    response_model=List[FrontendEmailRecord],
+    summary="List email processing history",
+    tags=["Emails"],
+)
+def list_emails(
+    service: OutlookSyncServiceDep,
+    _: RequireUser,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=500),
+) -> List[FrontendEmailRecord]:
+    """
+    GET /api/emails — Email Processing History (not live Outlook inbox).
+
+    Rows are stored processing records in Sales Insights.
+    """
+    messages = service.list_emails(skip=skip, limit=limit)
+    return service.to_frontend_emails(messages)
+
+
+@router.delete(
+    "/emails/{email_id}",
+    response_model=DataResponse[dict],
+    summary="Delete email processing history record",
+    tags=["Emails"],
+)
+def delete_email_record(
+    email_id: int,
+    service: OutlookSyncServiceDep,
+    current: RequireAdmin,
+) -> DataResponse[dict]:
+    """
+    Soft-delete an email processing history record from Sales Insights.
+
+    Does not delete the original message from Outlook.
+    """
+    result = service.delete_email_record(email_id, actor=current.name)
+    return DataResponse(data=result, message=result.get("message", "Deleted"))

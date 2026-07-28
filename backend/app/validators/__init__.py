@@ -1,0 +1,1 @@
+"""Excel and domain validators."""

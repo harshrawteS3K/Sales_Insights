@@ -1,0 +1,168 @@
+"""Consolidated Sales Data management endpoints."""
+
+from datetime import date
+from typing import Dict, Optional
+
+from fastapi import APIRouter, Query
+
+from app.dependencies.rbac import RequireAdmin, RequireUser
+from app.dependencies.services import ConsolidatedDataServiceDep, DistributorServiceDep
+from app.schemas.common import MessageResponse
+from app.schemas.distributor import DistributorInfo
+from app.schemas.sales_record import (
+    ConsolidatedFilterOptions,
+    ConsolidatedRecordsPage,
+    DeleteReportPreview,
+    DeleteReportRequest,
+    DeleteResult,
+)
+
+router = APIRouter(prefix="/consolidated-data", tags=["Consolidated Data"])
+
+
+@router.get(
+    "/filter-options",
+    response_model=ConsolidatedFilterOptions,
+    summary="Dynamic filter dropdown values (SELECT DISTINCT)",
+)
+def get_filter_options(
+    service: ConsolidatedDataServiceDep,
+    _: RequireUser,
+) -> ConsolidatedFilterOptions:
+    """Return distributors, customers, segments, products, companies, periods, quarters from DB."""
+    return service.filter_options()
+
+
+@router.get(
+    "/records",
+    response_model=ConsolidatedRecordsPage,
+    summary="Consolidated sales records (server-side filter + pagination)",
+)
+def get_sales_records(
+    service: ConsolidatedDataServiceDep,
+    current: RequireUser,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=5000),
+    search: Optional[str] = Query(None, description="Case-insensitive partial match"),
+    distributor: Optional[str] = Query(None),
+    customer: Optional[str] = Query(None),
+    segment: Optional[str] = Query(None),
+    product: Optional[str] = Query(None),
+    company: Optional[str] = Query(None),
+    period: Optional[str] = Query(
+        None, description="Reporting Month (legacy query name)"
+    ),
+    reporting_month: Optional[str] = Query(
+        None, description="Reporting Month", alias="reportingMonth"
+    ),
+    quarter: Optional[str] = Query(None, description="Quarter token e.g. Q2"),
+    quantity_min: Optional[float] = Query(None),
+    quantity_max: Optional[float] = Query(None),
+    imported_from: Optional[date] = Query(None),
+    imported_to: Optional[date] = Query(None),
+    sort_by: str = Query("id"),
+    sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
+    audit: bool = Query(False, description="Write audit log for this filter/search"),
+) -> ConsolidatedRecordsPage:
+    """GET /api/consolidated-data/records — filtered, paginated, report-grouped."""
+    return service.list_records(
+        skip=skip,
+        limit=limit,
+        search=search,
+        distributor=distributor,
+        customer=customer,
+        segment=segment,
+        product=product,
+        company=company,
+        period=period,
+        reporting_month=reporting_month,
+        quarter=quarter,
+        quantity_min=quantity_min,
+        quantity_max=quantity_max,
+        imported_from=imported_from,
+        imported_to=imported_to,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        actor=current.name,
+        audit_search=audit,
+    )
+
+
+@router.get(
+    "/distributors",
+    response_model=Dict[str, DistributorInfo],
+    summary="Distributor details map",
+)
+def get_distributor_details(
+    service: DistributorServiceDep,
+    _: RequireUser,
+) -> Dict[str, DistributorInfo]:
+    """GET /api/consolidated-data/distributors — frontend distributor detail map."""
+    return service.details_map()
+
+
+@router.get(
+    "/report/preview",
+    response_model=DeleteReportPreview,
+    summary="Preview rows that would be deleted for distributor + reporting month",
+)
+def preview_delete_report(
+    service: ConsolidatedDataServiceDep,
+    _: RequireAdmin,
+    distributor: str = Query(...),
+    reportingMonth: Optional[str] = Query(None),
+    period: Optional[str] = Query(None, description="Legacy alias for reportingMonth"),
+) -> DeleteReportPreview:
+    """Preview delete-report impact before confirmation."""
+    month = (reportingMonth or period or "").strip()
+    return service.preview_delete_report(distributor, month)
+
+
+@router.delete(
+    "/report",
+    response_model=DeleteResult,
+    summary="Delete imported report (distributor + reporting month)",
+)
+def delete_report(
+    payload: DeleteReportRequest,
+    service: ConsolidatedDataServiceDep,
+    current: RequireAdmin,
+) -> DeleteResult:
+    """
+    DELETE /api/consolidated-data/report
+
+    Removes all sales rows for the given Distributor + Reporting Month.
+    """
+    return service.delete_report(
+        payload.distributor, payload.resolved_month(), actor=current.name
+    )
+
+
+@router.post(
+    "/export-audit",
+    response_model=MessageResponse,
+    summary="Audit log for consolidated data export",
+)
+def audit_export(
+    service: ConsolidatedDataServiceDep,
+    current: RequireUser,
+    total: int = Query(0, ge=0),
+    summary: str = Query(""),
+) -> MessageResponse:
+    """Record an export action in the audit trail."""
+    service.log_export(actor=current.name, total=total, filters_summary=summary)
+    return MessageResponse(message="Export audited")
+
+
+@router.delete(
+    "/{record_id}",
+    response_model=DeleteResult,
+    summary="Delete a single sales record",
+)
+def delete_record(
+    record_id: int,
+    service: ConsolidatedDataServiceDep,
+    current: RequireAdmin,
+) -> DeleteResult:
+    """DELETE /api/consolidated-data/{recordId} — soft-delete one sales row."""
+    return service.delete_record(record_id, actor=current.name)
