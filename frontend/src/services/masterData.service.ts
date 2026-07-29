@@ -1,10 +1,16 @@
-import { apiRequest, apiUpload } from '../api';
+/**
+ * Master Data service — Phase 2.
+ * Uploads replace active masters; template generate/download use backend APIs.
+ */
+
+import { apiRequest, apiUpload, getApiBaseUrl, ApiError } from '../api';
+import { getSession } from '../api/session';
 
 export type CustomerMaster = {
   id: number;
-  customer_code: string;
   customer_name: string;
-  segment: string;
+  customer_code?: string | null;
+  segment?: string | null;
   region?: string | null;
   country?: string | null;
   city?: string | null;
@@ -14,9 +20,10 @@ export type CustomerMaster = {
 
 export type ProductMaster = {
   id: number;
+  industry_type: string;
   product_code: string;
-  product_name: string;
-  segment: string;
+  product_name?: string | null;
+  segment?: string | null;
   description?: string | null;
   unit: string;
   is_active: boolean;
@@ -30,10 +37,27 @@ type ListResponse<T> = {
 
 export type MasterUploadResult = {
   success: boolean;
+  status: string;
   message: string;
-  records_upserted: number;
-  records_skipped: number;
+  records_imported: number;
+  duplicates_ignored: number;
+  processing_time_ms: number;
+  records_upserted?: number;
+  records_skipped?: number;
   errors: string[];
+  uploaded_at?: string;
+  file_name?: string;
+};
+
+export type TemplateGenerateResult = {
+  success: boolean;
+  status: string;
+  message: string;
+  template_version: string;
+  file_name: string;
+  customers_count: number;
+  products_count: number;
+  generated_at: string;
 };
 
 export const MasterDataService = {
@@ -47,11 +71,78 @@ export const MasterDataService = {
     return res.data;
   },
 
-  uploadCustomers: async (file: File, onProgress?: (p: number) => void) => {
-    return apiUpload<MasterUploadResult>('/master-data/customers/upload', file, 'file', onProgress);
+  uploadCustomerMaster: async (
+    file: File,
+    onProgress?: (p: number) => void,
+  ): Promise<MasterUploadResult> => {
+    const result = await apiUpload<MasterUploadResult>(
+      '/customer-master/upload',
+      file,
+      'file',
+      onProgress,
+    );
+    return {
+      ...result,
+      records_imported: result.records_imported ?? result.records_upserted ?? 0,
+      uploaded_at: new Date().toISOString(),
+      file_name: file.name,
+    };
   },
 
-  uploadProducts: async (file: File, onProgress?: (p: number) => void) => {
-    return apiUpload<MasterUploadResult>('/master-data/products/upload', file, 'file', onProgress);
+  uploadProductMaster: async (
+    file: File,
+    onProgress?: (p: number) => void,
+  ): Promise<MasterUploadResult> => {
+    const result = await apiUpload<MasterUploadResult>(
+      '/product-master/upload',
+      file,
+      'file',
+      onProgress,
+    );
+    return {
+      ...result,
+      records_imported: result.records_imported ?? result.records_upserted ?? 0,
+      uploaded_at: new Date().toISOString(),
+      file_name: file.name,
+    };
+  },
+
+  generateTemplate: async (): Promise<TemplateGenerateResult> => {
+    return apiRequest<TemplateGenerateResult>('/template/generate', { method: 'POST' });
+  },
+
+  downloadTemplate: async (_unused?: string, fileName?: string): Promise<void> => {
+    const headers = new Headers();
+    const session = getSession();
+    if (session) {
+      headers.set('X-User-Role', session.role);
+      headers.set('X-User-Name', session.name);
+    }
+    const res = await fetch(`${getApiBaseUrl()}/template/download`, {
+      method: 'GET',
+      headers,
+    });
+    if (!res.ok) {
+      let message = `Template download failed (${res.status})`;
+      try {
+        const body = await res.json();
+        message = body?.error?.message || body?.message || message;
+      } catch {
+        // ignore
+      }
+      throw new ApiError(message, res.status);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const match = /filename="?([^"]+)"?/i.exec(disposition);
+    const name = fileName || match?.[1] || 'Apcotex_Distributor_Template.xlsx';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   },
 };

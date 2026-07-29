@@ -86,7 +86,32 @@ class Settings(BaseSettings):
     download_dir: str = Field(default=str(BASE_DIR / "downloads"), alias="DOWNLOAD_DIR")
     template_dir: str = Field(default=str(BASE_DIR / "templates"), alias="TEMPLATE_DIR")
 
-    # RBAC header keys (Phase 1 – no JWT; role passed via headers for enforcement hooks)
+    # Master data soft-delete retention (hard-delete older history; 0 = disabled)
+    master_history_retention_days: int = Field(
+        default=180,
+        alias="MASTER_HISTORY_RETENTION_DAYS",
+        ge=0,
+    )
+
+    # Template generation (warn / soft-cap for extremely large dropdown lists)
+    template_list_warn_threshold: int = Field(
+        default=5000,
+        alias="TEMPLATE_LIST_WARN_THRESHOLD",
+        ge=100,
+    )
+
+    # Authentication mode:
+    #   headers          – Phase 1 header RBAC (default; fine for local/dev)
+    #   trusted_headers  – require X-Internal-Auth == AUTH_TRUSTED_SECRET (corp gateway)
+    #   jwt              – Bearer JWT validated with AUTH_JWT_SECRET
+    auth_mode: str = Field(default="headers", alias="AUTH_MODE")
+    auth_trusted_secret: str = Field(default="", alias="AUTH_TRUSTED_SECRET")
+    auth_trusted_header: str = Field(default="X-Internal-Auth", alias="AUTH_TRUSTED_HEADER")
+    auth_jwt_secret: str = Field(default="", alias="AUTH_JWT_SECRET")
+    auth_jwt_algorithm: str = Field(default="HS256", alias="AUTH_JWT_ALGORITHM")
+    auth_jwt_audience: str = Field(default="", alias="AUTH_JWT_AUDIENCE")
+
+    # RBAC header keys (Phase 1 – role passed via headers for enforcement hooks)
     rbac_role_header: str = Field(default="X-User-Role", alias="RBAC_ROLE_HEADER")
     rbac_user_header: str = Field(default="X-User-Name", alias="RBAC_USER_HEADER")
     rbac_user_id_header: str = Field(default="X-User-Id", alias="RBAC_USER_ID_HEADER")

@@ -20,7 +20,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         super().__init__(db, SalesRecord)
 
     def _base_query(self):
-        """Active sales only — never returns rows whose parent report is archived."""
+        """Active sales only — never returns rows whose parent report/distributor is archived."""
         return (
             select(SalesRecord)
             .options(
@@ -32,6 +32,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             .where(
                 SalesRecord.is_deleted.is_(False),
                 or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
             )
         )
 
@@ -214,33 +215,45 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         return int(self.db.scalar(query) or 0)
 
     def count_by_distributor_period(self, distributor_name: str, period: str) -> int:
-        """Count active sales rows for a distributor + reporting period (report unit)."""
+        """Count active sales for distributor + reporting month (report or sales period)."""
         query = (
             select(func.count(SalesRecord.id))
             .select_from(SalesRecord)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .outerjoin(Report, Report.id == SalesRecord.report_id)
             .where(
                 SalesRecord.is_deleted.is_(False),
                 Distributor.is_deleted.is_(False),
+                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
                 func.lower(Distributor.name) == distributor_name.strip().lower(),
-                SalesRecord.period == period,
+                or_(
+                    SalesRecord.period == period,
+                    Report.reporting_month == period,
+                ),
             )
         )
         return int(self.db.scalar(query) or 0)
 
     def soft_delete_by_distributor_period(self, distributor_name: str, period: str) -> Tuple[int, List[int]]:
         """
-        Soft-delete all sales rows for distributor + period.
+        Soft-delete all sales rows for distributor + reporting month.
 
+        Matches ``SalesRecord.period`` OR ``Report.reporting_month``.
         Returns ``(rows_deleted, affected_report_ids)``.
         """
         query = (
             select(SalesRecord)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .outerjoin(Report, Report.id == SalesRecord.report_id)
             .where(
                 SalesRecord.is_deleted.is_(False),
+                Distributor.is_deleted.is_(False),
+                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
                 func.lower(Distributor.name) == distributor_name.strip().lower(),
-                SalesRecord.period == period,
+                or_(
+                    SalesRecord.period == period,
+                    Report.reporting_month == period,
+                ),
             )
         )
         rows = list(self.db.scalars(query).all())
@@ -269,12 +282,14 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         return int(result.rowcount or 0)
 
     def _active_only(self, query):
-        """Restrict to sales whose parent report is active (or missing)."""
+        """Restrict to sales whose parent report and distributor are active (or missing)."""
         return (
             query.outerjoin(Report, Report.id == SalesRecord.report_id)
+            .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
             .where(
                 SalesRecord.is_deleted.is_(False),
                 or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
             )
         )
 
@@ -389,14 +404,16 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         return len(records)
 
     def total_quantity(self) -> Decimal:
-        """Sum of all quantities from active reports only."""
+        """Sum of all quantities from active reports / distributors only."""
         query = (
             select(func.coalesce(func.sum(SalesRecord.quantity), 0))
             .select_from(SalesRecord)
             .outerjoin(Report, Report.id == SalesRecord.report_id)
+            .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
             .where(
                 SalesRecord.is_deleted.is_(False),
                 or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
             )
         )
         return Decimal(str(self.db.scalar(query) or 0))
@@ -410,9 +427,11 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             )
             .select_from(SalesRecord)
             .outerjoin(Report, Report.id == SalesRecord.report_id)
+            .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
             .where(
                 SalesRecord.is_deleted.is_(False),
                 or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
             )
             .group_by(SalesRecord.product)
             .order_by(func.sum(SalesRecord.quantity).desc())
@@ -423,6 +442,21 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             )
         rows = self.db.execute(query).all()
         return [{"product": row.product, "qty": float(row.qty)} for row in rows]
+
+    def count_active_with_parents(self) -> int:
+        """Count sales rows whose parent report and distributor are active."""
+        query = (
+            select(func.count(SalesRecord.id))
+            .select_from(SalesRecord)
+            .outerjoin(Report, Report.id == SalesRecord.report_id)
+            .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .where(
+                SalesRecord.is_deleted.is_(False),
+                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
+            )
+        )
+        return int(self.db.scalar(query) or 0)
 
     def distributor_totals(self, *, period: Optional[str] = None) -> List[Dict[str, Any]]:
         """Aggregate quantity / customers / products per distributor."""

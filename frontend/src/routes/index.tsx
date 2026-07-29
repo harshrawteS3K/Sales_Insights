@@ -9,6 +9,7 @@ import { AuditTrail } from '../pages/AuditTrail/AuditTrail';
 import { ExistingReports } from '../pages/Reports/ExistingReports';
 import { MarketResearchDashboard } from '../pages/MarketResearch/MarketResearchDashboard';
 import { MarketResearchCompanion } from '../pages/MarketResearch/MarketResearchCompanion';
+import { MasterData } from '../pages/MasterData/MasterData';
 import { PlaceholderPage } from '../pages/Settings/PlaceholderPage';
 
 /**
@@ -37,6 +38,7 @@ export const createAppRouter = (
         { path: 'emails', Component: EmailsModule },
         { path: 'consolidated-data', Component: ConsolidatedData },
         { path: 'visualizations', Component: Visualizations },
+        { path: 'master-data', Component: MasterData },
         { path: 'audit-trail', Component: AuditTrail },
         { path: 'existing-reports', Component: ExistingReports },
         { path: 'market-research-dashboard', Component: MarketResearchDashboard },

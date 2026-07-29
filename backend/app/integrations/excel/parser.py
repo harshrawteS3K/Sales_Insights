@@ -33,10 +33,8 @@ from app.schemas.sales_record import ParsedSalesRow
 from app.utils.hashing import build_sales_row_hash
 from app.utils.quantity import optional_int, parse_optional_stock, parse_quantity, safe_str
 from app.utils.reporting_month import normalize_reporting_month
-from app.validators.excel_validators import (
-    validate_customer_master_dataframe,
-    validate_product_master_dataframe,
-)
+from app.validators.excel_validators import validate_customer_master_dataframe
+from app.integrations.excel.product_master_parser import parse_product_master_workbook
 
 logger = get_logger(__name__)
 
@@ -525,58 +523,58 @@ class ExcelParserService:
 
         return details
 
-    def parse_customer_master(self, path: Union[str, Path]) -> List[dict]:
-        """Parse customer master Excel into dict rows."""
+    def parse_customer_master(self, path: Union[str, Path]) -> tuple[List[dict], int]:
+        """
+        Parse customer master Excel (Phase 2).
+
+        Extracts CUSTOMER NAME only: trim, drop blanks, de-duplicate (case-insensitive).
+        Returns (records, duplicates_ignored).
+        """
         df = self.read_dataframe(path)
         mapping = validate_customer_master_dataframe(df)
+        seen: set[str] = set()
         records: List[dict] = []
-        for _, series in df.iterrows():
-            code = safe_str(series.get(mapping["customer_code"]))
-            name = safe_str(series.get(mapping["customer_name"]))
-            segment = safe_str(series.get(mapping["segment"]))
-            if not code or not name or not segment:
-                continue
-            records.append(
-                {
-                    "customer_code": code,
-                    "customer_name": name,
-                    "segment": segment,
-                    "region": safe_str(series.get(mapping["region"])) if "region" in mapping else None,
-                    "country": safe_str(series.get(mapping["country"])) if "country" in mapping else None,
-                    "city": safe_str(series.get(mapping["city"])) if "city" in mapping else None,
-                    "address": safe_str(series.get(mapping["address"])) if "address" in mapping else None,
-                }
-            )
-        if not records:
-            raise ExcelProcessingError("No valid customer master rows found")
-        logger.info("Parsed {} customer master rows", len(records))
-        return records
+        duplicates_ignored = 0
 
-    def parse_product_master(self, path: Union[str, Path]) -> List[dict]:
-        """Parse product master Excel into dict rows."""
-        df = self.read_dataframe(path)
-        mapping = validate_product_master_dataframe(df)
-        records: List[dict] = []
         for _, series in df.iterrows():
-            code = safe_str(series.get(mapping["product_code"]))
-            name = safe_str(series.get(mapping["product_name"]))
-            segment = safe_str(series.get(mapping["segment"]))
-            if not code or not name or not segment:
+            name = safe_str(series.get(mapping["customer_name"]))
+            if not name:
                 continue
-            unit = safe_str(series.get(mapping["unit"]), "KG") if "unit" in mapping else "KG"
-            description = (
-                safe_str(series.get(mapping["description"])) if "description" in mapping else None
-            )
-            records.append(
-                {
-                    "product_code": code,
-                    "product_name": name,
-                    "segment": segment,
-                    "description": description,
-                    "unit": unit or "KG",
-                }
-            )
+            key = name.casefold()
+            if key in seen:
+                duplicates_ignored += 1
+                continue
+            seen.add(key)
+            row: dict = {"customer_name": name}
+            if "customer_code" in mapping:
+                code = safe_str(series.get(mapping["customer_code"]))
+                if code:
+                    row["customer_code"] = code
+            if "segment" in mapping:
+                segment = safe_str(series.get(mapping["segment"]))
+                if segment:
+                    row["segment"] = segment
+            records.append(row)
+
         if not records:
-            raise ExcelProcessingError("No valid product master rows found")
-        logger.info("Parsed {} product master rows", len(records))
-        return records
+            raise ExcelProcessingError("No valid customer names found in Customer Master")
+        logger.info(
+            "Parsed {} customer master rows (duplicates_ignored={})",
+            len(records),
+            duplicates_ignored,
+        )
+        return records, duplicates_ignored
+
+    def parse_product_master(self, path: Union[str, Path]) -> tuple[List[dict], int]:
+        """
+        Parse Product Master Excel (production).
+
+        Supports:
+          - Single continuous table (column A+)
+          - Multi-block side-by-side APCOTEX layouts (B:C, E:F, H:I, K:L, …)
+          - Robust header aliases / normalization
+
+        Returns (records, duplicates_ignored).
+        """
+        result = parse_product_master_workbook(path)
+        return result.records, result.duplicates_ignored

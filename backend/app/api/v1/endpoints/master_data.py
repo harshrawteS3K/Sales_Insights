@@ -1,9 +1,8 @@
-"""Master data endpoints."""
+"""Master data endpoints — Phase 2 paths + legacy /master-data routes."""
 
 from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import FileResponse
 
-from app.constants import DISTRIBUTOR_TEMPLATE_FILENAME
 from app.dependencies.rbac import RequireAdmin, RequireUser
 from app.dependencies.services import MasterDataServiceDep
 from app.schemas.dashboard import (
@@ -12,13 +11,84 @@ from app.schemas.dashboard import (
     MasterDataUploadResponse,
     ProductMasterListResponse,
     ProductMasterResponse,
+    TemplateGenerateResponse,
 )
 
-router = APIRouter(prefix="/master-data", tags=["Master Data"])
+router = APIRouter(tags=["Master Data"])
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 canonical routes
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/customer-master/upload",
+    response_model=MasterDataUploadResponse,
+    summary="Upload Customer Master Excel (replace)",
+)
+async def upload_customer_master(
+    service: MasterDataServiceDep,
+    current: RequireAdmin,
+    file: UploadFile = File(..., description="Customer Master Excel (.xlsx)"),
+) -> MasterDataUploadResponse:
+    """Replace active Customer Master with CUSTOMER NAME values from Excel."""
+    return await service.upload_customer_master(file, actor=current.name)
+
+
+@router.post(
+    "/product-master/upload",
+    response_model=MasterDataUploadResponse,
+    summary="Upload Product Master Excel (replace)",
+)
+async def upload_product_master(
+    service: MasterDataServiceDep,
+    current: RequireAdmin,
+    file: UploadFile = File(..., description="Product Master Excel (.xlsx)"),
+) -> MasterDataUploadResponse:
+    """Replace active Product Master with Industry Type + Product Code rows."""
+    return await service.upload_product_master(file, actor=current.name)
+
+
+@router.post(
+    "/template/generate",
+    response_model=TemplateGenerateResponse,
+    summary="Generate official distributor template",
+)
+def generate_template(
+    service: MasterDataServiceDep,
+    current: RequireAdmin,
+) -> TemplateGenerateResponse:
+    """Generate template with Customer / Product dropdowns from master data."""
+    return service.generate_template(actor=current.name)
 
 
 @router.get(
-    "/customers",
+    "/template/download",
+    summary="Download generated distributor template",
+    response_class=FileResponse,
+)
+def download_template(
+    service: MasterDataServiceDep,
+    current: RequireAdmin,
+) -> FileResponse:
+    """Download the latest generated official distributor Excel template."""
+    path, filename = service.resolve_template_download()
+    return FileResponse(
+        path=str(path),
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Legacy /master-data routes (kept for compatibility)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/master-data/customers",
     response_model=CustomerMasterListResponse,
     summary="List customer master",
 )
@@ -26,7 +96,6 @@ def list_customers(
     service: MasterDataServiceDep,
     _: RequireUser,
 ) -> CustomerMasterListResponse:
-    """List customer master rows."""
     rows = service.list_customers()
     return CustomerMasterListResponse(
         data=[CustomerMasterResponse.model_validate(r) for r in rows],
@@ -35,7 +104,7 @@ def list_customers(
 
 
 @router.get(
-    "/products",
+    "/master-data/products",
     response_model=ProductMasterListResponse,
     summary="List product master",
 )
@@ -43,7 +112,6 @@ def list_products(
     service: MasterDataServiceDep,
     _: RequireUser,
 ) -> ProductMasterListResponse:
-    """List product master rows."""
     rows = service.list_products()
     return ProductMasterListResponse(
         data=[ProductMasterResponse.model_validate(r) for r in rows],
@@ -52,46 +120,44 @@ def list_products(
 
 
 @router.post(
-    "/customers/upload",
+    "/master-data/customers/upload",
     response_model=MasterDataUploadResponse,
-    summary="Upload customer master Excel",
+    summary="Upload customer master Excel (legacy)",
 )
-async def upload_customers(
+async def upload_customers_legacy(
     service: MasterDataServiceDep,
     current: RequireAdmin,
-    file: UploadFile = File(..., description="Customer master Excel (.xlsx or .xlsm)"),
+    file: UploadFile = File(...),
 ) -> MasterDataUploadResponse:
-    """Admin upload of customer master Excel (.xlsx or .xlsm)."""
     return await service.upload_customer_master(file, actor=current.name)
 
 
 @router.post(
-    "/products/upload",
+    "/master-data/products/upload",
     response_model=MasterDataUploadResponse,
-    summary="Upload product master Excel",
+    summary="Upload product master Excel (legacy)",
 )
-async def upload_products(
+async def upload_products_legacy(
     service: MasterDataServiceDep,
     current: RequireAdmin,
-    file: UploadFile = File(..., description="Product master Excel (.xlsx or .xlsm)"),
+    file: UploadFile = File(...),
 ) -> MasterDataUploadResponse:
-    """Admin upload of product master Excel (.xlsx or .xlsm)."""
     return await service.upload_product_master(file, actor=current.name)
 
 
 @router.get(
-    "/templates/distributor",
-    summary="Download distributor Excel template",
+    "/master-data/templates/distributor",
+    summary="Download distributor Excel template (legacy)",
     response_class=FileResponse,
 )
-def download_distributor_template(
+def download_distributor_template_legacy(
     service: MasterDataServiceDep,
     current: RequireAdmin,
 ) -> FileResponse:
-    """Generate and download distributor sales template with dropdowns (Admin)."""
-    path = service.generate_distributor_template(actor=current.name)
+    result = service.generate_template(actor=current.name)
+    path, filename = service.resolve_template_download(preferred_name=result.file_name)
     return FileResponse(
         path=str(path),
-        filename=DISTRIBUTOR_TEMPLATE_FILENAME,
+        filename=filename,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )

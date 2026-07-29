@@ -152,16 +152,15 @@ SALES_REPORT_COLUMN_ALIASES = {
     ],
 }
 
+# Phase 2: only CUSTOMER NAME is mandatory
 CUSTOMER_MASTER_REQUIRED_COLUMNS = [
-    "customer_code",
     "customer_name",
-    "segment",
 ]
 
+# Phase 2: Industry Type Description + Product Code
 PRODUCT_MASTER_REQUIRED_COLUMNS = [
+    "industry_type",
     "product_code",
-    "product_name",
-    "segment",
 ]
 
 DEFAULT_SEGMENTS = [

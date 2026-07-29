@@ -12,6 +12,7 @@ from app.repositories.distributor_repository import DistributorRepository
 from app.schemas.audit import AuditTrailCreate
 from app.schemas.distributor import DistributorCreate, DistributorInfo, DistributorUpdate
 from app.services.audit_service import AuditService
+from app.utils.distributor_name import normalize_distributor_name
 
 logger = get_logger(__name__)
 
@@ -57,9 +58,10 @@ class DistributorService:
             existing = self.repo.get_by_email(str(payload.email).lower())
             if existing:
                 raise ConflictError(f"Distributor with email {payload.email} already exists")
+        name = normalize_distributor_name(payload.name)
         entity = Distributor(
-            name=payload.name,
-            company=payload.company,
+            name=name,
+            company=payload.company or name,
             address=payload.address,
             email=str(payload.email).lower() if payload.email else None,
             phone=payload.phone,
@@ -108,17 +110,44 @@ class DistributorService:
         return updated
 
     def delete_distributor(self, distributor_id: int, *, actor: str = "system") -> Distributor:
-        """Soft-delete a distributor."""
+        """
+        Soft-delete a distributor and cascade to active reports + sales.
+
+        Keeps Consolidated / dashboard free of orphaned active children.
+        """
+        from app.repositories.report_repository import ReportRepository
+        from app.repositories.sales_record_repository import SalesRecordRepository
+
         distributor = self.repo.get_or_raise(distributor_id)
+        reports_repo = ReportRepository(self.db)
+        sales_repo = SalesRecordRepository(self.db)
+
+        active_reports = reports_repo.list_active_for_distributor(distributor_id)
+        sales_deleted = 0
+        for report in active_reports:
+            sales_deleted += sales_repo.soft_delete_for_report(report.id)
+            reports_repo.soft_delete(report)
+
         deleted = self.repo.soft_delete(distributor)
         self.audit.log(
             AuditTrailCreate(
                 user_name=actor,
                 action=AuditAction.DELETED,
-                details=f"Deleted distributor {deleted.name}",
+                details=(
+                    f"Deleted distributor {deleted.name} | "
+                    f"reports_soft_deleted={len(active_reports)} | "
+                    f"sales_soft_deleted={sales_deleted}"
+                ),
                 entity_type="distributor",
                 entity_id=str(deleted.id),
             )
+        )
+        logger.info(
+            "Distributor soft-deleted with cascade | id={} | name={} | reports={} | sales={}",
+            deleted.id,
+            deleted.name,
+            len(active_reports),
+            sales_deleted,
         )
         return deleted
 

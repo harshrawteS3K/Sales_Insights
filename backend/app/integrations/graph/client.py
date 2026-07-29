@@ -212,22 +212,28 @@ class GraphClient:
         mailbox: Optional[str] = None,
         top: int = 50,
         has_attachments: bool = True,
+        page_size: int = 50,
     ) -> List[Dict[str, Any]]:
         """
         Return unread messages from the configured mailbox.
+
+        Follows ``@odata.nextLink`` until all matching unread messages are
+        retrieved or ``top`` (client-side cap) is reached.
 
         Microsoft Graph requires that when ``$filter`` and ``$orderby`` are used
         together, every ``$orderby`` property also appears in ``$filter`` (and
         before other filter properties). Otherwise Graph returns InefficientFilter.
         """
         user_path = self._user_path(mailbox)
+        limit = max(int(top), 1)
+        per_page = min(max(int(page_size), 1), 200)
         # receivedDateTime MUST lead $filter when ordering by receivedDateTime.
         filters = ["receivedDateTime ge 1970-01-01T00:00:00Z", "isRead eq false"]
         if has_attachments:
             filters.append("hasAttachments eq true")
         params = {
             "$filter": " and ".join(filters),
-            "$top": min(max(top, 1), 200),
+            "$top": per_page,
             "$orderby": "receivedDateTime desc",
             "$select": (
                 "id,subject,receivedDateTime,hasAttachments,isRead,bodyPreview,"
@@ -235,14 +241,49 @@ class GraphClient:
             ),
         }
         logger.info(
-            "Graph Connected | Listing unread messages | mailbox={} | top={} | filter={}",
+            "Graph Connected | Listing unread messages (paginated) | mailbox={} | "
+            "max_messages={} | page_size={} | filter={}",
             mailbox or self.mailbox,
-            top,
+            limit,
+            per_page,
             params["$filter"],
         )
+
+        messages: List[Dict[str, Any]] = []
+        pages = 0
+        next_url: Optional[str] = None
         payload = self._request("GET", f"{user_path}/messages", params=params)
-        messages = (payload or {}).get("value", [])
-        logger.info("Unread Messages Retrieved | count={}", len(messages))
+
+        while payload is not None:
+            pages += 1
+            batch = list((payload or {}).get("value") or [])
+            messages.extend(batch)
+            logger.info(
+                "Graph unread page | page={} | batch={} | total_so_far={}",
+                pages,
+                len(batch),
+                len(messages),
+            )
+            if len(messages) >= limit:
+                messages = messages[:limit]
+                logger.info(
+                    "Unread fetch capped by max_messages | cap={} | pages={}",
+                    limit,
+                    pages,
+                )
+                break
+            next_url = (payload or {}).get("@odata.nextLink")
+            if not next_url:
+                break
+            # nextLink is an absolute URL that already embeds $skiptoken / query.
+            payload = self._request("GET", next_url)
+
+        logger.info(
+            "Unread Messages Retrieved | count={} | pages_processed={} | max_messages={}",
+            len(messages),
+            pages,
+            limit,
+        )
         for msg in messages:
             sender_name, sender_email = self.extract_sender(msg)
             logger.info(

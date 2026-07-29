@@ -24,6 +24,12 @@ class EmailMessage(Base, TimestampMixin, SoftDeleteMixin):
             unique=True,
             postgresql_where="is_deleted = false",
         ),
+        Index(
+            "uq_email_messages_internet_id_active",
+            "internet_message_id",
+            unique=True,
+            postgresql_where="is_deleted = false AND internet_message_id IS NOT NULL",
+        ),
         Index("ix_email_messages_sender_email", "sender_email"),
         Index("ix_email_messages_received_at", "received_at"),
         Index("ix_email_messages_process_status", "process_status"),

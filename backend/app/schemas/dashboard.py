@@ -52,13 +52,31 @@ class FilterOptions(BaseModel):
 
 
 class MasterDataUploadResponse(BaseModel):
-    """Master data upload result."""
+    """Master data upload / replace result."""
 
     success: bool = True
+    status: str = "success"
     message: str
-    records_upserted: int
+    records_imported: int = 0
+    duplicates_ignored: int = 0
+    processing_time_ms: float = 0
+    # Backward-compatible aliases
+    records_upserted: int = 0
     records_skipped: int = 0
     errors: List[str] = Field(default_factory=list)
+
+
+class TemplateGenerateResponse(BaseModel):
+    """Distributor template generation result."""
+
+    success: bool = True
+    status: str = "ready"
+    message: str
+    template_version: str
+    file_name: str
+    customers_count: int = 0
+    products_count: int = 0
+    generated_at: str
 
 
 class CustomerMasterResponse(BaseModel):
@@ -67,9 +85,9 @@ class CustomerMasterResponse(BaseModel):
     model_config = {"from_attributes": True}
 
     id: int
-    customer_code: str
     customer_name: str
-    segment: str
+    customer_code: Optional[str] = None
+    segment: Optional[str] = None
     region: Optional[str] = None
     country: Optional[str] = None
     city: Optional[str] = None
@@ -83,9 +101,10 @@ class ProductMasterResponse(BaseModel):
     model_config = {"from_attributes": True}
 
     id: int
+    industry_type: str
     product_code: str
-    product_name: str
-    segment: str
+    product_name: Optional[str] = None
+    segment: Optional[str] = None
     description: Optional[str] = None
     unit: str = "KG"
     is_active: bool = True

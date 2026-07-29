@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from fastapi import UploadFile
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
@@ -21,6 +22,7 @@ from app.schemas.report import FrontendReport, ReportCategories, ReportCreate, R
 from app.schemas.sales_record import FrontendSalesRecord, ParsedSalesRow
 from app.services.audit_service import AuditService
 from app.utils.datetime_utils import format_report_date, utc_now
+from app.utils.db_locks import acquire_report_replace_lock
 from app.utils.files import get_upload_subdir, save_upload_file
 from app.utils.hashing import sha256_file
 from app.utils.reporting_month import normalize_reporting_month
@@ -77,12 +79,24 @@ class ReportService:
         return self.reports.get_or_raise(report_id)
 
     def create_report(self, payload: ReportCreate, *, actor: str = "system") -> Report:
-        """Create a manual report metadata row."""
+        """Create a manual report metadata row (ghost reports blocked)."""
+        if payload.distributor_id is None:
+            raise ValidationAppError(
+                "distributor_id is required — refusing to create a ghost report without a Distributor"
+            )
+        reporting_month = normalize_reporting_month(payload.reporting_month or "")
+        if not reporting_month:
+            raise ValidationAppError(
+                "reporting_month is required — refusing to create a ghost report without a Reporting Month"
+            )
+        # Ensure distributor exists and is active
+        self.distributors.get_or_raise(payload.distributor_id)
+
         entity = Report(
             name=payload.name,
             description=payload.description,
             report_type=payload.report_type,
-            reporting_month=payload.reporting_month,
+            reporting_month=reporting_month,
             categories=payload.categories.model_dump() if payload.categories else None,
             distributor_id=payload.distributor_id,
             source=payload.source.value,
@@ -305,6 +319,16 @@ class ReportService:
                 if same_key
                 else "Legacy Quarter Retired (Reporting Month workflow)"
             )
+            logger.info(
+                "Report Replacement match | distributor_id={} | distributor={} | "
+                "reporting_month={} | retiring_report_id={} | existing_month={!r} | reason={}",
+                distributor_id,
+                distributor_name,
+                month,
+                existing.id,
+                existing.reporting_month,
+                reason,
+            )
             self._retire_active_report(
                 existing,
                 actor=actor,
@@ -313,6 +337,19 @@ class ReportService:
                 reason=reason,
             )
             retired_ids.append(existing.id)
+        if retired_ids:
+            logger.info(
+                "Report Replacement complete | distributor={} | reporting_month={} | retired_ids={}",
+                distributor_name,
+                month,
+                retired_ids,
+            )
+        else:
+            logger.info(
+                "Report Replacement | no prior active report | distributor={} | reporting_month={}",
+                distributor_name,
+                month,
+            )
         return retired_ids
 
     def ingest_excel(
@@ -381,6 +418,9 @@ class ReportService:
                 parse_result.expected_rows,
                 parse_result.imported_rows,
             )
+
+        # Serialize concurrent replace for the same Distributor + Reporting Month.
+        acquire_report_replace_lock(self.db, primary_distributor_id, reporting_month)
 
         previous_ids = self._retire_matching_active_reports(
             distributor_id=primary_distributor_id,
@@ -579,15 +619,22 @@ class ReportService:
     def filter_categories(self) -> dict:
         """Return product/application filter options for reports UI."""
         products = self.sales.distinct_products()
-        # Segments act as applications in the frontend filter set
         from sqlalchemy import distinct, select
 
+        from app.models.report import Report
         from app.models.sales_record import SalesRecord
 
         segments = list(
             self.db.scalars(
                 select(distinct(SalesRecord.segment))
-                .where(SalesRecord.is_deleted.is_(False))
+                .select_from(SalesRecord)
+                .outerjoin(Report, Report.id == SalesRecord.report_id)
+                .where(
+                    SalesRecord.is_deleted.is_(False),
+                    or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                    SalesRecord.segment.is_not(None),
+                    SalesRecord.segment != "",
+                )
                 .order_by(SalesRecord.segment.asc())
             ).all()
         )

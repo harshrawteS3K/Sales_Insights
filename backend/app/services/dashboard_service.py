@@ -41,7 +41,7 @@ class DashboardService:
         total_qty = float(self.sales.total_quantity())
         total_distributors = self.distributors.count()
         total_reports = self.reports.count()
-        total_sales = self.sales.count()
+        total_sales = self.sales.count_active_with_parents()
         total_emails = self.emails.count()
         pending = self.reports.count_by_status(ReportStatus.PENDING.value)
         failed = self.reports.count_by_status(ReportStatus.FAILED.value)

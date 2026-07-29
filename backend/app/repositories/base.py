@@ -70,18 +70,23 @@ class BaseRepository(Generic[ModelT]):
         return entity
 
     def create_many(self, entities: List[ModelT]) -> List[ModelT]:
-        """Persist multiple entities."""
+        """
+        Persist multiple entities efficiently.
+
+        Uses a single flush — no per-row refresh (avoids N SELECT round-trips).
+        Primary keys are populated on flush via INSERT … RETURNING (PostgreSQL).
+        """
+        if not entities:
+            return entities
         self.db.add_all(entities)
         self.db.flush()
-        for entity in entities:
-            self.db.refresh(entity)
-        logger.debug("Created {} {} rows", len(entities), self.model.__name__)
+        logger.debug("Created {} {} rows (bulk)", len(entities), self.model.__name__)
         return entities
 
     def update(self, entity: ModelT, data: Dict[str, Any]) -> ModelT:
-        """Update entity fields from a dict."""
+        """Update entity fields from a dict (allows explicit None to clear nullables)."""
         for key, value in data.items():
-            if value is not None and hasattr(entity, key):
+            if hasattr(entity, key):
                 setattr(entity, key, value)
         self.db.flush()
         self.db.refresh(entity)

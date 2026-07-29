@@ -48,6 +48,28 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         logger.info("Database connectivity verified")
     else:
         logger.error("Database is unreachable at startup")
+
+    auth_mode = (settings.auth_mode or "headers").strip().lower()
+    logger.info(
+        "Auth configuration | AUTH_MODE={} | production={} | trusted_secret_set={} | jwt_secret_set={}",
+        auth_mode,
+        settings.is_production,
+        bool((settings.auth_trusted_secret or "").strip()),
+        bool((settings.auth_jwt_secret or "").strip()),
+    )
+    if settings.is_production and auth_mode in {"headers", "header", "dev"}:
+        logger.warning(
+            "SECURITY: APP_ENV=production with AUTH_MODE=headers. "
+            "Deploy only behind APCOTEX corporate network / VPN, or set "
+            "AUTH_MODE=trusted_headers (with AUTH_TRUSTED_SECRET) or AUTH_MODE=jwt."
+        )
+    if settings.is_production and auth_mode == "trusted_headers" and not (
+        settings.auth_trusted_secret or ""
+    ).strip():
+        logger.error(
+            "SECURITY: AUTH_MODE=trusted_headers in production requires AUTH_TRUSTED_SECRET"
+        )
+
     yield
     logger.info("Shutting down {}", settings.app_name)
 

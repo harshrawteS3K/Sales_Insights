@@ -79,26 +79,48 @@ def normalize_header(value: object) -> str:
     """
     Intelligent header normalization (shared by all parser stages).
 
+    - strip BOM / zero-width / non-breaking spaces
     - lowercase, trim
     - underscores / hyphens → spaces
     - strip punctuation (dots, colons, etc.)
     - collapse whitespace
     """
-    text = str(value or "").strip().lower()
+    text = str(value or "")
+    text = (
+        text.replace("\ufeff", "")
+        .replace("\u200b", "")
+        .replace("\u200c", "")
+        .replace("\u200d", "")
+        .replace("\u00a0", " ")
+        .replace("\t", " ")
+    )
+    # Drop pandas duplicate-suffix noise: "Product Code.1" → "Product Code"
+    text = re.sub(r"\.\d+$", "", text.strip())
+    text = text.strip().lower()
     text = text.replace("_", " ").replace("-", " ")
     text = re.sub(r"[^\w\s]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
+def compact_header(value: object) -> str:
+    """
+    Fully compacted header key for alias matching.
+
+    ``Industry Type Description`` → ``industrytypedescription``
+    ``industry_type_description`` → ``industrytypedescription``
+    """
+    return re.sub(r"[^a-z0-9]", "", normalize_header(value))
+
+
 def _alias_lookup(aliases: Mapping[str, Sequence[str]]) -> Dict[str, str]:
-    """Build normalized-alias → canonical field lookup (first wins per alias)."""
+    """Build compact-alias → canonical field lookup (first wins per alias)."""
     lookup: Dict[str, str] = {}
     for canonical, alias_list in aliases.items():
         for alias in alias_list:
-            key = normalize_header(alias)
-            if key and key not in lookup:
-                lookup[key] = canonical
+            for key in {normalize_header(alias), compact_header(alias)}:
+                if key and key not in lookup:
+                    lookup[key] = canonical
     return lookup
 
 
@@ -112,10 +134,10 @@ _FALLBACK_SALES_NORM: Dict[str, str] = _alias_lookup(SALES_REPORT_COLUMN_ALIASES
 
 def match_distributor_field(label: object) -> Optional[str]:
     """Map a distributor-block label to canonical field."""
-    key = normalize_header(label)
-    if not key:
-        return None
-    return _OFFICIAL_DISTRIBUTOR_NORM.get(key)
+    for key in (normalize_header(label), compact_header(label)):
+        if key and key in _OFFICIAL_DISTRIBUTOR_NORM:
+            return _OFFICIAL_DISTRIBUTOR_NORM[key]
+    return None
 
 
 def is_distributor_label(label: object) -> bool:
@@ -125,8 +147,10 @@ def is_distributor_label(label: object) -> bool:
 
 def is_sales_header_token(label: object) -> bool:
     """True when a token belongs to the unified sales header vocabulary."""
-    key = normalize_header(label)
-    return key in _OFFICIAL_SALES_NORM or key in _FALLBACK_SALES_NORM
+    for key in (normalize_header(label), compact_header(label)):
+        if key and (key in _OFFICIAL_SALES_NORM or key in _FALLBACK_SALES_NORM):
+            return True
+    return False
 
 
 def try_official_sales_mapping(columns: Sequence[object]) -> Optional[Dict[str, str]]:
@@ -247,3 +271,48 @@ def find_sales_header_row(raw_rows: List[List[object]]) -> Optional[int]:
                 best_idx = idx
                 best_score = score
     return best_idx
+
+
+# ---------------------------------------------------------------------------
+# Product Master header vocabulary (Phase 2 + APCOTEX multi-block workbooks)
+# ---------------------------------------------------------------------------
+
+PRODUCT_MASTER_HEADER_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "industry_type": (
+        "Industry Type Description",
+        "Industry Type",
+        "Industry",
+        "Type Description",
+        "industry_type",
+        "industry type",
+        "IndustryTypeDescription",
+        "industry_type_description",
+        "Industry-Type-Description",
+        "INDUSTRY TYPE DESCRIPTION",
+        "segment",  # legacy single-table uploads
+        "application",
+        "category",
+    ),
+    "product_code": (
+        "Product Code",
+        "Product",
+        "ProductCode",
+        "product_code",
+        "product code",
+        "Code",
+        "SKU",
+        "sku",
+        "PRODUCT CODE",
+        "Product-Code",
+    ),
+}
+
+_PRODUCT_MASTER_NORM: Dict[str, str] = _alias_lookup(PRODUCT_MASTER_HEADER_ALIASES)
+
+
+def match_product_master_field(label: object) -> Optional[str]:
+    """Map a cell value to industry_type / product_code when it is a header alias."""
+    for key in (normalize_header(label), compact_header(label)):
+        if key and key in _PRODUCT_MASTER_NORM:
+            return _PRODUCT_MASTER_NORM[key]
+    return None

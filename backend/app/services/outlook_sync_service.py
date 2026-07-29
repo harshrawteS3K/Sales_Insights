@@ -24,6 +24,11 @@ from app.utils.hashing import sha256_bytes
 
 logger = get_logger(__name__)
 
+_TERMINAL_PROCESSED = {
+    EmailProcessStatus.INSERTED.value,
+    EmailProcessStatus.MARKED_READ.value,
+}
+
 
 def _parse_graph_datetime(value: Optional[str]) -> datetime:
     """Parse Graph ISO datetime into aware datetime."""
@@ -69,7 +74,6 @@ class OutlookSyncService:
 
         Soft-deletes attachments so Graph attachment IDs can be reused on reprocess.
         Does NOT delete the message from Outlook / Microsoft Graph.
-        Future: call GraphClient.delete_message() behind a feature flag.
         """
         email = self.emails.get_or_raise(email_id)
         attachments_deleted = self.attachments.soft_delete_for_email(email.id)
@@ -99,7 +103,7 @@ class OutlookSyncService:
             "success": True,
             "message": "Email processing record removed from Sales Insights",
             "deletedId": email_id,
-            "outlookDeleted": False,  # Future: Graph deletion sets this true
+            "outlookDeleted": False,
         }
 
     def get_sync_job(self, job_id: int) -> SyncJob:
@@ -116,13 +120,10 @@ class OutlookSyncService:
 
     def sync(self, request: OutlookSyncRequest, *, actor: str = "system") -> SyncJob:
         """
-        Run a full Outlook sync:
+        Run a full Outlook sync.
 
-        1. Acquire token
-        2. Read unread emails (with attachments)
-        3. Download Excel attachments only
-        4. Parse + insert sales records
-        5. Mark email as read on success
+        Each message runs inside a SAVEPOINT so a failed ingest never leaves
+        retired reports / partial sales committed while the outer sync continues.
         """
         mailbox = self.graph.resolve_mailbox(request.mailbox)
         job = SyncJob(
@@ -151,16 +152,28 @@ class OutlookSyncService:
                 has_attachments=True,
             )
             job.emails_found = len(messages)
+            details["emails_found"] = len(messages)
+            details["max_messages"] = request.max_messages
             self.db.flush()
+            logger.info(
+                "Outlook sync listed unread | job={} | mailbox={} | found={} | max_messages={}",
+                job.id,
+                mailbox,
+                len(messages),
+                request.max_messages,
+            )
 
             for message in messages:
+                message_id = message.get("id")
                 try:
-                    result = self._process_message(
-                        message,
-                        mailbox=mailbox,
-                        mark_as_read=request.mark_as_read,
-                        actor=actor,
-                    )
+                    # SAVEPOINT: rollback this message only on failure (no partial replace)
+                    with self.db.begin_nested():
+                        result = self._process_message(
+                            message,
+                            mailbox=mailbox,
+                            mark_as_read=request.mark_as_read,
+                            actor=actor,
+                        )
                     details["processed"].append(result)
                     job.emails_processed += 1
                     job.attachments_downloaded += int(result.get("attachments_downloaded", 0))
@@ -170,11 +183,12 @@ class OutlookSyncService:
                 except Exception as exc:
                     job.failures += 1
                     details["failures"].append(
-                        {"message_id": message.get("id"), "error": str(exc)}
+                        {"message_id": message_id, "error": str(exc)}
                     )
                     logger.exception(
-                        "Failed processing Graph message | id={}",
-                        message.get("id"),
+                        "Failed processing Graph message (rolled back) | id={} | error={}",
+                        message_id,
+                        exc,
                     )
 
             if job.failures and job.emails_processed:
@@ -209,6 +223,65 @@ class OutlookSyncService:
                 raise
             raise GraphAPIError(f"Outlook sync failed: {exc}") from exc
 
+    def _ensure_marked_read(
+        self,
+        email: EmailMessage,
+        *,
+        graph_id: str,
+        mailbox: str,
+        reason: str,
+    ) -> bool:
+        """
+        PATCH Graph isRead=true and mirror DB state.
+
+        Returns True on success. Raises GraphAPIError on failure (caller decides rollback).
+        """
+        logger.info(
+            "Mark As Read starting | message_id={} | email_id={} | reason={}",
+            graph_id,
+            email.id,
+            reason,
+        )
+        self.graph.mark_as_read(graph_id, mailbox=mailbox)
+        email.is_read = True
+        if email.process_status in {
+            EmailProcessStatus.INSERTED.value,
+            EmailProcessStatus.MARKED_READ.value,
+            EmailProcessStatus.SKIPPED.value,
+        }:
+            if email.process_status != EmailProcessStatus.SKIPPED.value:
+                email.process_status = EmailProcessStatus.MARKED_READ.value
+        self.db.flush()
+        logger.info(
+            "Mark As Read success | message_id={} | email_id={} | status={}",
+            graph_id,
+            email.id,
+            email.process_status,
+        )
+        return True
+
+    def _find_existing_email(self, message: Dict[str, Any]) -> Optional[EmailMessage]:
+        """Resolve prior email by graph_message_id, then internet_message_id."""
+        graph_id = message.get("id") or ""
+        existing = self.emails.get_by_graph_id(graph_id) if graph_id else None
+        if existing:
+            return existing
+        internet_id = (message.get("internetMessageId") or "").strip()
+        if internet_id:
+            existing = self.emails.get_by_internet_message_id(internet_id)
+            if existing:
+                logger.info(
+                    "Email dedupe hit via internet_message_id | graph_id={} | internet_id={} | email_id={}",
+                    graph_id,
+                    internet_id,
+                    existing.id,
+                )
+                # Keep latest Graph id so mark-as-read targets the current message
+                if graph_id and existing.graph_message_id != graph_id:
+                    existing.graph_message_id = graph_id
+                    self.db.flush()
+        return existing
+
     def _process_message(
         self,
         message: Dict[str, Any],
@@ -217,16 +290,52 @@ class OutlookSyncService:
         mark_as_read: bool,
         actor: str,
     ) -> Dict[str, Any]:
-        """Process a single Graph message end-to-end."""
+        """Process a single Graph message end-to-end (idempotent)."""
         graph_id = message["id"]
-        existing = self.emails.get_by_graph_id(graph_id)
-        if existing and existing.process_status in {
-            EmailProcessStatus.INSERTED.value,
-            EmailProcessStatus.MARKED_READ.value,
-        }:
+        existing = self._find_existing_email(message)
+
+        # Already fully processed — do not re-ingest; only ensure Graph is read
+        if existing and existing.process_status in _TERMINAL_PROCESSED:
+            logger.info(
+                "Email already processed | message_id={} | email_id={} | status={} | retry_mark_read={}",
+                graph_id,
+                existing.id,
+                existing.process_status,
+                mark_as_read,
+            )
+            if mark_as_read:
+                self._ensure_marked_read(
+                    existing,
+                    graph_id=graph_id,
+                    mailbox=mailbox,
+                    reason="already_processed_retry",
+                )
             return {
                 "message_id": graph_id,
                 "status": "already_processed",
+                "attachments_downloaded": 0,
+                "reports_created": 0,
+                "records_inserted": 0,
+                "duplicates_skipped": 0,
+            }
+
+        # Previously skipped (no Excel) — still unread in Graph; mark read & stop
+        if existing and existing.process_status == EmailProcessStatus.SKIPPED.value:
+            logger.info(
+                "Email previously skipped (no Excel) | message_id={} | email_id={}",
+                graph_id,
+                existing.id,
+            )
+            if mark_as_read:
+                self._ensure_marked_read(
+                    existing,
+                    graph_id=graph_id,
+                    mailbox=mailbox,
+                    reason="skipped_retry_mark_read",
+                )
+            return {
+                "message_id": graph_id,
+                "status": "skipped_no_excel",
                 "attachments_downloaded": 0,
                 "reports_created": 0,
                 "records_inserted": 0,
@@ -251,6 +360,9 @@ class OutlookSyncService:
         )
         if existing is None:
             email = self.emails.create(email)
+        elif not email.internet_message_id and message.get("internetMessageId"):
+            email.internet_message_id = message.get("internetMessageId")
+            self.db.flush()
 
         attachments = self.graph.list_attachments(graph_id, mailbox=mailbox)
         excel_attachments = [a for a in attachments if GraphClient.is_excel_attachment(a)]
@@ -264,6 +376,13 @@ class OutlookSyncService:
             email.process_status = EmailProcessStatus.SKIPPED.value
             email.error_message = "No Excel attachments found"
             self.db.flush()
+            if mark_as_read:
+                self._ensure_marked_read(
+                    email,
+                    graph_id=graph_id,
+                    mailbox=mailbox,
+                    reason="skipped_no_excel",
+                )
             return {
                 "message_id": graph_id,
                 "status": "skipped_no_excel",
@@ -343,16 +462,17 @@ class OutlookSyncService:
                     records_inserted += inserted
                     any_success = True
                 logger.info(
-                    "Confidence Calculated | message_id={} | file={} | quality_score={}",
+                    "Attachment ingested | message_id={} | file={} | quality={} | duplicate={}",
                     graph_id,
                     file_name,
                     quality_score,
+                    was_duplicate,
                 )
             except Exception as exc:
                 email.process_status = EmailProcessStatus.FAILED.value
                 email.error_message = str(exc)
                 logger.exception(
-                    "Failed ingesting attachment | message={} attachment={}",
+                    "Failed ingesting attachment | message={} attachment={} | rolling back message",
                     graph_id,
                     file_name,
                 )
@@ -363,11 +483,18 @@ class OutlookSyncService:
 
         if any_success or duplicates_skipped:
             email.process_status = EmailProcessStatus.INSERTED.value
-            if mark_as_read:
-                self.graph.mark_as_read(graph_id, mailbox=mailbox)
-                email.is_read = True
-                email.process_status = EmailProcessStatus.MARKED_READ.value
+            email.error_message = None
             self.db.flush()
+            # Mark read BEFORE leaving savepoint — failure rolls back ingest
+            if mark_as_read:
+                self._ensure_marked_read(
+                    email,
+                    graph_id=graph_id,
+                    mailbox=mailbox,
+                    reason="ingest_success",
+                )
+            else:
+                self.db.flush()
 
         return {
             "message_id": graph_id,

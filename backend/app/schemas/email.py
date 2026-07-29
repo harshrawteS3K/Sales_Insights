@@ -77,7 +77,8 @@ class OutlookSyncRequest(BaseModel):
 
     mailbox: Optional[str] = None
     mark_as_read: bool = True
-    max_messages: int = Field(default=50, ge=1, le=200)
+    # Cap per sync run; Graph pages via @odata.nextLink until this limit.
+    max_messages: int = Field(default=50, ge=1, le=5000)
 
 
 class OutlookSyncResponse(BaseModel):

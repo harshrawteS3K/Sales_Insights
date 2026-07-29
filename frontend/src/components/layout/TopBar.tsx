@@ -6,6 +6,7 @@ import { BLUE, TEAL, RED, BORDER } from '../../constants/theme';
 const quickLinks = [
   { name: 'Distributor Email Extraction', path: '/emails',            category: 'Emails'         },
   { name: 'Consolidated Sales Data',      path: '/consolidated-data', category: 'Data'           },
+  { name: 'Master Data Management',       path: '/master-data',       category: 'Data'           },
   { name: 'Sales Trend Analysis',         path: '/visualizations',   category: 'Visualizations' },
   { name: 'Distributor Performance',      path: '/visualizations',   category: 'Visualizations' },
   { name: 'Monthly Revenue Dashboard',    path: '/visualizations',   category: 'Visualizations' },

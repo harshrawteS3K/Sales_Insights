@@ -27,6 +27,21 @@ class EmailMessageRepository(BaseRepository[EmailMessage]):
         )
         return self.db.scalar(query)
 
+    def get_by_internet_message_id(self, internet_message_id: str) -> Optional[EmailMessage]:
+        """Fetch email by RFC internet message id (cross-Graph-id dedupe)."""
+        mid = (internet_message_id or "").strip()
+        if not mid:
+            return None
+        query = (
+            select(EmailMessage)
+            .options(selectinload(EmailMessage.attachments))
+            .where(
+                EmailMessage.internet_message_id == mid,
+                EmailMessage.is_deleted.is_(False),
+            )
+        )
+        return self.db.scalar(query)
+
     def list_extracted(self, *, skip: int = 0, limit: int = 200) -> List[EmailMessage]:
         """List extracted emails newest first."""
         query = (

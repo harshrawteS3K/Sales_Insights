@@ -1,12 +1,12 @@
 """Distributor Excel template generator matching the official APCOTEX layout."""
 
+import time
 from pathlib import Path
 from typing import List, Optional, Sequence
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.datavalidation import DataValidation
 
 from app.constants import (
     DEFAULT_SEGMENTS,
@@ -15,6 +15,7 @@ from app.constants import (
 )
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.services.excel_dropdown_service import ExcelDropdownService
 from app.utils.files import ensure_dir
 
 logger = get_logger(__name__)
@@ -23,16 +24,19 @@ logger = get_logger(__name__)
 class ExcelTemplateGenerator:
     """Generate distributor sales Excel templates with dropdown lists."""
 
-    # Official sales table (Reporting Month is in the Distributor Details block)
+    # Finalized APCOTEX sales table column order
     HEADERS = [
         "Sr. No.",
         "Name of Customer",
         "Segment",
         "Product",
-        "Quantity",
         "Opening Stock",
         "Closing Stock",
+        "Quantity",
     ]
+
+    def __init__(self, dropdowns: Optional[ExcelDropdownService] = None) -> None:
+        self.dropdowns = dropdowns or ExcelDropdownService()
 
     def generate(
         self,
@@ -51,33 +55,42 @@ class ExcelTemplateGenerator:
           Rows 1–5  Distributor Details (Name, Company, Address, Phone, Reporting Month)
           Row 7     Sales table headers
           Row 8+    Sales data
+
+        Customer and Product columns use master-data dropdowns (hidden `_lists` sheet).
         """
-        segment_values = list(segments or DEFAULT_SEGMENTS)
-        customer_values = list(customers) or ["Sample Customer"]
-        product_values = list(products) or ["CB 300"]
-        distributor_values = list(distributors or [])
-        month_values = list(
-            periods
-            or [
-                "January 2026",
-                "February 2026",
-                "March 2026",
-                "April 2026",
-                "May 2026",
-                "June 2026",
-                "July 2026",
-                "August 2026",
-                "September 2026",
-                "October 2026",
-                "November 2026",
-                "December 2026",
-            ]
-        )
+        started = time.perf_counter()
+        segment_values = list(segments) if segments is not None else list(DEFAULT_SEGMENTS)
+        customer_values = list(customers) if customers else ["Sample Customer"]
+        product_values = list(products) if products else ["SAMPLE-PRODUCT"]
+        distributor_values = list(distributors) if distributors else []
+        month_values = list(periods) if periods else [
+            "January 2026",
+            "February 2026",
+            "March 2026",
+            "April 2026",
+            "May 2026",
+            "June 2026",
+            "July 2026",
+            "August 2026",
+            "September 2026",
+            "October 2026",
+            "November 2026",
+            "December 2026",
+        ]
+
+        warn_at = settings.template_list_warn_threshold
+        if len(customer_values) >= warn_at or len(product_values) >= warn_at:
+            logger.warning(
+                "Large template master lists | customers={} | products={} | threshold={}",
+                len(customer_values),
+                len(product_values),
+                warn_at,
+            )
 
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = DISTRIBUTOR_TEMPLATE_SHEET
-        lists_sheet = workbook.create_sheet("_lists")
+        lists_sheet = self.dropdowns.ensure_lists_sheet(workbook)
 
         header_font = Font(bold=True, color="FFFFFF")
         header_fill = PatternFill("solid", fgColor="1F5FA8")
@@ -116,43 +129,41 @@ class ExcelTemplateGenerator:
             sheet.column_dimensions[get_column_letter(col_idx)].width = 22
 
         sheet.row_dimensions[table_header_row].height = 22
+        sheet.freeze_panes = "A8"
 
-        self._write_list(lists_sheet, "A", "Customers", customer_values)
-        self._write_list(lists_sheet, "B", "Products", product_values)
-        self._write_list(lists_sheet, "C", "Segments", segment_values)
-        self._write_list(lists_sheet, "D", "Reporting Months", month_values)
-
-        customer_dv = DataValidation(
-            type="list",
-            formula1=f"=_lists!$A$2:$A${len(customer_values) + 1}",
-            allow_blank=True,
+        cust_end = self.dropdowns.write_column_list(
+            lists_sheet, column="A", title="Customers", values=customer_values
         )
-        product_dv = DataValidation(
-            type="list",
-            formula1=f"=_lists!$B$2:$B${len(product_values) + 1}",
-            allow_blank=True,
+        prod_end = self.dropdowns.write_column_list(
+            lists_sheet, column="B", title="Products", values=product_values
         )
-        segment_dv = DataValidation(
-            type="list",
-            formula1=f"=_lists!$C$2:$C${len(segment_values) + 1}",
-            allow_blank=True,
+        seg_end = self.dropdowns.write_column_list(
+            lists_sheet, column="C", title="Segments", values=segment_values
         )
-        month_dv = DataValidation(
-            type="list",
-            formula1=f"=_lists!$D$2:$D${len(month_values) + 1}",
-            allow_blank=True,
+        month_end = self.dropdowns.write_column_list(
+            lists_sheet, column="D", title="Reporting Months", values=month_values
         )
 
-        customer_dv.add("B8:B1000")
-        product_dv.add("D8:D1000")
-        segment_dv.add("C8:C1000")
-        month_dv.add("B5")
+        self.dropdowns.register_named_range(
+            workbook, name="CustomerList", sheet_title=lists_sheet.title, column="A", end_row=cust_end
+        )
+        self.dropdowns.register_named_range(
+            workbook, name="ProductList", sheet_title=lists_sheet.title, column="B", end_row=prod_end
+        )
+        self.dropdowns.register_named_range(
+            workbook, name="SegmentList", sheet_title=lists_sheet.title, column="C", end_row=seg_end
+        )
+        self.dropdowns.register_named_range(
+            workbook, name="MonthList", sheet_title=lists_sheet.title, column="D", end_row=month_end
+        )
 
-        sheet.add_data_validation(customer_dv)
-        sheet.add_data_validation(product_dv)
-        sheet.add_data_validation(segment_dv)
-        sheet.add_data_validation(month_dv)
+        # Name of Customer = col B, Product = col D
+        self.dropdowns.add_list_validation(sheet, named_range="CustomerList", cells="B8:B1000")
+        self.dropdowns.add_list_validation(sheet, named_range="SegmentList", cells="C8:C1000")
+        self.dropdowns.add_list_validation(sheet, named_range="ProductList", cells="D8:D1000")
+        self.dropdowns.add_list_validation(sheet, named_range="MonthList", cells="B5")
 
+        lists_sheet.protection.sheet = True
         lists_sheet.sheet_state = "hidden"
 
         for row_idx in range(8, 18):
@@ -160,19 +171,18 @@ class ExcelTemplateGenerator:
 
         target = output_path or (Path(settings.download_dir) / DISTRIBUTOR_TEMPLATE_FILENAME)
         ensure_dir(target.parent)
+        save_started = time.perf_counter()
         workbook.save(target)
+        save_ms = round((time.perf_counter() - save_started) * 1000, 2)
+        total_ms = round((time.perf_counter() - started) * 1000, 2)
         logger.info(
-            "Generated distributor template at {} | customers={} products={} segments={}",
+            "Generated distributor template at {} | customers={} products={} segments={} "
+            "save_ms={} total_ms={}",
             target,
             len(customer_values),
             len(product_values),
             len(segment_values),
+            save_ms,
+            total_ms,
         )
         return target
-
-    @staticmethod
-    def _write_list(sheet, column: str, title: str, values: List[str]) -> None:
-        sheet[f"{column}1"] = title
-        sheet[f"{column}1"].font = Font(bold=True)
-        for idx, value in enumerate(values, start=2):
-            sheet[f"{column}{idx}"] = value

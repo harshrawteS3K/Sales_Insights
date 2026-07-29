@@ -34,6 +34,19 @@ def validate_excel_filename(filename: str) -> str:
     return extension
 
 
+def cleanup_upload(path: Path | str | None, *, reason: str = "processed") -> None:
+    """Best-effort delete of a temporary upload file (never raises)."""
+    if not path:
+        return
+    target = Path(path)
+    try:
+        if target.is_file():
+            target.unlink(missing_ok=True)
+            logger.info("Cleaned up upload file | path={} | reason={}", target.name, reason)
+    except OSError as exc:
+        logger.warning("Failed to clean up upload file | path={} | error={}", target, exc)
+
+
 async def save_upload_file(upload: UploadFile, destination_dir: Path | str) -> Path:
     """Persist an uploaded file under destination_dir and return the path."""
     validate_excel_filename(upload.filename or "")

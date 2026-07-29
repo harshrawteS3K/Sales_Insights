@@ -4,6 +4,7 @@ import {
   Mail,
   Table2,
   BarChart3,
+  Database,
   Settings,
   LogOut,
 } from 'lucide-react';
@@ -14,7 +15,8 @@ const mainNavItems = [
   { path: '/',                  label: 'Dashboard',         icon: LayoutDashboard, exact: true },
   { path: '/emails',            label: 'Emails',            icon: Mail             },
   { path: '/consolidated-data', label: 'Consolidated Data', icon: Table2           },
-  { path: '/visualizations',   label: 'Visualizations',    icon: BarChart3        },
+  { path: '/visualizations',    label: 'Visualizations',    icon: BarChart3        },
+  { path: '/master-data',       label: 'Master Data',       icon: Database         },
 ];
 
 export function Sidebar({
