@@ -122,8 +122,10 @@ class OutlookSyncService:
         """
         Run a full Outlook sync.
 
-        Each message runs inside a SAVEPOINT so a failed ingest never leaves
+        Each message ingest runs inside a SAVEPOINT so a failed ingest never leaves
         retired reports / partial sales committed while the outer sync continues.
+        Mark-as-read runs only after the ingest savepoint succeeds and never rolls
+        back business data.
         """
         mailbox = self.graph.resolve_mailbox(request.mailbox)
         job = SyncJob(
@@ -144,7 +146,7 @@ class OutlookSyncService:
             )
         )
 
-        details: Dict[str, Any] = {"processed": [], "failures": []}
+        details: Dict[str, Any] = {"processed": [], "failures": [], "warnings": []}
         try:
             messages = self.graph.list_unread_messages(
                 mailbox=mailbox,
@@ -166,14 +168,40 @@ class OutlookSyncService:
             for message in messages:
                 message_id = message.get("id")
                 try:
-                    # SAVEPOINT: rollback this message only on failure (no partial replace)
+                    # SAVEPOINT: ingest only — mark-as-read must NOT participate in rollback.
                     with self.db.begin_nested():
                         result = self._process_message(
                             message,
                             mailbox=mailbox,
-                            mark_as_read=request.mark_as_read,
+                            mark_as_read=False,
                             actor=actor,
                         )
+                    # Ingest savepoint released successfully — business data is durable here.
+                    if request.mark_as_read:
+                        email = self._email_for_mark_read(message, result)
+                        if email is not None:
+                            mark_ok = self._ensure_marked_read(
+                                email,
+                                graph_id=str(message_id or ""),
+                                mailbox=mailbox,
+                                reason="post_ingest_commit",
+                            )
+                            result["mark_as_read_ok"] = mark_ok
+                            if not mark_ok:
+                                err = (
+                                    email.error_message
+                                    or "Graph mark-as-read failed; report was kept"
+                                )
+                                warning = {
+                                    "message_id": message_id,
+                                    "warning": "mark_as_read_failed",
+                                    "email_id": email.id,
+                                    "error": err,
+                                }
+                                details["warnings"].append(warning)
+                                result["mark_as_read_error"] = err
+                        else:
+                            result["mark_as_read_ok"] = False
                     details["processed"].append(result)
                     job.emails_processed += 1
                     job.attachments_downloaded += int(result.get("attachments_downloaded", 0))
@@ -203,11 +231,13 @@ class OutlookSyncService:
             self.db.flush()
             self.db.refresh(job)
             logger.info(
-                "Sync Completed | job={} | status={} | processed={} | failures={} | records={}",
+                "Sync Completed | job={} | status={} | processed={} | failures={} | "
+                "warnings={} | records={}",
                 job.id,
                 job.status,
                 job.emails_processed,
                 job.failures,
+                len(details.get("warnings") or []),
                 job.records_inserted,
             )
             return job
@@ -223,6 +253,19 @@ class OutlookSyncService:
                 raise
             raise GraphAPIError(f"Outlook sync failed: {exc}") from exc
 
+    def _email_for_mark_read(
+        self,
+        message: Dict[str, Any],
+        result: Dict[str, Any],
+    ) -> Optional[EmailMessage]:
+        """Resolve the email row to mark read after a successful ingest savepoint."""
+        email_id = result.get("email_id")
+        if email_id is not None:
+            email = self.emails.get_by_id(int(email_id))
+            if email is not None:
+                return email
+        return self._find_existing_email(message)
+
     def _ensure_marked_read(
         self,
         email: EmailMessage,
@@ -234,7 +277,8 @@ class OutlookSyncService:
         """
         PATCH Graph isRead=true and mirror DB state.
 
-        Returns True on success. Raises GraphAPIError on failure (caller decides rollback).
+        Returns True on success, False on Graph/network failure.
+        Never raises — mark-as-read must not roll back committed business data.
         """
         logger.info(
             "Mark As Read starting | message_id={} | email_id={} | reason={}",
@@ -242,7 +286,26 @@ class OutlookSyncService:
             email.id,
             reason,
         )
-        self.graph.mark_as_read(graph_id, mailbox=mailbox)
+        try:
+            self.graph.mark_as_read(graph_id, mailbox=mailbox)
+        except Exception as exc:
+            # Stash last error on the result path via email (non-fatal operational note)
+            email.error_message = (
+                f"Mark-as-read failed (data kept): {exc}"
+                if not email.error_message
+                else email.error_message
+            )
+            self.db.flush()
+            logger.warning(
+                "Mark As Read failed (report kept) | message_id={} | email_id={} | "
+                "reason={} | error={}",
+                graph_id,
+                email.id,
+                reason,
+                exc,
+            )
+            return False
+
         email.is_read = True
         if email.process_status in {
             EmailProcessStatus.INSERTED.value,
@@ -303,8 +366,9 @@ class OutlookSyncService:
                 existing.process_status,
                 mark_as_read,
             )
+            mark_ok: Optional[bool] = None
             if mark_as_read:
-                self._ensure_marked_read(
+                mark_ok = self._ensure_marked_read(
                     existing,
                     graph_id=graph_id,
                     mailbox=mailbox,
@@ -312,11 +376,13 @@ class OutlookSyncService:
                 )
             return {
                 "message_id": graph_id,
+                "email_id": existing.id,
                 "status": "already_processed",
                 "attachments_downloaded": 0,
                 "reports_created": 0,
                 "records_inserted": 0,
                 "duplicates_skipped": 0,
+                "mark_as_read_ok": mark_ok,
             }
 
         # Previously skipped (no Excel) — still unread in Graph; mark read & stop
@@ -326,8 +392,9 @@ class OutlookSyncService:
                 graph_id,
                 existing.id,
             )
+            mark_ok = None
             if mark_as_read:
-                self._ensure_marked_read(
+                mark_ok = self._ensure_marked_read(
                     existing,
                     graph_id=graph_id,
                     mailbox=mailbox,
@@ -335,11 +402,13 @@ class OutlookSyncService:
                 )
             return {
                 "message_id": graph_id,
+                "email_id": existing.id,
                 "status": "skipped_no_excel",
                 "attachments_downloaded": 0,
                 "reports_created": 0,
                 "records_inserted": 0,
                 "duplicates_skipped": 0,
+                "mark_as_read_ok": mark_ok,
             }
 
         sender_name, sender_email = GraphClient.extract_sender(message)
@@ -376,8 +445,9 @@ class OutlookSyncService:
             email.process_status = EmailProcessStatus.SKIPPED.value
             email.error_message = "No Excel attachments found"
             self.db.flush()
+            mark_ok = None
             if mark_as_read:
-                self._ensure_marked_read(
+                mark_ok = self._ensure_marked_read(
                     email,
                     graph_id=graph_id,
                     mailbox=mailbox,
@@ -385,11 +455,13 @@ class OutlookSyncService:
                 )
             return {
                 "message_id": graph_id,
+                "email_id": email.id,
                 "status": "skipped_no_excel",
                 "attachments_downloaded": 0,
                 "reports_created": 0,
                 "records_inserted": 0,
                 "duplicates_skipped": 0,
+                "mark_as_read_ok": mark_ok,
             }
 
         attachments_downloaded = 0
@@ -481,27 +553,28 @@ class OutlookSyncService:
         if quality_scores:
             email.confidence_score = min(quality_scores)
 
+        mark_ok = None
         if any_success or duplicates_skipped:
             email.process_status = EmailProcessStatus.INSERTED.value
             email.error_message = None
             self.db.flush()
-            # Mark read BEFORE leaving savepoint — failure rolls back ingest
+            # Mark-as-read is optional here (direct callers). Sync() marks after savepoint.
             if mark_as_read:
-                self._ensure_marked_read(
+                mark_ok = self._ensure_marked_read(
                     email,
                     graph_id=graph_id,
                     mailbox=mailbox,
                     reason="ingest_success",
                 )
-            else:
-                self.db.flush()
 
         return {
             "message_id": graph_id,
+            "email_id": email.id,
             "status": email.process_status,
             "attachments_downloaded": attachments_downloaded,
             "reports_created": reports_created,
             "records_inserted": records_inserted,
             "duplicates_skipped": duplicates_skipped,
             "confidence_score": email.confidence_score,
+            "mark_as_read_ok": mark_ok,
         }
