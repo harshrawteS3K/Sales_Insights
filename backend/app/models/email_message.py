@@ -66,6 +66,7 @@ class EmailMessage(Base, TimestampMixin, SoftDeleteMixin):
     confidence_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     mailbox: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    outlook_web_link: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
 
     attachments: Mapped[List["EmailAttachment"]] = relationship(
         "EmailAttachment",

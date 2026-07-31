@@ -50,6 +50,18 @@ class FrontendEmailRecord(BaseModel):
     subject: str
     dateReceived: str
     confidenceScore: int
+    outlookWebLink: Optional[str] = None
+    graphMessageId: Optional[str] = None
+    mailbox: Optional[str] = None
+
+
+class OutlookOpenLinkResponse(BaseModel):
+    """Resolved Outlook web URL for the View button."""
+
+    success: bool = True
+    url: str
+    available: bool = True
+    message: Optional[str] = None
 
 
 class SyncJobResponse(TimestampSchema):

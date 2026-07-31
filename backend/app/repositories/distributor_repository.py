@@ -1,4 +1,4 @@
-"""Distributor repository."""
+"""Distributor repository — company is the business identity."""
 
 from typing import Dict, List, Optional
 
@@ -7,17 +7,17 @@ from sqlalchemy.orm import Session
 
 from app.models.distributor import Distributor
 from app.repositories.base import BaseRepository
-from app.utils.distributor_name import normalize_distributor_name
+from app.utils.distributor_name import normalize_company_name, normalize_distributor_name
 
 
 class DistributorRepository(BaseRepository[Distributor]):
-    """Data access for distributors."""
+    """Data access for distributors (one row per Distributor Company)."""
 
     def __init__(self, db: Session) -> None:
         super().__init__(db, Distributor)
 
     def get_by_name(self, name: str) -> Optional[Distributor]:
-        """Fetch distributor by normalized name (case-insensitive, trimmed)."""
+        """Fetch distributor by representative name (legacy / metadata lookup)."""
         normalized = normalize_distributor_name(name)
         if not normalized:
             return None
@@ -27,6 +27,28 @@ class DistributorRepository(BaseRepository[Distributor]):
         )
         return self.db.scalar(query)
 
+    def get_by_company(self, company: str) -> Optional[Distributor]:
+        """Fetch distributor by normalized company name (business identity)."""
+        normalized = normalize_company_name(company)
+        if not normalized:
+            return None
+        query = select(Distributor).where(
+            func.lower(func.trim(Distributor.company)) == normalized.casefold(),
+            Distributor.is_deleted.is_(False),
+        )
+        return self.db.scalar(query)
+
+    def list_ids_for_company(self, company: str) -> List[int]:
+        """All active distributor ids sharing the same company (incl. legacy dupes)."""
+        normalized = normalize_company_name(company)
+        if not normalized:
+            return []
+        query = select(Distributor.id).where(
+            func.lower(func.trim(Distributor.company)) == normalized.casefold(),
+            Distributor.is_deleted.is_(False),
+        )
+        return list(self.db.scalars(query).all())
+
     def get_by_email(self, email: str) -> Optional[Distributor]:
         """Fetch distributor by email."""
         query = select(Distributor).where(
@@ -34,6 +56,61 @@ class DistributorRepository(BaseRepository[Distributor]):
             Distributor.is_deleted.is_(False),
         )
         return self.db.scalar(query)
+
+    def get_or_create_by_company(
+        self,
+        company: str,
+        *,
+        representative_name: Optional[str] = None,
+        email: Optional[str] = None,
+        address: Optional[str] = None,
+        phone: Optional[str] = None,
+    ) -> Distributor:
+        """
+        Return the distributor row for this company, or create one.
+
+        Business identity = Distributor Company.
+        ``name`` stores the latest known representative (metadata only).
+        """
+        company_norm = normalize_company_name(company)
+        rep_norm = normalize_distributor_name(representative_name)
+        if not company_norm:
+            # Legacy Excel without Company Name → use representative as company key
+            company_norm = rep_norm
+        if not company_norm:
+            raise ValueError("Distributor Company is required")
+
+        existing = self.get_by_company(company_norm)
+        if existing:
+            updates: Dict[str, object] = {}
+            cleaned_company = normalize_company_name(existing.company)
+            if cleaned_company and cleaned_company != existing.company:
+                updates["company"] = cleaned_company
+            # Keep latest representative only when the person actually changed
+            if rep_norm and existing.name.casefold() != rep_norm.casefold():
+                updates["name"] = rep_norm
+            else:
+                cleaned_existing_name = normalize_distributor_name(existing.name)
+                if cleaned_existing_name and cleaned_existing_name != existing.name:
+                    updates["name"] = cleaned_existing_name
+            if address and not existing.address:
+                updates["address"] = address
+            if phone and not existing.phone:
+                updates["phone"] = phone
+            if email and not existing.email:
+                updates["email"] = email.lower()
+            if updates:
+                return self.update(existing, updates)
+            return existing
+
+        entity = Distributor(
+            name=rep_norm or company_norm,
+            company=company_norm,
+            email=email.lower() if email else None,
+            address=address,
+            phone=phone,
+        )
+        return self.create(entity)
 
     def get_or_create_by_name(
         self,
@@ -44,50 +121,36 @@ class DistributorRepository(BaseRepository[Distributor]):
         address: Optional[str] = None,
         phone: Optional[str] = None,
     ) -> Distributor:
-        """Return existing distributor by normalized name or create a new one."""
-        normalized = normalize_distributor_name(name)
-        if not normalized:
-            raise ValueError("Distributor name is required")
+        """
+        Compatibility wrapper — resolves by company when provided.
 
-        existing = self.get_by_name(normalized)
-        if existing:
-            updates: Dict[str, object] = {}
-            # Collapse whitespace on stored name only; keep original casing
-            cleaned_existing = normalize_distributor_name(existing.name)
-            if cleaned_existing and cleaned_existing != existing.name:
-                updates["name"] = cleaned_existing
-            if company and (not existing.company or existing.company == existing.name):
-                updates["company"] = company
-            if address and not existing.address:
-                updates["address"] = address
-            if phone and not existing.phone:
-                updates["phone"] = phone
-            if email and not existing.email:
-                updates["email"] = email.lower()
-            if updates:
-                return self.update(existing, updates)
-            return existing
-        entity = Distributor(
-            name=normalized,
-            company=company or normalized,
-            email=email.lower() if email else None,
+        Prefer ``get_or_create_by_company`` for new call sites.
+        """
+        company_key = normalize_company_name(company) or normalize_distributor_name(name)
+        return self.get_or_create_by_company(
+            company_key,
+            representative_name=name,
+            email=email,
             address=address,
             phone=phone,
         )
-        return self.create(entity)
 
     def as_info_map(self) -> Dict[str, Dict[str, str]]:
-        """Return frontend-shaped distributor detail map keyed by name."""
-        distributors = self.list(limit=5000, order_by=Distributor.name.asc())
-        return {
-            d.name: {
+        """Return frontend-shaped distributor detail map keyed by company."""
+        distributors = self.list(limit=5000, order_by=Distributor.company.asc())
+        result: Dict[str, Dict[str, str]] = {}
+        for d in distributors:
+            key = d.company or d.name
+            result[key] = {
                 "name": d.name,
                 "company": d.company or d.name,
                 "address": d.address or "",
                 "phone": d.phone or "",
             }
-            for d in distributors
-        }
+            # Also key by representative for legacy clients
+            if d.name and d.name not in result:
+                result[d.name] = result[key]
+        return result
 
     def search(self, term: str, *, skip: int = 0, limit: int = 100) -> List[Distributor]:
         """Search distributors by name, company, or email."""
@@ -102,7 +165,7 @@ class DistributorRepository(BaseRepository[Distributor]):
                     | Distributor.email.ilike(pattern)
                 ),
             )
-            .order_by(Distributor.name.asc())
+            .order_by(Distributor.company.asc())
             .offset(skip)
             .limit(limit)
         )

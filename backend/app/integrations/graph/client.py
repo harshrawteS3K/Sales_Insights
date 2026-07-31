@@ -237,7 +237,7 @@ class GraphClient:
             "$orderby": "receivedDateTime desc",
             "$select": (
                 "id,subject,receivedDateTime,hasAttachments,isRead,bodyPreview,"
-                "conversationId,internetMessageId,from,sender"
+                "conversationId,internetMessageId,from,sender,webLink"
             ),
         }
         logger.info(
@@ -348,6 +348,23 @@ class GraphClient:
         if not encoded:
             raise GraphAPIError("Attachment content is empty")
         return base64.b64decode(encoded)
+
+    def get_message(
+        self,
+        message_id: str,
+        *,
+        mailbox: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch a single message (used to verify Outlook link still exists)."""
+        user_path = self._user_path(mailbox)
+        payload = self._request(
+            "GET",
+            f"{user_path}/messages/{quote(message_id)}",
+            params={"$select": "id,subject,webLink,isRead"},
+        )
+        if not payload:
+            raise GraphAPIError("Microsoft Graph returned an empty message payload")
+        return payload
 
     def mark_as_read(self, message_id: str, *, mailbox: Optional[str] = None) -> None:
         """Mark a message as read after successful processing."""

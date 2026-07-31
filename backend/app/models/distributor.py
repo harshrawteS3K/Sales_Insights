@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, Index, String, Text
+from sqlalchemy import Boolean, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, SoftDeleteMixin, TimestampMixin
@@ -20,6 +20,14 @@ class Distributor(Base, TimestampMixin, SoftDeleteMixin):
         Index("ix_distributors_name", "name"),
         Index("ix_distributors_email", "email"),
         Index("ix_distributors_company", "company"),
+        Index(
+            "uq_distributors_company_active",
+            text("lower(trim(company))"),
+            unique=True,
+            postgresql_where=text(
+                "is_deleted = false AND company IS NOT NULL AND TRIM(company) <> ''"
+            ),
+        ),
         Index(
             "ix_distributors_email_active",
             "email",

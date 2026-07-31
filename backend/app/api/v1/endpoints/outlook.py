@@ -9,6 +9,7 @@ from app.dependencies.services import OutlookSyncServiceDep
 from app.schemas.common import DataResponse
 from app.schemas.email import (
     FrontendEmailRecord,
+    OutlookOpenLinkResponse,
     OutlookSyncRequest,
     OutlookSyncResponse,
     SyncJobListResponse,
@@ -94,6 +95,26 @@ def list_emails(
     """
     messages = service.list_emails(skip=skip, limit=limit)
     return service.to_frontend_emails(messages)
+
+
+@router.get(
+    "/emails/{email_id}/outlook-link",
+    response_model=OutlookOpenLinkResponse,
+    summary="Resolve Outlook web URL for a processing history email",
+    tags=["Emails"],
+)
+def get_outlook_open_link(
+    email_id: int,
+    service: OutlookSyncServiceDep,
+    _: RequireUser,
+) -> OutlookOpenLinkResponse:
+    """
+    Return a navigable Outlook URL for the original message.
+
+    Returns 404 with a clear message when the Graph message no longer exists.
+    """
+    result = service.resolve_outlook_open_link(email_id)
+    return OutlookOpenLinkResponse(**result)
 
 
 @router.delete(

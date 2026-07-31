@@ -50,15 +50,18 @@ def test_bug2_distributor_case_insensitive_match(db: Session):
 
 def test_bug2_report_replacement_same_distributor_month(db: Session, tmp_path: Path):
     svc = ReportService(db)
+    company = "Replace Dist Co Identity"
     path1 = build_official_workbook(
         tmp_path / "r1.xlsx",
         distributor="Replace Dist Co",
+        company=company,
         reporting_month="July 2026",
         rows=[(1, "Cust A", "Paper", "PROD-1", 10, 1, 2)],
     )
     path2 = build_official_workbook(
         tmp_path / "r2.xlsx",
-        distributor="replace dist co",  # different casing
+        distributor="replace dist co",  # different casing on representative
+        company=company,
         reporting_month="July 2026",
         rows=[(1, "Cust B", "Paper", "PROD-2", 20, 3, 4)],
     )

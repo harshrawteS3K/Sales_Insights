@@ -4,6 +4,8 @@ import type {
   ConsolidatedFilterOptions,
   ConsolidatedRecordsPage,
   ConsolidatedRecordQuery,
+  QuarterlySummaryResponse,
+  QuarterlyReportResponse,
 } from '../types';
 import { apiRequest } from '../api';
 
@@ -31,6 +33,26 @@ export const ConsolidatedDataService = {
   /** GET /api/consolidated-data/filter-options */
   getFilterOptions: async (): Promise<ConsolidatedFilterOptions> => {
     return apiRequest<ConsolidatedFilterOptions>('/consolidated-data/filter-options');
+  },
+
+  /** GET /api/consolidated-data/quarterly/summary */
+  getQuarterlySummary: async (params: {
+    quarter: string;
+    company?: string;
+  }): Promise<QuarterlySummaryResponse> => {
+    return apiRequest<QuarterlySummaryResponse>('/consolidated-data/quarterly/summary', {
+      params,
+    });
+  },
+
+  /** GET /api/consolidated-data/quarterly/report */
+  getQuarterlyReport: async (params: {
+    quarter: string;
+    company: string;
+  }): Promise<QuarterlyReportResponse> => {
+    return apiRequest<QuarterlyReportResponse>('/consolidated-data/quarterly/report', {
+      params,
+    });
   },
 
   /** GET /api/consolidated-data/distributors */

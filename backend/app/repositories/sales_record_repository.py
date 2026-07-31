@@ -13,6 +13,18 @@ from app.models.sales_record import SalesRecord
 from app.repositories.base import BaseRepository
 
 
+def company_expr():
+    """
+    Primary business entity label: Distributor Company.
+
+    Falls back to representative name only when company is blank (legacy rows).
+    """
+    return func.coalesce(
+        func.nullif(func.trim(Distributor.company), ""),
+        Distributor.name,
+    )
+
+
 class SalesRecordRepository(BaseRepository[SalesRecord]):
     """Data access for sales records and aggregations."""
 
@@ -20,20 +32,33 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         super().__init__(db, SalesRecord)
 
     def _base_query(self):
-        """Active sales only — never returns rows whose parent report/distributor is archived."""
+        """
+        Active sales belonging to an ACTIVE report only.
+
+        Business rule: Consolidated Data / Dashboard / Analytics must never include
+        soft-deleted reports or orphan sales without a report.
+        """
         return (
             select(SalesRecord)
             .options(
                 selectinload(SalesRecord.distributor),
                 selectinload(SalesRecord.report),
             )
+            .join(Report, Report.id == SalesRecord.report_id)
             .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
-            .outerjoin(Report, Report.id == SalesRecord.report_id)
             .where(
                 SalesRecord.is_deleted.is_(False),
-                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                Report.is_deleted.is_(False),
                 or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
             )
+        )
+
+    @staticmethod
+    def _active_report_sales_where():
+        """Shared WHERE: active sales + active parent report (no orphans)."""
+        return (
+            SalesRecord.is_deleted.is_(False),
+            Report.is_deleted.is_(False),
         )
 
     def _apply_filters(
@@ -58,7 +83,14 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         if distributor_id:
             query = query.where(SalesRecord.distributor_id == distributor_id)
         if distributor and distributor.lower() != "all":
-            query = query.where(func.lower(Distributor.name) == distributor.strip().lower())
+            # Accept either company (preferred) or legacy representative name
+            term = distributor.strip().lower()
+            query = query.where(
+                or_(
+                    func.lower(Distributor.company) == term,
+                    func.lower(Distributor.name) == term,
+                )
+            )
         if customer and customer.lower() != "all":
             query = query.where(func.lower(SalesRecord.customer_name) == customer.strip().lower())
         if segment and segment.lower() != "all":
@@ -75,14 +107,25 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
                 )
             )
         if quarter and quarter.lower() != "all":
-            # Match reporting months / legacy period tokens (e.g. Q2)
-            q = quarter.strip()
-            query = query.where(
-                or_(
-                    SalesRecord.period.ilike(f"%{q}%"),
-                    Report.reporting_month.ilike(f"%{q}%"),
+            # Prefer structured quarter labels (Q1 2026); fall back to legacy substring
+            from app.utils.period_calendar import parse_quarter_label
+
+            spec = parse_quarter_label(quarter.strip())
+            if spec:
+                query = query.where(
+                    or_(
+                        Report.reporting_month.in_(spec.month_list),
+                        SalesRecord.period.in_(spec.month_list),
+                    )
                 )
-            )
+            else:
+                q = quarter.strip()
+                query = query.where(
+                    or_(
+                        SalesRecord.period.ilike(f"%{q}%"),
+                        Report.reporting_month.ilike(f"%{q}%"),
+                    )
+                )
         if quantity_min is not None:
             query = query.where(SalesRecord.quantity >= quantity_min)
         if quantity_max is not None:
@@ -189,11 +232,11 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         query = (
             select(func.count(SalesRecord.id))
             .select_from(SalesRecord)
+            .join(Report, Report.id == SalesRecord.report_id)
             .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
-            .outerjoin(Report, Report.id == SalesRecord.report_id)
             .where(
-                SalesRecord.is_deleted.is_(False),
-                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                *self._active_report_sales_where(),
+                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
             )
         )
         query = self._apply_filters(
@@ -215,17 +258,19 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         return int(self.db.scalar(query) or 0)
 
     def count_by_distributor_period(self, distributor_name: str, period: str) -> int:
-        """Count active sales for distributor + reporting month (report or sales period)."""
+        """Count active sales for distributor company/name + reporting month."""
+        term = distributor_name.strip().lower()
         query = (
             select(func.count(SalesRecord.id))
             .select_from(SalesRecord)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
-            .outerjoin(Report, Report.id == SalesRecord.report_id)
+            .join(Report, Report.id == SalesRecord.report_id)
             .where(
-                SalesRecord.is_deleted.is_(False),
-                Distributor.is_deleted.is_(False),
-                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
-                func.lower(Distributor.name) == distributor_name.strip().lower(),
+                *self._active_report_sales_where(),
+                or_(
+                    func.lower(Distributor.company) == term,
+                    func.lower(Distributor.name) == term,
+                ),
                 or_(
                     SalesRecord.period == period,
                     Report.reporting_month == period,
@@ -236,20 +281,24 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
 
     def soft_delete_by_distributor_period(self, distributor_name: str, period: str) -> Tuple[int, List[int]]:
         """
-        Soft-delete all sales rows for distributor + reporting month.
+        Soft-delete all sales rows for distributor company/name + reporting month.
 
+        Matches ``Distributor.company`` OR ``Distributor.name``.
         Matches ``SalesRecord.period`` OR ``Report.reporting_month``.
         Returns ``(rows_deleted, affected_report_ids)``.
         """
+        term = distributor_name.strip().lower()
         query = (
             select(SalesRecord)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
-            .outerjoin(Report, Report.id == SalesRecord.report_id)
+            .join(Report, Report.id == SalesRecord.report_id)
             .where(
-                SalesRecord.is_deleted.is_(False),
+                *self._active_report_sales_where(),
                 Distributor.is_deleted.is_(False),
-                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
-                func.lower(Distributor.name) == distributor_name.strip().lower(),
+                or_(
+                    func.lower(Distributor.company) == term,
+                    func.lower(Distributor.name) == term,
+                ),
                 or_(
                     SalesRecord.period == period,
                     Report.reporting_month == period,
@@ -281,18 +330,6 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         self.db.flush()
         return int(result.rowcount or 0)
 
-    def _active_only(self, query):
-        """Restrict to sales whose parent report and distributor are active (or missing)."""
-        return (
-            query.outerjoin(Report, Report.id == SalesRecord.report_id)
-            .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
-            .where(
-                SalesRecord.is_deleted.is_(False),
-                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
-                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
-            )
-        )
-
     def distinct_column_values(self, column_name: str) -> List[str]:
         """SELECT DISTINCT for a known sales/distributor column (generic filter engine)."""
         # Prefer report-level Reporting Month for period filters
@@ -302,8 +339,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
                 .select_from(SalesRecord)
                 .join(Report, Report.id == SalesRecord.report_id)
                 .where(
-                    SalesRecord.is_deleted.is_(False),
-                    Report.is_deleted.is_(False),
+                    *self._active_report_sales_where(),
                     Report.reporting_month.is_not(None),
                     Report.reporting_month != "",
                 )
@@ -312,13 +348,12 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             values = [str(row) for row in self.db.scalars(query).all() if row]
             if values:
                 return values
-            # Fallback to denormalized sales.period for legacy rows
+            # Fallback to denormalized sales.period for legacy rows under active reports
             query = (
                 select(distinct(SalesRecord.period))
-                .outerjoin(Report, Report.id == SalesRecord.report_id)
+                .join(Report, Report.id == SalesRecord.report_id)
                 .where(
-                    SalesRecord.is_deleted.is_(False),
-                    or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                    *self._active_report_sales_where(),
                     SalesRecord.period.is_not(None),
                     SalesRecord.period != "",
                 )
@@ -343,10 +378,9 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
                 select(distinct(col))
                 .select_from(SalesRecord)
                 .join(Distributor, Distributor.id == SalesRecord.distributor_id)
-                .outerjoin(Report, Report.id == SalesRecord.report_id)
+                .join(Report, Report.id == SalesRecord.report_id)
                 .where(
-                    SalesRecord.is_deleted.is_(False),
-                    or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                    *self._active_report_sales_where(),
                     Distributor.is_deleted.is_(False),
                     col.is_not(None),
                     col != "",
@@ -357,10 +391,9 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             query = (
                 select(distinct(col))
                 .select_from(SalesRecord)
-                .outerjoin(Report, Report.id == SalesRecord.report_id)
+                .join(Report, Report.id == SalesRecord.report_id)
                 .where(
-                    SalesRecord.is_deleted.is_(False),
-                    or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                    *self._active_report_sales_where(),
                     col.is_not(None),
                     col != "",
                 )
@@ -408,61 +441,54 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         query = (
             select(func.coalesce(func.sum(SalesRecord.quantity), 0))
             .select_from(SalesRecord)
-            .outerjoin(Report, Report.id == SalesRecord.report_id)
+            .join(Report, Report.id == SalesRecord.report_id)
             .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
             .where(
-                SalesRecord.is_deleted.is_(False),
-                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                *self._active_report_sales_where(),
                 or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
             )
         )
         return Decimal(str(self.db.scalar(query) or 0))
 
-    def product_quantities(self, *, period: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Aggregate quantity by product."""
+    def product_quantities(
+        self,
+        *,
+        period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Aggregate quantity by product (ACTIVE reports only)."""
         query = (
             select(
                 SalesRecord.product.label("product"),
                 func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
             )
             .select_from(SalesRecord)
-            .outerjoin(Report, Report.id == SalesRecord.report_id)
+            .join(Report, Report.id == SalesRecord.report_id)
             .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
             .where(
-                SalesRecord.is_deleted.is_(False),
-                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                *self._active_report_sales_where(),
                 or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
             )
             .group_by(SalesRecord.product)
             .order_by(func.sum(SalesRecord.quantity).desc())
         )
-        if period and period.lower() != "all":
-            query = query.where(
-                or_(SalesRecord.period == period, Report.reporting_month == period)
-            )
+        query = self._apply_viz_filters(query, period=period, product=product, distributor=distributor)
         rows = self.db.execute(query).all()
         return [{"product": row.product, "qty": float(row.qty)} for row in rows]
 
-    def count_active_with_parents(self) -> int:
-        """Count sales rows whose parent report and distributor are active."""
-        query = (
-            select(func.count(SalesRecord.id))
-            .select_from(SalesRecord)
-            .outerjoin(Report, Report.id == SalesRecord.report_id)
-            .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
-            .where(
-                SalesRecord.is_deleted.is_(False),
-                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
-                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
-            )
-        )
-        return int(self.db.scalar(query) or 0)
-
-    def distributor_totals(self, *, period: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Aggregate quantity / customers / products per distributor."""
+    def distributor_totals(
+        self,
+        *,
+        period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Aggregate quantity per Distributor Company (ACTIVE reports only)."""
+        entity = company_expr().label("name")
         query = (
             select(
-                Distributor.name.label("name"),
+                entity,
                 func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
                 func.count(distinct(SalesRecord.customer_name)).label("customers"),
                 func.count(distinct(SalesRecord.product)).label("products"),
@@ -470,19 +496,15 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             )
             .select_from(SalesRecord)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
-            .outerjoin(Report, Report.id == SalesRecord.report_id)
+            .join(Report, Report.id == SalesRecord.report_id)
             .where(
-                SalesRecord.is_deleted.is_(False),
+                *self._active_report_sales_where(),
                 Distributor.is_deleted.is_(False),
-                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
             )
-            .group_by(Distributor.name)
+            .group_by(entity)
             .order_by(func.sum(SalesRecord.quantity).desc())
         )
-        if period and period.lower() != "all":
-            query = query.where(
-                or_(SalesRecord.period == period, Report.reporting_month == period)
-            )
+        query = self._apply_viz_filters(query, period=period, product=product, distributor=distributor)
         rows = self.db.execute(query).all()
         results: List[Dict[str, Any]] = []
         for row in rows:
@@ -499,33 +521,156 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             )
         return results
 
+    def count_active_with_parents(self) -> int:
+        """Count sales rows whose parent report and distributor are active."""
+        query = (
+            select(func.count(SalesRecord.id))
+            .select_from(SalesRecord)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .where(
+                *self._active_report_sales_where(),
+                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
+            )
+        )
+        return int(self.db.scalar(query) or 0)
+
+    def monthly_sales_trend(
+        self,
+        *,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Quantity by reporting month from ACTIVE reports.
+
+        Prefers Report.reporting_month, falls back to SalesRecord.period.
+        """
+        month_expr = func.coalesce(Report.reporting_month, SalesRecord.period)
+        query = (
+            select(
+                month_expr.label("month"),
+                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+            )
+            .select_from(SalesRecord)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .where(
+                *self._active_report_sales_where(),
+                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
+                month_expr.is_not(None),
+                month_expr != "",
+            )
+            .group_by(month_expr)
+        )
+        query = self._apply_viz_filters(query, product=product, distributor=distributor)
+        rows = self.db.execute(query).all()
+        results = [{"month": str(row.month), "qty": float(row.qty)} for row in rows if row.month]
+        return _sort_reporting_months(results)
+
+    def distributor_month_matrix(
+        self,
+        *,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+        distributor_limit: int = 20,
+    ) -> Dict[str, Any]:
+        """
+        Heatmap matrix: distributors × months → quantity (ACTIVE reports).
+
+        Returns {months, distributors, cells: [{distributor, month, qty}]}.
+        """
+        month_expr = func.coalesce(Report.reporting_month, SalesRecord.period)
+        # Limit to top distributor companies by total qty (keeps heatmap readable)
+        top = self.distributor_totals(product=product, distributor=distributor)
+        top_names = [r["name"] for r in top[: max(1, distributor_limit)]]
+        if not top_names:
+            return {"months": [], "distributors": [], "cells": []}
+
+        entity = company_expr()
+        query = (
+            select(
+                entity.label("distributor"),
+                month_expr.label("month"),
+                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+            )
+            .select_from(SalesRecord)
+            .join(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .where(
+                *self._active_report_sales_where(),
+                Distributor.is_deleted.is_(False),
+                entity.in_(top_names),
+                month_expr.is_not(None),
+                month_expr != "",
+            )
+            .group_by(entity, month_expr)
+        )
+        query = self._apply_viz_filters(query, product=product, distributor=distributor)
+        rows = self.db.execute(query).all()
+        cells = [
+            {"distributor": row.distributor, "month": str(row.month), "qty": float(row.qty)}
+            for row in rows
+            if row.month
+        ]
+        month_set = {c["month"] for c in cells}
+        months_sorted = [m["month"] for m in _sort_reporting_months([{"month": m, "qty": 0} for m in month_set])]
+        # Preserve top-company order
+        return {"months": months_sorted, "distributors": top_names, "cells": cells}
+
+    @staticmethod
+    def _apply_viz_filters(
+        query,
+        *,
+        period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+    ):
+        """Optional exact filters for visualization endpoints."""
+        if period and period.lower() != "all":
+            query = query.where(
+                or_(SalesRecord.period == period, Report.reporting_month == period)
+            )
+        if product and product.lower() != "all":
+            query = query.where(func.lower(SalesRecord.product) == product.strip().lower())
+        if distributor and distributor.lower() != "all":
+            term = distributor.strip().lower()
+            query = query.where(
+                or_(
+                    func.lower(Distributor.company) == term,
+                    func.lower(Distributor.name) == term,
+                )
+            )
+        return query
+
     def distributor_product_mix(
         self,
         products: Optional[List[str]] = None,
         *,
         period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Pivot quantity by distributor and product."""
+        """Pivot quantity by Distributor Company and product."""
+        entity = company_expr()
         query = (
             select(
-                Distributor.name.label("distributor"),
+                entity.label("distributor"),
                 SalesRecord.product.label("product"),
                 func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
-            .outerjoin(Report, Report.id == SalesRecord.report_id)
+            .join(Report, Report.id == SalesRecord.report_id)
             .where(
-                SalesRecord.is_deleted.is_(False),
+                *self._active_report_sales_where(),
                 Distributor.is_deleted.is_(False),
-                or_(Report.id.is_(None), Report.is_deleted.is_(False)),
             )
-            .group_by(Distributor.name, SalesRecord.product)
+            .group_by(entity, SalesRecord.product)
         )
-        if period and period.lower() != "all":
-            query = query.where(
-                or_(SalesRecord.period == period, Report.reporting_month == period)
-            )
+        query = self._apply_viz_filters(
+            query, period=period, product=product, distributor=distributor
+        )
         if products:
             query = query.where(SalesRecord.product.in_(products))
 
@@ -548,6 +693,129 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         """Return sorted distinct periods."""
         return self.distinct_column_values("period")
 
+    def distinct_distributors_with_sales(self) -> List[str]:
+        """Distributor Company names that have ACTIVE sales (matches Consolidated)."""
+        entity = company_expr().label("company")
+        query = (
+            select(entity)
+            .select_from(SalesRecord)
+            .join(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .where(
+                *self._active_report_sales_where(),
+                Distributor.is_deleted.is_(False),
+                entity.is_not(None),
+                entity != "",
+            )
+            .distinct()
+            .order_by(entity.asc())
+        )
+        return [str(row.company) for row in self.db.execute(query).all() if row.company]
+
+    def quarterly_company_summary(
+        self,
+        months: Sequence[str],
+        *,
+        company: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        SQL aggregation: one row per Distributor Company for the given months.
+
+        ACTIVE reports only. No in-memory rollup of full report payloads.
+        """
+        if not months:
+            return []
+        entity = company_expr()
+        month_expr = func.coalesce(Report.reporting_month, SalesRecord.period)
+        query = (
+            select(
+                entity.label("company"),
+                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.count(distinct(SalesRecord.product)).label("products"),
+                func.count(distinct(SalesRecord.customer_name)).label("customers"),
+                func.count(distinct(Report.id)).label("reports"),
+                func.string_agg(distinct(month_expr), ",").label("months_csv"),
+            )
+            .select_from(SalesRecord)
+            .join(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .where(
+                *self._active_report_sales_where(),
+                Distributor.is_deleted.is_(False),
+                or_(
+                    Report.reporting_month.in_(list(months)),
+                    SalesRecord.period.in_(list(months)),
+                ),
+            )
+            .group_by(entity)
+            .order_by(func.sum(SalesRecord.quantity).desc())
+        )
+        if company and company.lower() != "all":
+            query = query.where(func.lower(Distributor.company) == company.strip().lower())
+
+        rows = self.db.execute(query).all()
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            raw_months = [m for m in str(row.months_csv or "").split(",") if m]
+            # Preserve quarter month order
+            ordered = [m for m in months if m in raw_months]
+            for m in raw_months:
+                if m not in ordered:
+                    ordered.append(m)
+            results.append(
+                {
+                    "company": row.company,
+                    "qty": float(row.qty or 0),
+                    "products": int(row.products or 0),
+                    "customers": int(row.customers or 0),
+                    "reports": int(row.reports or 0),
+                    "months": ordered,
+                }
+            )
+        return results
+
+    def quarterly_product_breakdown(
+        self,
+        months: Sequence[str],
+        *,
+        company: str,
+    ) -> List[Dict[str, Any]]:
+        """Product-level SQL aggregation for one company across quarter months."""
+        if not months or not company:
+            return []
+        query = (
+            select(
+                SalesRecord.product.label("product"),
+                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.count(distinct(SalesRecord.customer_name)).label("customers"),
+            )
+            .select_from(SalesRecord)
+            .join(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .where(
+                *self._active_report_sales_where(),
+                Distributor.is_deleted.is_(False),
+                func.lower(Distributor.company) == company.strip().lower(),
+                or_(
+                    Report.reporting_month.in_(list(months)),
+                    SalesRecord.period.in_(list(months)),
+                ),
+            )
+            .group_by(SalesRecord.product)
+            .order_by(func.sum(SalesRecord.quantity).desc())
+        )
+        rows = self.db.execute(query).all()
+        total = sum(float(r.qty or 0) for r in rows) or 0.0
+        return [
+            {
+                "product": row.product,
+                "qty": float(row.qty or 0),
+                "customers": int(row.customers or 0),
+                "contributionPct": round((float(row.qty or 0) / total) * 100, 2) if total else 0.0,
+            }
+            for row in rows
+        ]
+
     def count_active_for_report(self, report_id: int) -> int:
         """Count non-deleted sales rows for a report."""
         query = select(func.count(SalesRecord.id)).where(
@@ -555,3 +823,34 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             SalesRecord.is_deleted.is_(False),
         )
         return int(self.db.scalar(query) or 0)
+
+
+_MONTH_ORDER = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
+
+
+def _sort_reporting_months(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sort month labels like 'March 2024' chronologically when possible."""
+    import re
+
+    def key(item: Dict[str, Any]):
+        label = str(item.get("month") or "")
+        match = re.match(r"^\s*([A-Za-z]+)\s+(\d{4})\s*$", label)
+        if match:
+            month_name, year = match.group(1).lower(), int(match.group(2))
+            return (year, _MONTH_ORDER.get(month_name, 99), label.lower())
+        return (9999, 99, label.lower())
+
+    return sorted(rows, key=key)

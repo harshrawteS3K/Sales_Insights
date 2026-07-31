@@ -81,6 +81,12 @@ class FrontendReport(BaseModel):
     type: str
     description: str
     categories: ReportCategories
+    confidenceScore: Optional[int] = None
+    expectedRows: Optional[int] = None
+    importedRows: Optional[int] = None
+    incompleteRows: Optional[int] = None
+    validationSummary: Optional[Dict[str, Any]] = None
+    validationMessage: Optional[str] = None
 
 
 class ReportFilterCategories(BaseModel):

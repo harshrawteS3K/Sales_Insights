@@ -1,10 +1,12 @@
 """Consolidated Sales Data management endpoints."""
 
 from datetime import date
-from typing import Dict, Optional
+from typing import Annotated, Dict, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
 
+from app.database.session import get_db
 from app.dependencies.rbac import RequireAdmin, RequireUser
 from app.dependencies.services import ConsolidatedDataServiceDep, DistributorServiceDep
 from app.schemas.common import MessageResponse
@@ -15,7 +17,10 @@ from app.schemas.sales_record import (
     DeleteReportPreview,
     DeleteReportRequest,
     DeleteResult,
+    QuarterlyReportResponse,
+    QuarterlySummaryResponse,
 )
+from app.services.business_aggregation_service import BusinessAggregationService
 
 router = APIRouter(prefix="/consolidated-data", tags=["Consolidated Data"])
 
@@ -29,8 +34,44 @@ def get_filter_options(
     service: ConsolidatedDataServiceDep,
     _: RequireUser,
 ) -> ConsolidatedFilterOptions:
-    """Return distributors, customers, segments, products, companies, periods, quarters from DB."""
+    """Return companies, customers, segments, products, periods, quarters from DB."""
     return service.filter_options()
+
+
+@router.get(
+    "/quarterly/summary",
+    response_model=QuarterlySummaryResponse,
+    summary="Quarterly business summary by Distributor Company",
+)
+def get_quarterly_summary(
+    _: RequireUser,
+    db: Annotated[Session, Depends(get_db)],
+    quarter: Optional[str] = Query(None, description="Quarter label e.g. Q1 2026"),
+    company: Optional[str] = Query(
+        None, description="Distributor Company (optional; All when omitted)"
+    ),
+) -> QuarterlySummaryResponse:
+    """Virtual quarterly summary over ACTIVE monthly reports (not persisted)."""
+    engine = BusinessAggregationService(db)
+    payload = engine.quarterly_summary(quarter_label=quarter, company=company)
+    return QuarterlySummaryResponse(**payload)
+
+
+@router.get(
+    "/quarterly/report",
+    response_model=QuarterlyReportResponse,
+    summary="Virtual quarterly report for one Distributor Company",
+)
+def get_quarterly_report(
+    _: RequireUser,
+    db: Annotated[Session, Depends(get_db)],
+    company: str = Query(..., min_length=1, description="Distributor Company"),
+    quarter: Optional[str] = Query(None, description="Quarter label e.g. Q1 2026"),
+) -> QuarterlyReportResponse:
+    """Aggregate ACTIVE monthly reports for company + quarter (SQL only)."""
+    engine = BusinessAggregationService(db)
+    payload = engine.quarterly_report(company=company, quarter_label=quarter)
+    return QuarterlyReportResponse(**payload)
 
 
 @router.get(
@@ -55,7 +96,9 @@ def get_sales_records(
     reporting_month: Optional[str] = Query(
         None, description="Reporting Month", alias="reportingMonth"
     ),
-    quarter: Optional[str] = Query(None, description="Quarter token e.g. Q2"),
+    quarter: Optional[str] = Query(
+        None, description="Quarter label e.g. Q1 2026 (or legacy Q2 token)"
+    ),
     quantity_min: Optional[float] = Query(None),
     quantity_max: Optional[float] = Query(None),
     imported_from: Optional[date] = Query(None),

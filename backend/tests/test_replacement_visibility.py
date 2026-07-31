@@ -111,9 +111,11 @@ def test_replacement_hides_old_from_consolidated(db, tmp_path: Path):
 def test_datetime_month_replaces_prior_text_month(db, tmp_path: Path):
     """Excel date cell for July must retire an existing 'July YYYY' active report."""
     dist = f"DateReplace {uuid4().hex[:8]}"
+    company = f"DateReplace Co {uuid4().hex[:8]}"
     text_path = build_official_workbook(
         tmp_path / "text.xlsx",
         distributor=dist,
+        company=company,
         reporting_month="July 2097",
         include_stock=False,
         rows=[(1, "A", "Carpet", "P1", 10)],
@@ -126,7 +128,7 @@ def test_datetime_month_replaces_prior_text_month(db, tmp_path: Path):
     ws["A1"] = "Name of Distributor"
     ws["B1"] = dist
     ws["A2"] = "Company Name"
-    ws["B2"] = "Co"
+    ws["B2"] = company
     ws["A3"] = "Address"
     ws["B3"] = "Addr"
     ws["A4"] = "Phone No"

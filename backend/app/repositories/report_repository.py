@@ -26,39 +26,64 @@ class ReportRepository(BaseRepository[Report]):
     def get_active_by_business_key(
         self, distributor_id: int, reporting_month: str
     ) -> Optional[Report]:
-        """Find the active report for Distributor + Reporting Month."""
-        from app.utils.reporting_month import normalize_reporting_month
+        """Find the active report for Distributor + Reporting Month (latest if drift)."""
+        from app.utils.reporting_month import months_equivalent, normalize_reporting_month
 
         month = normalize_reporting_month(reporting_month)
         query = select(Report).where(
             Report.distributor_id == distributor_id,
             Report.reporting_month == month,
             Report.is_deleted.is_(False),
-        )
+        ).order_by(Report.id.desc())
         found = self.db.scalar(query)
         if found:
             return found
         # Fallback: match any active report whose month normalizes to the same key
-        # (handles legacy datetime strings like ``2026-07-01 00:00:00``)
         candidates = list(
             self.db.scalars(
-                select(Report).where(
+                select(Report)
+                .where(
                     Report.distributor_id == distributor_id,
                     Report.is_deleted.is_(False),
                     Report.reporting_month.is_not(None),
                 )
+                .order_by(Report.id.desc())
             ).all()
         )
         for report in candidates:
-            if normalize_reporting_month(report.reporting_month) == month:
+            if months_equivalent(report.reporting_month, month):
                 return report
         return None
 
     def list_active_for_distributor(self, distributor_id: int) -> List[Report]:
-        """All active reports for a distributor (for replacement sweep)."""
+        """All active reports for a distributor id (legacy)."""
         query = select(Report).where(
             Report.distributor_id == distributor_id,
             Report.is_deleted.is_(False),
+        )
+        return list(self.db.scalars(query).all())
+
+    def list_active_for_company(self, company: str) -> List[Report]:
+        """
+        All ACTIVE reports belonging to any distributor row for this company.
+
+        Covers legacy duplicate distributor rows that share the same company.
+        """
+        from app.models.distributor import Distributor
+        from app.utils.distributor_name import normalize_company_name
+
+        company_key = normalize_company_name(company)
+        if not company_key:
+            return []
+        query = (
+            select(Report)
+            .join(Distributor, Distributor.id == Report.distributor_id)
+            .where(
+                Report.is_deleted.is_(False),
+                Distributor.is_deleted.is_(False),
+                func.lower(func.trim(Distributor.company)) == company_key.casefold(),
+            )
+            .order_by(Report.id.asc())
         )
         return list(self.db.scalars(query).all())
 

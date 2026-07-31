@@ -7,46 +7,76 @@ export type FilterOptions = {
   period: string[];
 };
 
+export type VizQuery = {
+  period?: string;
+  product?: string;
+  distributor?: string;
+  top_n?: number;
+  limit?: number;
+  distributor_limit?: number;
+};
+
 export const VisualizationsService = {
-  getProductQuantities: async (period?: string): Promise<ProductQty[]> => {
-    return apiRequest<ProductQty[]>('/visualizations/products', { params: { period } });
+  getProductQuantities: async (q: VizQuery = {}): Promise<ProductQty[]> => {
+    return apiRequest<ProductQty[]>('/visualizations/products', { params: q });
   },
 
-  getDistributorTotals: async (period?: string): Promise<DistributorTotal[]> => {
-    return apiRequest<DistributorTotal[]>('/visualizations/distributors', { params: { period } });
+  getDistributorTotals: async (q: VizQuery = {}): Promise<DistributorTotal[]> => {
+    return apiRequest<DistributorTotal[]>('/visualizations/distributors', { params: q });
   },
 
-  getProductMix: async (period?: string) => {
-    return apiRequest<Array<{ name: string; value: number; color: string }>>(
+  getProductMix: async (q: VizQuery = {}) => {
+    return apiRequest<Array<{ name: string; value: number; qty?: number; color: string }>>(
       '/visualizations/product-mix',
-      { params: { period } }
+      { params: q }
     );
   },
 
-  getProductBarData: async (period?: string) => {
+  getProductBarData: async (q: VizQuery = {}) => {
     return apiRequest<Array<{ product: string; qty: number }>>('/visualizations/product-bar', {
-      params: { period },
+      params: q,
     });
   },
 
-  getDistProductMix: async (period?: string): Promise<DistributorProductMix[]> => {
+  getDistProductMix: async (q: VizQuery = {}): Promise<DistributorProductMix[]> => {
     return apiRequest<DistributorProductMix[]>('/visualizations/dist-product-mix', {
-      params: { period },
+      params: q,
     });
   },
 
-  getTop10Distributors: async (period?: string) => {
+  getTop10Distributors: async (q: VizQuery = {}) => {
     return apiRequest<Array<{ name: string; qty: number }>>('/visualizations/top-distributors', {
-      params: { period },
+      params: q,
     });
   },
 
-  getProductsKpi: async (): Promise<KpiItem[]> => {
-    return apiRequest<KpiItem[]>('/visualizations/products-kpi');
+  getDistributorContribution: async (q: VizQuery = {}) => {
+    return apiRequest<Array<{ name: string; value: number; qty: number; color: string }>>(
+      '/visualizations/distributor-contribution',
+      { params: q }
+    );
   },
 
-  getDistributorsKpi: async (): Promise<KpiItem[]> => {
-    return apiRequest<KpiItem[]>('/visualizations/distributors-kpi');
+  getMonthlyTrend: async (q: VizQuery = {}) => {
+    return apiRequest<Array<{ month: string; qty: number }>>('/visualizations/monthly-trend', {
+      params: q,
+    });
+  },
+
+  getDistributorMonthHeatmap: async (q: VizQuery = {}) => {
+    return apiRequest<{
+      months: string[];
+      distributors: string[];
+      cells: Array<{ distributor: string; month: string; qty: number }>;
+    }>('/visualizations/distributor-month-heatmap', { params: q });
+  },
+
+  getProductsKpi: async (q: VizQuery = {}): Promise<KpiItem[]> => {
+    return apiRequest<KpiItem[]>('/visualizations/products-kpi', { params: q });
+  },
+
+  getDistributorsKpi: async (q: VizQuery = {}): Promise<KpiItem[]> => {
+    return apiRequest<KpiItem[]>('/visualizations/distributors-kpi', { params: q });
   },
 
   getProductFilterOptions: async (): Promise<FilterOptions> => {

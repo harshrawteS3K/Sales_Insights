@@ -71,6 +71,11 @@ class ReportSalesGroup(BaseModel):
     confidenceScore: Optional[int] = None
     status: Optional[str] = None
     recordCount: int = 0
+    expectedRows: Optional[int] = None
+    importedRows: Optional[int] = None
+    incompleteRows: Optional[int] = None
+    validationSummary: Optional[dict] = None
+    validationMessage: Optional[str] = None
     sales: List[SalesLineItem] = Field(default_factory=list)
 
 
@@ -113,6 +118,72 @@ class ConsolidatedFilterOptions(BaseModel):
     # Legacy aliases
     periods: List[str] = Field(default_factory=list)
     quarters: List[str] = Field(default_factory=list)
+    quantityUnit: str = "MT"
+
+
+class QuarterlySummaryRow(BaseModel):
+    """One Distributor Company in a quarterly business summary."""
+
+    company: str
+    quarter: str
+    totalQuantity: float
+    totalQuantityDisplay: str
+    unit: str = "MT"
+    productsSold: int = 0
+    customerCount: int = 0
+    reportsIncluded: int = 0
+    monthsSubmitted: List[str] = Field(default_factory=list)
+    monthsExpected: List[str] = Field(default_factory=list)
+    isPartial: bool = False
+
+
+class QuarterlyPeriodInfo(BaseModel):
+    """Resolved period metadata."""
+
+    label: str
+    kind: str
+    year: Optional[int] = None
+    months: List[str] = Field(default_factory=list)
+
+
+class QuarterlySummaryResponse(BaseModel):
+    """GET /consolidated-data/quarterly/summary."""
+
+    success: bool = True
+    period: QuarterlyPeriodInfo
+    unit: str = "MT"
+    totalCompanies: int = 0
+    grandTotalQuantity: float = 0
+    data: List[QuarterlySummaryRow] = Field(default_factory=list)
+
+
+class QuarterlyProductRow(BaseModel):
+    """Product line in a virtual quarterly report."""
+
+    product: str
+    quantity: float
+    quantityDisplay: str
+    unit: str = "MT"
+    contributionPct: float = 0
+    customerCount: int = 0
+
+
+class QuarterlyReportResponse(BaseModel):
+    """GET /consolidated-data/quarterly/report — virtual report (not persisted)."""
+
+    success: bool = True
+    period: QuarterlyPeriodInfo
+    company: str
+    unit: str = "MT"
+    totalQuantity: float = 0
+    totalQuantityDisplay: str = "0"
+    productsSold: int = 0
+    customerCount: int = 0
+    reportsIncluded: int = 0
+    monthsSubmitted: List[str] = Field(default_factory=list)
+    monthsExpected: List[str] = Field(default_factory=list)
+    isPartial: bool = False
+    products: List[QuarterlyProductRow] = Field(default_factory=list)
 
 
 class ConsolidatedRecordsPage(BaseModel):

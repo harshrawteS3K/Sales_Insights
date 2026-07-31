@@ -42,6 +42,9 @@ export interface EmailRecord {
   subject: string;
   dateReceived: string;
   confidenceScore: number;
+  outlookWebLink?: string | null;
+  graphMessageId?: string | null;
+  mailbox?: string | null;
 }
 
 // ─── Consolidated Data (report-centric) ───────────────────────────────────────
@@ -80,6 +83,19 @@ export interface ReportSalesGroup {
   confidenceScore?: number | null;
   status?: string | null;
   recordCount: number;
+  expectedRows?: number | null;
+  importedRows?: number | null;
+  incompleteRows?: number | null;
+  validationSummary?: {
+    total_rows?: number;
+    imported_rows?: number;
+    skipped_rows?: number;
+    warning_count?: number;
+    confidence_score?: number | null;
+    warnings?: Array<{ reason: string; count: number }>;
+    row_errors?: string[];
+  } | null;
+  validationMessage?: string | null;
   sales: SalesLineItem[];
 }
 
@@ -117,6 +133,55 @@ export interface ConsolidatedFilterOptions {
   reportingMonths: string[];
   periods: string[];
   quarters: string[];
+  quantityUnit?: string;
+}
+
+export interface QuarterlySummaryRow {
+  company: string;
+  quarter: string;
+  totalQuantity: number;
+  totalQuantityDisplay: string;
+  unit: string;
+  productsSold: number;
+  customerCount: number;
+  reportsIncluded: number;
+  monthsSubmitted: string[];
+  monthsExpected: string[];
+  isPartial: boolean;
+}
+
+export interface QuarterlySummaryResponse {
+  success: boolean;
+  period: { label: string; kind: string; year?: number | null; months: string[] };
+  unit: string;
+  totalCompanies: number;
+  grandTotalQuantity: number;
+  data: QuarterlySummaryRow[];
+}
+
+export interface QuarterlyProductRow {
+  product: string;
+  quantity: number;
+  quantityDisplay: string;
+  unit: string;
+  contributionPct: number;
+  customerCount: number;
+}
+
+export interface QuarterlyReportResponse {
+  success: boolean;
+  period: { label: string; kind: string; year?: number | null; months: string[] };
+  company: string;
+  unit: string;
+  totalQuantity: number;
+  totalQuantityDisplay: string;
+  productsSold: number;
+  customerCount: number;
+  reportsIncluded: number;
+  monthsSubmitted: string[];
+  monthsExpected: string[];
+  isPartial: boolean;
+  products: QuarterlyProductRow[];
 }
 
 export interface ConsolidatedRecordsPage {
@@ -227,6 +292,20 @@ export interface Report {
   type: string;
   description: string;
   categories: ReportCategories;
+  confidenceScore?: number | null;
+  expectedRows?: number | null;
+  importedRows?: number | null;
+  incompleteRows?: number | null;
+  validationSummary?: {
+    total_rows?: number;
+    imported_rows?: number;
+    skipped_rows?: number;
+    warning_count?: number;
+    confidence_score?: number | null;
+    warnings?: Array<{ reason: string; count: number }>;
+    row_errors?: string[];
+  } | null;
+  validationMessage?: string | null;
 }
 
 export interface ChatMessage {

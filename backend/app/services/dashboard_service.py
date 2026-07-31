@@ -25,6 +25,12 @@ from app.utils.quantity import format_quantity
 logger = get_logger(__name__)
 
 
+def _norm_filter(value: Optional[str]) -> Optional[str]:
+    if not value or str(value).strip().lower() in ("", "all"):
+        return None
+    return str(value).strip()
+
+
 class DashboardService:
     """Aggregations for dashboard and visualizations pages."""
 
@@ -39,7 +45,8 @@ class DashboardService:
     def summary(self) -> DashboardSummary:
         """Build high-level dashboard summary."""
         total_qty = float(self.sales.total_quantity())
-        total_distributors = self.distributors.count()
+        # Distributors that actually contribute active sales (matches Consolidated / charts)
+        total_distributors = len(self.sales.distributor_totals())
         total_reports = self.reports.count()
         total_sales = self.sales.count_active_with_parents()
         total_emails = self.emails.count()
@@ -55,8 +62,8 @@ class DashboardService:
         top_product = product_qtys[0]["product"] if product_qtys else "-"
 
         kpis = [
-            KpiItem(label="TOTAL DISTRIBUTORS", value=str(total_distributors)),
-            KpiItem(label="TOTAL QTY (KG)", value=format_quantity(total_qty)),
+            KpiItem(label="TOTAL DISTRIBUTOR COMPANIES", value=str(total_distributors)),
+            KpiItem(label="TOTAL QTY (MT)", value=format_quantity(total_qty)),
             KpiItem(label="TOTAL REPORTS", value=str(total_reports)),
             KpiItem(label="TOP PRODUCT", value=str(top_product)),
         ]
@@ -73,24 +80,54 @@ class DashboardService:
             kpis=kpis,
         )
 
-    def product_quantities(self, *, period: Optional[str] = None) -> List[ProductQty]:
+    def product_quantities(
+        self,
+        *,
+        period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+    ) -> List[ProductQty]:
         """GET /api/visualizations/products."""
-        rows = self.sales.product_quantities(period=period)
+        rows = self.sales.product_quantities(
+            period=_norm_filter(period),
+            product=_norm_filter(product),
+            distributor=_norm_filter(distributor),
+        )
         return [ProductQty(**row) for row in rows]
 
-    def distributor_totals(self, *, period: Optional[str] = None) -> List[DistributorTotal]:
+    def distributor_totals(
+        self,
+        *,
+        period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+    ) -> List[DistributorTotal]:
         """GET /api/visualizations/distributors."""
-        rows = self.sales.distributor_totals(period=period)
+        rows = self.sales.distributor_totals(
+            period=_norm_filter(period),
+            product=_norm_filter(product),
+            distributor=_norm_filter(distributor),
+        )
         return [DistributorTotal(**row) for row in rows]
 
-    def product_mix(self, *, period: Optional[str] = None) -> List[Dict[str, Any]]:
+    def product_mix(
+        self,
+        *,
+        period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+        top_n: int = 7,
+    ) -> List[Dict[str, Any]]:
         """
-        Pie/mix data for products (frontend Visualizations contract).
+        Mix data for products (donut / treemap).
 
-        Returns Top 7 products by quantity as percentage share, plus an
-        aggregated "Others" slice. Shape: {name, value, color}.
+        Top N by quantity as percentage share + aggregated "Others".
         """
-        rows = self.sales.product_quantities(period=period)
+        rows = self.sales.product_quantities(
+            period=_norm_filter(period),
+            product=_norm_filter(product),
+            distributor=_norm_filter(distributor),
+        )
         if not rows:
             return []
 
@@ -99,101 +136,238 @@ class DashboardService:
         if total_qty <= 0:
             return []
 
-        top7 = sorted_rows[:7]
-        others_qty = sum(float(r["qty"]) for r in sorted_rows[7:])
+        n = max(1, min(int(top_n or 7), 50))
+        top = sorted_rows[:n]
+        others_qty = sum(float(r["qty"]) for r in sorted_rows[n:])
 
         result: List[Dict[str, Any]] = [
             {
                 "name": str(row["product"]),
-                "value": round((float(row["qty"]) / total_qty) * 100),
+                "value": round((float(row["qty"]) / total_qty) * 100, 2),
+                "qty": float(row["qty"]),
                 "color": PRODUCT_MIX_COLORS[i % len(PRODUCT_MIX_COLORS)],
             }
-            for i, row in enumerate(top7)
+            for i, row in enumerate(top)
         ]
-        if others_qty > 0 or len(sorted_rows) > 7:
+        if others_qty > 0 or len(sorted_rows) > n:
             result.append(
                 {
                     "name": "Others",
-                    "value": round((others_qty / total_qty) * 100),
+                    "value": round((others_qty / total_qty) * 100, 2),
+                    "qty": others_qty,
                     "color": PRODUCT_MIX_OTHERS_COLOR,
                 }
             )
         return result
 
-    def product_bar(self, *, period: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Bar chart data for products."""
-        return self.sales.product_quantities(period=period)
+    def product_bar(
+        self,
+        *,
+        period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+        top_n: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Top N products by quantity with remaining aggregated as Others."""
+        rows = self.sales.product_quantities(
+            period=_norm_filter(period),
+            product=_norm_filter(product),
+            distributor=_norm_filter(distributor),
+        )
+        if not rows:
+            return []
+        n = max(1, min(int(top_n or 10), 50))
+        top = rows[:n]
+        others_qty = sum(float(r["qty"]) for r in rows[n:])
+        result = [{"product": r["product"], "qty": float(r["qty"])} for r in top]
+        if others_qty > 0:
+            result.append({"product": "Others", "qty": others_qty})
+        return result
 
     def dist_product_mix(
         self,
         *,
         period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
         products: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """Distributor × product pivot."""
+        """Distributor × product pivot (stacked bar fallback / product mix)."""
         focus = products or ["CB 300", "CB 4600", "CB 4400", "CB 548"]
-        return self.sales.distributor_product_mix(focus, period=period)
+        return self.sales.distributor_product_mix(
+            focus,
+            period=_norm_filter(period),
+            product=_norm_filter(product),
+            distributor=_norm_filter(distributor),
+        )
 
-    def top_distributors(self, *, period: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
-        """Top N distributors by quantity."""
-        rows = self.sales.distributor_totals(period=period)
-        return [
-            {"name": row["name"], "qty": row["qty"]}
-            for row in rows[:limit]
+    def top_distributors(
+        self,
+        *,
+        period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Top N distributors by quantity (horizontal bar)."""
+        rows = self.sales.distributor_totals(
+            period=_norm_filter(period),
+            product=_norm_filter(product),
+            distributor=_norm_filter(distributor),
+        )
+        return [{"name": row["name"], "qty": row["qty"]} for row in rows[:limit]]
+
+    def distributor_contribution(
+        self,
+        *,
+        period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+        top_n: int = 8,
+    ) -> List[Dict[str, Any]]:
+        """Donut: distributor share of total quantity (Top N + Others)."""
+        rows = self.sales.distributor_totals(
+            period=_norm_filter(period),
+            product=_norm_filter(product),
+            distributor=_norm_filter(distributor),
+        )
+        if not rows:
+            return []
+        total = sum(float(r["qty"]) for r in rows)
+        if total <= 0:
+            return []
+        n = max(1, min(int(top_n or 8), 30))
+        top = rows[:n]
+        others = sum(float(r["qty"]) for r in rows[n:])
+        result = [
+            {
+                "name": r["name"],
+                "value": round((float(r["qty"]) / total) * 100, 2),
+                "qty": float(r["qty"]),
+                "color": PRODUCT_MIX_COLORS[i % len(PRODUCT_MIX_COLORS)],
+            }
+            for i, r in enumerate(top)
         ]
+        if others > 0:
+            result.append(
+                {
+                    "name": "Others",
+                    "value": round((others / total) * 100, 2),
+                    "qty": others,
+                    "color": PRODUCT_MIX_OTHERS_COLOR,
+                }
+            )
+        return result
 
-    def products_kpi(self) -> List[KpiItem]:
-        """Products tab KPIs."""
-        products = self.sales.distinct_products()
-        total_qty = float(self.sales.total_quantity())
-        product_qtys = self.sales.product_quantities()
+    def monthly_sales_trend(
+        self,
+        *,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Line chart: month → total quantity."""
+        return self.sales.monthly_sales_trend(
+            product=_norm_filter(product),
+            distributor=_norm_filter(distributor),
+        )
+
+    def distributor_month_heatmap(
+        self,
+        *,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+        distributor_limit: int = 15,
+    ) -> Dict[str, Any]:
+        """Heatmap: distributor × month → quantity."""
+        return self.sales.distributor_month_matrix(
+            product=_norm_filter(product),
+            distributor=_norm_filter(distributor),
+            distributor_limit=distributor_limit,
+        )
+
+    def products_kpi(
+        self,
+        *,
+        period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+    ) -> List[KpiItem]:
+        """Products tab KPIs (ACTIVE data; respects filters)."""
+        product_qtys = self.sales.product_quantities(
+            period=_norm_filter(period),
+            product=_norm_filter(product),
+            distributor=_norm_filter(distributor),
+        )
+        total_qty = sum(float(r["qty"]) for r in product_qtys)
         top_product = product_qtys[0]["product"] if product_qtys else "-"
-        distributors = self.distributors.count()
-        reports = self.reports.count()
+        dist_count = len(
+            self.sales.distributor_totals(
+                period=_norm_filter(period),
+                product=_norm_filter(product),
+                distributor=_norm_filter(distributor),
+            )
+        )
         return [
-            KpiItem(label="TOTAL PRODUCTS", value=str(len(products))),
-            KpiItem(label="TOTAL QTY (KG)", value=format_quantity(total_qty)),
+            KpiItem(label="TOTAL PRODUCTS", value=str(len(product_qtys))),
+            KpiItem(label="TOTAL QTY (MT)", value=format_quantity(total_qty)),
             KpiItem(label="TOP PRODUCT", value=str(top_product)),
-            KpiItem(
-                label="REPORTED THIS PERIOD",
-                value=f"{reports} / {max(distributors, reports)}",
-            ),
+            KpiItem(label="DISTRIBUTORS", value=str(dist_count)),
         ]
 
-    def distributors_kpi(self) -> List[KpiItem]:
-        """Distributors tab KPIs (five cards for Visualizations UI)."""
-        totals = self.sales.distributor_totals()
+    def distributors_kpi(
+        self,
+        *,
+        period: Optional[str] = None,
+        product: Optional[str] = None,
+        distributor: Optional[str] = None,
+    ) -> List[KpiItem]:
+        """Distributors tab KPIs (ACTIVE data; respects filters)."""
+        totals = self.sales.distributor_totals(
+            period=_norm_filter(period),
+            product=_norm_filter(product),
+            distributor=_norm_filter(distributor),
+        )
         total_qty = sum(float(item["qty"]) for item in totals)
         count = len(totals)
         top = totals[0]["name"] if totals else "-"
         avg_qty = total_qty / count if count else 0.0
-        distributors = self.distributors.count()
-        reports = self.reports.count()
         return [
-            KpiItem(label="TOTAL DISTRIBUTORS", value=str(count)),
-            KpiItem(label="TOTAL QTY (KG)", value=format_quantity(total_qty)),
-            KpiItem(label="AVG QTY / DIST.", value=format_quantity(avg_qty)),
-            KpiItem(label="TOP DISTRIBUTOR", value=str(top)),
+            KpiItem(label="TOTAL DISTRIBUTOR COMPANIES", value=str(count)),
+            KpiItem(label="TOTAL QTY (MT)", value=format_quantity(total_qty)),
+            KpiItem(label="AVG QTY / COMPANY", value=format_quantity(avg_qty)),
+            KpiItem(label="TOP DISTRIBUTOR COMPANY", value=str(top)),
             KpiItem(
-                label="REPORTED THIS PERIOD",
-                value=f"{reports} / {max(distributors, reports)}",
+                label="PRODUCTS",
+                value=str(
+                    len(
+                        self.sales.product_quantities(
+                            period=_norm_filter(period),
+                            product=_norm_filter(product),
+                            distributor=_norm_filter(distributor),
+                        )
+                    )
+                ),
             ),
         ]
 
     def product_filter_options(self) -> FilterOptions:
-        """Filter options for products visualizations."""
+        """Filter options for products visualizations (ACTIVE sales only)."""
         products = self.sales.distinct_products()
         periods = self.sales.distinct_periods()
+        distributors = self.sales.distinct_distributors_with_sales()
         return FilterOptions(
             product=["All", *products],
             period=["All", *periods],
+            distributor=["All", *distributors],
         )
 
     def distributor_filter_options(self) -> FilterOptions:
-        """Filter options for distributor visualizations."""
-        distributors = [d.name for d in self.distributors.list(limit=1000)]
+        """Filter options for distributor visualizations (ACTIVE sales names)."""
+        distributors = self.sales.distinct_distributors_with_sales()
         periods = self.sales.distinct_periods()
+        products = self.sales.distinct_products()
         return FilterOptions(
             distributor=["All", *distributors],
             period=["All", *periods],
+            product=["All", *products],
         )

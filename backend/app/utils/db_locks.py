@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
+from app.utils.distributor_name import normalize_company_name
 from app.utils.reporting_month import normalize_reporting_month
 
 logger = get_logger(__name__)
@@ -27,20 +28,26 @@ def acquire_xact_lock(db: Session, lock_key: int, *, label: str = "resource") ->
 
 
 def report_replace_lock_key(distributor_id: int, reporting_month: str) -> int:
-    """
-    Derive a stable signed 64-bit advisory lock key for Distributor + Reporting Month.
-
-    Uses normalized month so concurrent uploads with equivalent month strings
-    serialize on the same business identity.
-    """
+    """Legacy lock key by distributor_id (prefer company-based lock)."""
     month = normalize_reporting_month(reporting_month).casefold()
     payload = f"report-replace|{int(distributor_id)}|{month}".encode("utf-8")
     digest = hashlib.blake2b(payload, digest_size=8).digest()
-    # PostgreSQL pg_advisory_xact_lock(bigint) expects a signed 64-bit value.
     return int.from_bytes(digest, "big", signed=True)
 
 
-# Back-compat alias used by tests / callers expecting a pair — returns (key, 0).
+def report_replace_lock_key_company(company: str, reporting_month: str) -> int:
+    """
+    Derive advisory lock key for Distributor Company + Reporting Month.
+
+    This is the correct business-identity lock — representatives do not affect it.
+    """
+    company_key = normalize_company_name(company).casefold()
+    month = normalize_reporting_month(reporting_month).casefold()
+    payload = f"report-replace-company|{company_key}|{month}".encode("utf-8")
+    digest = hashlib.blake2b(payload, digest_size=8).digest()
+    return int.from_bytes(digest, "big", signed=True)
+
+
 def report_replace_lock_keys(distributor_id: int, reporting_month: str) -> tuple[int, int]:
     return report_replace_lock_key(distributor_id, reporting_month), 0
 
@@ -49,18 +56,25 @@ def acquire_report_replace_lock(
     db: Session,
     distributor_id: int,
     reporting_month: str,
+    *,
+    company: str | None = None,
 ) -> None:
     """
-    Serialize report replacement for one Distributor + Reporting Month identity.
+    Serialize report replacement for one Company + Reporting Month identity.
 
-    Uses ``pg_advisory_xact_lock(bigint)``. Distinct identities hash to different
-    keys and do not block each other. Released on COMMIT/ROLLBACK.
+    When ``company`` is provided, locks on company (preferred). Otherwise falls
+    back to distributor_id for legacy callers.
     """
-    key = report_replace_lock_key(distributor_id, reporting_month)
+    if company and normalize_company_name(company):
+        key = report_replace_lock_key_company(company, reporting_month)
+        label_company = normalize_company_name(company)
+    else:
+        key = report_replace_lock_key(distributor_id, reporting_month)
+        label_company = f"distributor_id={distributor_id}"
     db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
     logger.info(
-        "Acquired report replace lock | distributor_id={} | reporting_month={} | key={}",
-        distributor_id,
+        "Acquired report replace lock | company={} | reporting_month={} | key={}",
+        label_company,
         normalize_reporting_month(reporting_month),
         key,
     )

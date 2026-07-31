@@ -38,16 +38,23 @@ class ConsolidatedDataService:
 
     def filter_options(self) -> ConsolidatedFilterOptions:
         """Load all filter dropdown values via SELECT DISTINCT (no hardcoding)."""
+        from app.services.business_aggregation_service import BusinessAggregationService
+        from app.services.business_aggregation_service import QUANTITY_UNIT
+
         months = self.sales.distinct_column_values("period")
+        companies = self.sales.distinct_distributors_with_sales()
+        quarters = BusinessAggregationService(self.db).available_quarters()
         return ConsolidatedFilterOptions(
-            distributors=self.sales.distinct_column_values("distributor"),
+            # Primary reporting entity = Distributor Company
+            distributors=companies,
             customers=self.sales.distinct_column_values("customer"),
             segments=self.sales.distinct_column_values("segment"),
             products=self.sales.distinct_column_values("product"),
-            companies=self.sales.distinct_column_values("company"),
+            companies=companies,
             reportingMonths=months,
             periods=months,
-            quarters=self.sales.distinct_quarters(),
+            quarters=quarters,
+            quantityUnit=QUANTITY_UNIT,
         )
 
     def list_records(
@@ -268,6 +275,31 @@ class ConsolidatedDataService:
                 email_received = None
                 if report and getattr(report, "email_received_at", None):
                     email_received = format_frontend_datetime(report.email_received_at)
+                extraction = {}
+                validation_summary = None
+                validation_message = None
+                expected_rows = None
+                imported_rows = None
+                incomplete_rows = None
+                if report and isinstance(getattr(report, "categories", None), dict):
+                    extraction = (report.categories or {}).get("extraction") or {}
+                    if isinstance(extraction, dict):
+                        validation_summary = extraction.get("validation_summary")
+                        expected_rows = extraction.get("expected_rows")
+                        imported_rows = extraction.get("imported_rows")
+                        incomplete_rows = extraction.get("incomplete_rows")
+                        if isinstance(validation_summary, dict):
+                            conf = getattr(report, "confidence_score", None)
+                            if validation_summary.get("confidence_score") is None and conf is not None:
+                                validation_summary = {
+                                    **validation_summary,
+                                    "confidence_score": conf,
+                                }
+                        from app.utils.validation_summary import validation_user_message
+
+                        validation_message = validation_user_message(
+                            validation_summary if isinstance(validation_summary, dict) else None
+                        )
                 groups[report_id] = ReportSalesGroup(
                     reportId=report_id,
                     distributor=dist.name if dist else "",
@@ -283,6 +315,11 @@ class ConsolidatedDataService:
                     confidenceScore=getattr(report, "confidence_score", None) if report else None,
                     status=getattr(report, "status", None) if report else None,
                     recordCount=0,
+                    expectedRows=expected_rows,
+                    importedRows=imported_rows,
+                    incompleteRows=incomplete_rows,
+                    validationSummary=validation_summary if isinstance(validation_summary, dict) else None,
+                    validationMessage=validation_message,
                     sales=[],
                 )
             line = SalesLineItem(

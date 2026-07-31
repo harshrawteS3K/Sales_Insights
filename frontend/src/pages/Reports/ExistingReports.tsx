@@ -6,6 +6,7 @@ import { ReportsService } from '../../services/reports.service';
 import { BLUE } from '../../constants/theme';
 import { ApiError } from '../../api';
 import { StatusBanner } from '../../components/common/StatusBanner';
+import { DataQualityWarning } from '../../components/ui/DataQualityWarning';
 
 export function ExistingReports() {
   const { userRole } = useLayoutContext();
@@ -436,6 +437,15 @@ export function ExistingReports() {
                             <span>•</span>
                             <span>{report.type}</span>
                           </div>
+                          <DataQualityWarning
+                            variant="compact"
+                            confidenceScore={report.confidenceScore}
+                            incompleteRows={report.incompleteRows}
+                            importedRows={report.importedRows}
+                            expectedRows={report.expectedRows}
+                            validationSummary={report.validationSummary}
+                            validationMessage={report.validationMessage}
+                          />
                           <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                             {report.categories.products.map(product => (
                               <span

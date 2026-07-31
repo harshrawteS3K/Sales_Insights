@@ -18,6 +18,8 @@ export function EmailsModule() {
   const [deleteTarget, setDeleteTarget] = useState<EmailRecord | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [outlookWarning, setOutlookWarning] = useState<string | null>(null);
+  const [outlookBusyId, setOutlookBusyId] = useState<number | null>(null);
 
   const refreshEmails = async () => {
     const data = await EmailsService.getExtractedEmails();
@@ -30,6 +32,7 @@ export function EmailsModule() {
     setExtracted(false);
     setError(null);
     setSyncMessage(null);
+    setOutlookWarning(null);
     try {
       if (isAdmin) {
         try {
@@ -54,8 +57,28 @@ export function EmailsModule() {
     }
   };
 
-  const openOutlook = (email: EmailRecord) => {
-    window.location.href = `mailto:${email.senderEmail}`;
+  const openOutlook = async (email: EmailRecord) => {
+    setOutlookWarning(null);
+    setOutlookBusyId(email.id);
+    try {
+      const link = await EmailsService.getOutlookOpenLink(email.id);
+      if (!link?.url) {
+        setOutlookWarning('Original Outlook email is no longer available.');
+        return;
+      }
+      window.open(link.url, '_blank', 'noopener,noreferrer');
+      if (link.message) {
+        setOutlookWarning(link.message);
+      }
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : 'Original Outlook email is no longer available.';
+      setOutlookWarning(msg || 'Original Outlook email is no longer available.');
+    } finally {
+      setOutlookBusyId(null);
+    }
   };
 
   const confirmDelete = async () => {
@@ -188,6 +211,21 @@ export function EmailsModule() {
           {syncMessage}
         </div>
       )}
+      {outlookWarning && (
+        <div
+          style={{
+            padding: '12px 16px',
+            background: 'rgba(180,83,9,0.08)',
+            border: '1px solid rgba(180,83,9,0.3)',
+            borderRadius: 8,
+            marginBottom: 16,
+            color: '#92400E',
+            fontSize: '0.875rem',
+          }}
+        >
+          {outlookWarning}
+        </div>
+      )}
 
       {extracting && (
         <div
@@ -305,6 +343,7 @@ export function EmailsModule() {
                           <button
                             type="button"
                             onClick={() => openOutlook(email)}
+                            disabled={outlookBusyId === email.id}
                             style={{
                               display: 'inline-flex',
                               alignItems: 'center',
@@ -316,10 +355,17 @@ export function EmailsModule() {
                               borderRadius: 7,
                               fontSize: '0.8125rem',
                               fontWeight: 600,
-                              cursor: 'pointer',
+                              cursor: outlookBusyId === email.id ? 'wait' : 'pointer',
+                              opacity: outlookBusyId === email.id ? 0.7 : 1,
                             }}
+                            title="View original Outlook email"
                           >
-                            <Eye size={13} /> View
+                            {outlookBusyId === email.id ? (
+                              <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                            ) : (
+                              <Eye size={14} />
+                            )}
+                            View
                           </button>
                           {isAdmin && (
                             <button

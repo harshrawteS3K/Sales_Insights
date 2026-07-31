@@ -14,7 +14,7 @@ def build_official_workbook(
     rows: Sequence[tuple],
     include_stock: bool = True,
     legacy_period_column: bool = False,
-    company: str = "Test Co",
+    company: Optional[str] = None,
     address: str = "Addr",
     phone: str = "999",
 ) -> Path:
@@ -23,13 +23,16 @@ def build_official_workbook(
 
     Sales columns: Sr No, Customer, Segment, Product, Quantity [, Opening, Closing]
     Reporting Month is in Distributor Details (not a sales column).
+
+    Company defaults to the distributor name so tests that use unique
+    representative names also get unique company identity unless overridden.
     """
     wb = Workbook()
     ws = wb.active
     ws["A1"] = "Name of Distributor"
     ws["B1"] = distributor
     ws["A2"] = "Company Name"
-    ws["B2"] = company
+    ws["B2"] = company if company is not None else distributor
     ws["A3"] = "Address"
     ws["B3"] = address
     ws["A4"] = "Phone No"

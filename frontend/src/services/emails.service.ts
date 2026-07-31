@@ -12,6 +12,13 @@ export const EmailsService = {
     return apiRequest('/outlook/sync', { method: 'POST', body: {} });
   },
 
+  /** GET /api/emails/{id}/outlook-link — resolve navigable Outlook URL */
+  getOutlookOpenLink: async (
+    emailId: number
+  ): Promise<{ success: boolean; url: string; available: boolean; message?: string | null }> => {
+    return apiRequest(`/emails/${emailId}/outlook-link`);
+  },
+
   /** DELETE /api/emails/{id} — remove processing history (not Outlook) */
   deleteEmailRecord: async (
     emailId: number
@@ -21,6 +28,14 @@ export const EmailsService = {
       data: { success: boolean; message: string; deletedId: number; outlookDeleted: boolean };
       message?: string;
     }>(`/emails/${emailId}`, { method: 'DELETE' });
-    return res.data ?? (res as unknown as { success: boolean; message: string; deletedId: number; outlookDeleted: boolean });
+    return (
+      res.data ??
+      (res as unknown as {
+        success: boolean;
+        message: string;
+        deletedId: number;
+        outlookDeleted: boolean;
+      })
+    );
   },
 };

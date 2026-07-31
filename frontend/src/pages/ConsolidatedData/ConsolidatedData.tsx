@@ -25,6 +25,9 @@ import type {
 import { ConsolidatedDataService } from '../../services/consolidatedData.service';
 import { ApiError, getSession } from '../../api';
 import { StatusBanner } from '../../components/common/StatusBanner';
+import { DataQualityWarning } from '../../components/ui/DataQualityWarning';
+import { SearchAutocomplete } from '../../components/ui/SearchAutocomplete';
+import { QuarterlyView } from './QuarterlyView';
 
 type FilterState = {
   distributor: string;
@@ -62,6 +65,11 @@ type DeleteRecordTarget = { report: ReportSalesGroup; line: SalesLineItem };
 
 function reportingMonthOf(report: ReportSalesGroup): string {
   return report.reportingMonth?.trim() || '—';
+}
+
+/** Primary business entity label for reporting. */
+function companyOf(report: ReportSalesGroup): string {
+  return (report.company || report.distributor || '').trim() || '—';
 }
 
 function formatPhone(phone?: string | null): string {
@@ -118,6 +126,7 @@ export function ConsolidatedData() {
   const [deleteReportCount, setDeleteReportCount] = useState<number | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'monthly' | 'quarterly'>('monthly');
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingAudit = useRef(false);
@@ -266,7 +275,7 @@ export function ConsolidatedData() {
 
         csvRows.push(csvEscape(detailLines.join('\n')));
         csvRows.push(
-          ['Sr No', 'Customer', 'Segment', 'Product', 'Quantity', 'Opening Stock', 'Closing Stock']
+          ['Sr No', 'Customer', 'Segment', 'Product', 'Quantity (MT)', 'Opening Stock', 'Closing Stock']
             .map(csvEscape)
             .join(',')
         );
@@ -323,7 +332,10 @@ export function ConsolidatedData() {
       return;
     }
     try {
-      const preview = await ConsolidatedDataService.previewDeleteReport(report.distributor, month);
+      const preview = await ConsolidatedDataService.previewDeleteReport(
+        report.company || report.distributor,
+        month
+      );
       setDeleteReportCount(preview.rowCount);
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Failed to preview delete');
@@ -355,7 +367,10 @@ export function ConsolidatedData() {
     setActionBusy(true);
     setActionError(null);
     try {
-      await ConsolidatedDataService.deleteReport(deleteReportTarget.distributor, month);
+      await ConsolidatedDataService.deleteReport(
+        deleteReportTarget.company || deleteReportTarget.distributor,
+        month
+      );
       setDeleteReportTarget(null);
       setDeleteReportCount(null);
       await loadData();
@@ -406,10 +421,57 @@ export function ConsolidatedData() {
           Consolidated Sales Data
         </h1>
         <p style={{ fontSize: '0.875rem', color: '#6B7280', margin: 0 }}>
-          Master repository of distributor sales reports extracted from Outlook emails
+          Master repository of distributor company sales — ACTIVE monthly reports (quantity in MT)
         </p>
       </div>
 
+      {/* View mode toggle */}
+      <div
+        style={{
+          display: 'flex',
+          gap: 4,
+          marginBottom: 16,
+          background: '#F3F4F6',
+          padding: 4,
+          borderRadius: 10,
+          width: 'fit-content',
+        }}
+      >
+        {(
+          [
+            { key: 'monthly' as const, label: 'Monthly' },
+            { key: 'quarterly' as const, label: 'Quarterly' },
+          ] as const
+        ).map(({ key, label }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setViewMode(key)}
+            style={{
+              padding: '8px 18px',
+              borderRadius: 7,
+              border: 'none',
+              background: viewMode === key ? 'white' : 'transparent',
+              color: viewMode === key ? BLUE : '#6B7280',
+              fontWeight: viewMode === key ? 700 : 500,
+              fontSize: '0.875rem',
+              cursor: 'pointer',
+              boxShadow: viewMode === key ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
+              fontFamily: 'inherit',
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {viewMode === 'quarterly' ? (
+        <QuarterlyView
+          quarters={filterOptions.quarters || []}
+          companies={filterOptions.companies?.length ? filterOptions.companies : filterOptions.distributors || []}
+        />
+      ) : (
+        <>
       <StatusBanner loading={loading} error={error} onRetry={() => loadData()} loadingText="Loading sales data…" />
 
       {loaded && (
@@ -605,7 +667,7 @@ export function ConsolidatedData() {
                             lineHeight: 1.35,
                           }}
                         >
-                          {report.distributor}
+                          {companyOf(report)}
                           <span style={{ color: '#9CA3AF', fontWeight: 500 }}> · </span>
                           <span style={{ color: '#374151', fontWeight: 600 }}>{month}</span>
                         </div>
@@ -669,7 +731,10 @@ export function ConsolidatedData() {
                               gap: '12px 20px',
                             }}
                           >
-                            <InfoCell label="Distributor" value={report.distributor} />
+                            <InfoCell label="Distributor Company" value={companyOf(report)} />
+                            {report.distributor && report.company && report.distributor !== report.company && (
+                              <InfoCell label="Representative" value={report.distributor} />
+                            )}
                             <InfoCell label="Company" value={report.company || '—'} />
                             <InfoCell label="Address" value={report.address || '—'} />
                             <InfoCell label="Phone" value={formatPhone(report.phone) || '—'} />
@@ -685,6 +750,15 @@ export function ConsolidatedData() {
                             <InfoCell label="Imported On" value={report.importedAt || report.emailReceivedAt || '—'} />
                             <InfoCell label="Confidence" value={formatConfidence(report.confidenceScore)} />
                           </div>
+                          <DataQualityWarning
+                            variant="full"
+                            confidenceScore={report.confidenceScore}
+                            incompleteRows={report.incompleteRows}
+                            importedRows={report.importedRows}
+                            expectedRows={report.expectedRows}
+                            validationSummary={report.validationSummary}
+                            validationMessage={report.validationMessage}
+                          />
                         </div>
 
                         {/* Nested sales table */}
@@ -714,7 +788,7 @@ export function ConsolidatedData() {
                                 </th>
                                 <th onClick={() => handleSort('quantity')} style={thStyle('right')}>
                                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                    Quantity <SortIcon col="quantity" />
+                                    Quantity (MT) <SortIcon col="quantity" />
                                   </div>
                                 </th>
                                 <th onClick={() => handleSort('openingStock')} style={thStyle('right')}>
@@ -950,7 +1024,7 @@ export function ConsolidatedData() {
       )}
 
       {/* Filter Drawer */}
-      {showFilters && (
+      {viewMode === 'monthly' && showFilters && (
         <div style={overlayStyle} onClick={() => setShowFilters(false)}>
           <div
             style={{
@@ -981,13 +1055,20 @@ export function ConsolidatedData() {
               </button>
             </div>
             <div style={{ padding: 20, overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <FilterSelect
-                label="Distributor"
-                value={filters.distributor}
-                options={filterOptions.distributors}
-                onChange={v => setFilters(f => ({ ...f, distributor: v }))}
-                selectStyle={selectStyle}
-                labelStyle={labelStyle}
+              <SearchAutocomplete
+                label="Distributor Company"
+                options={filterOptions.companies?.length ? filterOptions.companies : filterOptions.distributors}
+                value={filters.company || filters.distributor || 'All'}
+                allValue="All"
+                onChange={v =>
+                  setFilters(f => ({
+                    ...f,
+                    company: v === 'All' ? '' : v,
+                    distributor: '',
+                  }))
+                }
+                placeholder="Search company…"
+                width="100%"
               />
               <FilterSelect
                 label="Customer"
@@ -1005,13 +1086,14 @@ export function ConsolidatedData() {
                 selectStyle={selectStyle}
                 labelStyle={labelStyle}
               />
-              <FilterSelect
+              <SearchAutocomplete
                 label="Product"
-                value={filters.product}
                 options={filterOptions.products}
-                onChange={v => setFilters(f => ({ ...f, product: v }))}
-                selectStyle={selectStyle}
-                labelStyle={labelStyle}
+                value={filters.product || 'All'}
+                allValue="All"
+                onChange={v => setFilters(f => ({ ...f, product: v === 'All' ? '' : v }))}
+                placeholder="Search product…"
+                width="100%"
               />
               <FilterSelect
                 label="Company"
@@ -1140,8 +1222,16 @@ export function ConsolidatedData() {
             >
               Report Context
             </div>
-            <DetailRow label="Distributor" value={viewTarget.report.distributor} />
-            <DetailRow label="Company" value={viewTarget.report.company || '—'} />
+          <DetailRow label="Distributor Company" value={companyOf(viewTarget.report)} />
+            <DetailRow
+              label="Representative"
+              value={
+                viewTarget.report.distributor &&
+                viewTarget.report.distributor !== viewTarget.report.company
+                  ? viewTarget.report.distributor
+                  : '—'
+              }
+            />
             <DetailRow label="Reporting Month" value={reportingMonthOf(viewTarget.report)} />
             <DetailRow
               label="Sender"
@@ -1170,7 +1260,7 @@ export function ConsolidatedData() {
           <DetailRow label="Customer" value={viewTarget.line.customerName} />
           <DetailRow label="Segment" value={viewTarget.line.segment} />
           <DetailRow label="Product" value={viewTarget.line.product} />
-          <DetailRow label="Quantity" value={viewTarget.line.quantity} />
+          <DetailRow label="Quantity (MT)" value={viewTarget.line.quantity} />
           <DetailRow label="Opening Stock" value={viewTarget.line.openingStock ?? '—'} />
           <DetailRow label="Closing Stock" value={viewTarget.line.closingStock ?? '—'} />
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
@@ -1220,7 +1310,16 @@ export function ConsolidatedData() {
           <p style={{ margin: '0 0 12px', fontSize: '0.875rem', color: '#374151', lineHeight: 1.55 }}>
             This will permanently delete ALL sales records belonging to
           </p>
-          <DetailRow label="Distributor" value={deleteReportTarget.distributor} />
+          <DetailRow label="Distributor Company" value={companyOf(deleteReportTarget)} />
+          <DetailRow
+            label="Representative"
+            value={
+              deleteReportTarget.distributor &&
+              deleteReportTarget.distributor !== deleteReportTarget.company
+                ? deleteReportTarget.distributor
+                : '—'
+            }
+          />
           <DetailRow label="Reporting Month" value={reportingMonthOf(deleteReportTarget)} />
           <p style={{ margin: '12px 0', fontSize: '0.875rem', fontWeight: 700, color: '#111827' }}>
             {deleteReportCount === null
@@ -1250,6 +1349,8 @@ export function ConsolidatedData() {
             </button>
           </div>
         </Modal>
+      )}
+        </>
       )}
     </div>
   );

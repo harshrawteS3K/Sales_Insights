@@ -56,6 +56,8 @@ class OutlookSyncService:
 
     def to_frontend_emails(self, messages: List[EmailMessage]) -> List[FrontendEmailRecord]:
         """Map ORM emails to frontend EmailRecord shape."""
+        from app.utils.outlook_links import resolve_outlook_open_url
+
         return [
             FrontendEmailRecord(
                 id=msg.id,
@@ -64,9 +66,69 @@ class OutlookSyncService:
                 subject=msg.subject,
                 dateReceived=format_frontend_datetime(msg.received_at),
                 confidenceScore=msg.confidence_score if msg.confidence_score is not None else 0,
+                outlookWebLink=resolve_outlook_open_url(
+                    web_link=getattr(msg, "outlook_web_link", None),
+                    graph_message_id=msg.graph_message_id,
+                ),
+                graphMessageId=msg.graph_message_id,
+                mailbox=msg.mailbox,
             )
             for msg in messages
         ]
+
+    def resolve_outlook_open_link(self, email_id: int) -> Dict[str, Any]:
+        """
+        Resolve a navigable Outlook URL for an email processing history row.
+
+        Verifies the Graph message still exists when credentials allow.
+        """
+        from app.exceptions import NotFoundError
+        from app.utils.outlook_links import resolve_outlook_open_url
+
+        email = self.emails.get_or_raise(email_id)
+        url = resolve_outlook_open_url(
+            web_link=getattr(email, "outlook_web_link", None),
+            graph_message_id=email.graph_message_id,
+        )
+        if not url:
+            raise NotFoundError(
+                "Original Outlook email is no longer available.",
+                details={"email_id": email_id},
+            )
+
+        # Prefer live Graph webLink; refresh stored link when possible
+        try:
+            live = self.graph.get_message(email.graph_message_id, mailbox=email.mailbox)
+            live_link = (live or {}).get("webLink") or url
+            if live_link and live_link != getattr(email, "outlook_web_link", None):
+                email.outlook_web_link = live_link
+                self.db.flush()
+            return {
+                "success": True,
+                "url": live_link,
+                "available": True,
+                "message": None,
+            }
+        except GraphAPIError as exc:
+            details = str(exc.details or "") if hasattr(exc, "details") else str(exc)
+            status_hint = str(exc)
+            if "404" in status_hint or "ErrorItemNotFound" in details or "not found" in details.lower():
+                raise NotFoundError(
+                    "Original Outlook email is no longer available.",
+                    details={"email_id": email_id, "graph_message_id": email.graph_message_id},
+                ) from exc
+            # Auth/permission issues: still return stored link so user can try
+            logger.warning(
+                "Outlook link verify failed; returning stored URL | email_id={} | error={}",
+                email_id,
+                exc,
+            )
+            return {
+                "success": True,
+                "url": url,
+                "available": True,
+                "message": "Could not verify message in Graph; opening stored Outlook link.",
+            }
 
     def delete_email_record(self, email_id: int, *, actor: str) -> Dict[str, Any]:
         """
@@ -366,6 +428,10 @@ class OutlookSyncService:
                 existing.process_status,
                 mark_as_read,
             )
+            web_link = (message.get("webLink") or "").strip()
+            if web_link and existing.outlook_web_link != web_link:
+                existing.outlook_web_link = web_link
+                self.db.flush()
             mark_ok: Optional[bool] = None
             if mark_as_read:
                 mark_ok = self._ensure_marked_read(
@@ -412,6 +478,7 @@ class OutlookSyncService:
             }
 
         sender_name, sender_email = GraphClient.extract_sender(message)
+        web_link = (message.get("webLink") or "").strip() or None
         email = existing or EmailMessage(
             graph_message_id=graph_id,
             conversation_id=message.get("conversationId"),
@@ -426,11 +493,15 @@ class OutlookSyncService:
             process_status=EmailProcessStatus.UNREAD.value,
             confidence_score=None,
             mailbox=mailbox,
+            outlook_web_link=web_link,
         )
         if existing is None:
             email = self.emails.create(email)
-        elif not email.internet_message_id and message.get("internetMessageId"):
-            email.internet_message_id = message.get("internetMessageId")
+        else:
+            if web_link and existing.outlook_web_link != web_link:
+                email.outlook_web_link = web_link
+            if not email.internet_message_id and message.get("internetMessageId"):
+                email.internet_message_id = message.get("internetMessageId")
             self.db.flush()
 
         attachments = self.graph.list_attachments(graph_id, mailbox=mailbox)

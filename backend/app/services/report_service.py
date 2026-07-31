@@ -25,7 +25,8 @@ from app.utils.datetime_utils import format_report_date, utc_now
 from app.utils.db_locks import acquire_report_replace_lock
 from app.utils.files import get_upload_subdir, save_upload_file
 from app.utils.hashing import sha256_file
-from app.utils.reporting_month import normalize_reporting_month
+from app.utils.reporting_month import months_equivalent, normalize_reporting_month
+from app.utils.validation_summary import build_validation_summary
 
 logger = get_logger(__name__)
 
@@ -79,7 +80,7 @@ class ReportService:
         return self.reports.get_or_raise(report_id)
 
     def create_report(self, payload: ReportCreate, *, actor: str = "system") -> Report:
-        """Create a manual report metadata row (ghost reports blocked)."""
+        """Create a manual report metadata row (ghost reports blocked; one-active rule)."""
         if payload.distributor_id is None:
             raise ValidationAppError(
                 "distributor_id is required — refusing to create a ghost report without a Distributor"
@@ -89,8 +90,20 @@ class ReportService:
             raise ValidationAppError(
                 "reporting_month is required — refusing to create a ghost report without a Reporting Month"
             )
-        # Ensure distributor exists and is active
-        self.distributors.get_or_raise(payload.distributor_id)
+        distributor = self.distributors.get_or_raise(payload.distributor_id)
+        company = distributor.company or distributor.name
+
+        # Enforce one active report per Distributor Company + Reporting Month
+        acquire_report_replace_lock(
+            self.db, payload.distributor_id, reporting_month, company=company
+        )
+        self._retire_matching_active_reports(
+            distributor_id=payload.distributor_id,
+            reporting_month=reporting_month,
+            distributor_name=company,
+            actor=actor,
+            company=company,
+        )
 
         entity = Report(
             name=payload.name,
@@ -109,7 +122,10 @@ class ReportService:
             AuditTrailCreate(
                 user_name=actor,
                 action=AuditAction.CREATED,
-                details=f"Created report {created.name}",
+                details=(
+                    f"Created report {created.name} | distributor={distributor.name} | "
+                    f"reporting_month={reporting_month}"
+                ),
                 report_name=created.name,
                 entity_type="report",
                 entity_id=str(created.id),
@@ -124,7 +140,7 @@ class ReportService:
         *,
         actor: str = "system",
     ) -> Report:
-        """Update report metadata."""
+        """Update report metadata (preserves one-active business key)."""
         report = self.reports.get_or_raise(report_id)
         data = payload.model_dump(exclude_unset=True)
         if "categories" in data and data["categories"] is not None:
@@ -133,6 +149,35 @@ class ReportService:
         if "status" in data and data["status"] is not None:
             status = data["status"]
             data["status"] = status.value if hasattr(status, "value") else status
+
+        if "reporting_month" in data and data["reporting_month"] is not None:
+            data["reporting_month"] = normalize_reporting_month(data["reporting_month"])
+
+        new_distributor_id = data.get("distributor_id", report.distributor_id)
+        new_month = data.get("reporting_month", report.reporting_month)
+        key_changed = (
+            new_distributor_id != report.distributor_id
+            or normalize_reporting_month(new_month or "")
+            != normalize_reporting_month(report.reporting_month or "")
+        )
+        if key_changed and new_distributor_id and new_month:
+            distributor = self.distributors.get_or_raise(int(new_distributor_id))
+            company = distributor.company or distributor.name
+            acquire_report_replace_lock(
+                self.db, int(new_distributor_id), str(new_month), company=company
+            )
+            for existing in self.reports.list_active_for_company(company):
+                if existing.id == report.id:
+                    continue
+                if months_equivalent(existing.reporting_month, new_month):
+                    self._retire_active_report(
+                        existing,
+                        actor=actor,
+                        distributor_name=company,
+                        reporting_month=normalize_reporting_month(new_month),
+                        reason="Report Replacement (metadata update)",
+                    )
+
         updated = self.reports.update(report, data)
         self.audit.log(
             AuditTrailCreate(
@@ -170,12 +215,13 @@ class ReportService:
         self,
         parsed_rows: List[ParsedSalesRow],
         parse_result: SalesParseResult,
-    ) -> Tuple[str, str, int, dict[str, int]]:
+    ) -> Tuple[str, str, str, int, dict[str, int]]:
         """
-        Resolve Distributor + Reporting Month business key.
+        Resolve Distributor Company (business entity) + Reporting Month.
 
         Raises ValidationAppError when identity cannot be established (ghost prevention).
-        Returns ``(distributor_name, reporting_month, distributor_id, distributor_ids_map)``.
+        Returns
+        ``(company, representative_name, reporting_month, distributor_id, distributor_ids_map)``.
         """
         if not parsed_rows or parse_result.imported_rows <= 0:
             raise ValidationAppError(
@@ -233,11 +279,18 @@ class ReportService:
             )
 
         details = parse_result.distributor_details or {}
-        distributor = self.distributors.get_or_create_by_name(
-            distributor_name,
-            company=details.get("company") or parsed_rows[0].company,
-            address=details.get("address") or parsed_rows[0].address,
-            phone=details.get("phone") or parsed_rows[0].phone,
+        company_raw = (details.get("company") or "").strip()
+        if not company_raw and parsed_rows:
+            company_raw = (parsed_rows[0].company or "").strip()
+        # Company is the business entity; representative is metadata
+        representative = distributor_name
+        company_key = company_raw or representative
+
+        distributor = self.distributors.get_or_create_by_company(
+            company_key,
+            representative_name=representative,
+            address=details.get("address") or (parsed_rows[0].address if parsed_rows else None),
+            phone=details.get("phone") or (parsed_rows[0].phone if parsed_rows else None),
         )
         distributor_ids: dict[str, int] = {distributor_name: distributor.id}
         for name in distributors:
@@ -246,7 +299,13 @@ class ReportService:
             key = (row.distributor or "").strip() or distributor_name
             distributor_ids[key] = distributor.id
 
-        return distributor_name, reporting_month, distributor.id, distributor_ids
+        return (
+            distributor.company or company_key,
+            representative,
+            reporting_month,
+            distributor.id,
+            distributor_ids,
+        )
 
     def _retire_active_report(
         self,
@@ -291,22 +350,28 @@ class ReportService:
         reporting_month: str,
         distributor_name: str,
         actor: str,
+        company: Optional[str] = None,
     ) -> List[int]:
         """
-        Soft-delete EVERY active report for this Distributor whose Reporting Month
-        normalizes to the same business key (covers datetime vs ``July 2026`` drift).
+        Soft-delete EVERY active report for this Distributor Company + Reporting Month.
 
-        Also retires legacy quarter-format reports (``Q2 FY26``) when the new
-        report uses official Month YYYY format — quarters are obsolete in the
-        finalized APCOTEX template.
+        Scans all distributor rows that share the same company (handles legacy
+        duplicate representative-based master rows). Quarters are retired when
+        a Month YYYY report arrives.
         """
         import re
 
         month = normalize_reporting_month(reporting_month)
         retired_ids: List[int] = []
         is_month_yyyy = bool(re.match(r"^[A-Za-z]+ \d{4}$", month))
+        company_key = (company or "").strip() or distributor_name
 
-        for existing in self.reports.list_active_for_distributor(distributor_id):
+        candidates = self.reports.list_active_for_company(company_key)
+        if not candidates:
+            # Fallback: same distributor_id only
+            candidates = self.reports.list_active_for_distributor(distributor_id)
+
+        for existing in candidates:
             existing_month = normalize_reporting_month(existing.reporting_month)
             same_key = existing_month.casefold() == month.casefold()
             legacy_quarter = bool(
@@ -320,10 +385,10 @@ class ReportService:
                 else "Legacy Quarter Retired (Reporting Month workflow)"
             )
             logger.info(
-                "Report Replacement match | distributor_id={} | distributor={} | "
+                "Report Replacement match | company={} | distributor_id={} | "
                 "reporting_month={} | retiring_report_id={} | existing_month={!r} | reason={}",
-                distributor_id,
-                distributor_name,
+                company_key,
+                existing.distributor_id,
                 month,
                 existing.id,
                 existing.reporting_month,
@@ -332,22 +397,22 @@ class ReportService:
             self._retire_active_report(
                 existing,
                 actor=actor,
-                distributor_name=distributor_name,
+                distributor_name=company_key,
                 reporting_month=month,
                 reason=reason,
             )
             retired_ids.append(existing.id)
         if retired_ids:
             logger.info(
-                "Report Replacement complete | distributor={} | reporting_month={} | retired_ids={}",
-                distributor_name,
+                "Report Replacement complete | company={} | reporting_month={} | retired_ids={}",
+                company_key,
                 month,
                 retired_ids,
             )
         else:
             logger.info(
-                "Report Replacement | no prior active report | distributor={} | reporting_month={}",
-                distributor_name,
+                "Report Replacement | no prior active report | company={} | reporting_month={}",
+                company_key,
                 month,
             )
         return retired_ids
@@ -400,13 +465,15 @@ class ReportService:
         parsed_rows = parse_result.rows
         quality_score = parse_result.quality_score
 
-        distributor_name, reporting_month, primary_distributor_id, distributor_ids = (
+        company, representative, reporting_month, primary_distributor_id, distributor_ids = (
             self._resolve_business_identity(parsed_rows, parse_result)
         )
 
         logger.info(
-            "Business identity resolved | distributor={} | reporting_month={} | expected={} | imported={} | quality={}",
-            distributor_name,
+            "Business identity resolved | company={} | representative={} | reporting_month={} | "
+            "expected={} | imported={} | quality={}",
+            company,
+            representative,
             reporting_month,
             parse_result.expected_rows,
             parse_result.imported_rows,
@@ -419,20 +486,26 @@ class ReportService:
                 parse_result.imported_rows,
             )
 
-        # Serialize concurrent replace for the same Distributor + Reporting Month.
-        acquire_report_replace_lock(self.db, primary_distributor_id, reporting_month)
+        # Serialize concurrent replace for the same Company + Reporting Month.
+        acquire_report_replace_lock(
+            self.db,
+            primary_distributor_id,
+            reporting_month,
+            company=company,
+        )
 
         previous_ids = self._retire_matching_active_reports(
             distributor_id=primary_distributor_id,
             reporting_month=reporting_month,
-            distributor_name=distributor_name,
+            distributor_name=company,
             actor=actor,
+            company=company,
         )
         previous_report_id: Optional[int] = previous_ids[0] if previous_ids else None
         if previous_ids:
             logger.info(
-                "Report replacement | distributor={} | reporting_month={} | retired_ids={}",
-                distributor_name,
+                "Report replacement | company={} | reporting_month={} | retired_ids={}",
+                company,
                 reporting_month,
                 previous_ids,
             )
@@ -486,6 +559,13 @@ class ReportService:
                     "confidence_breakdown": parse_result.confidence_breakdown,
                     "distributor_details": parse_result.distributor_details,
                     "replaced_report_id": previous_report_id,
+                    "validation_summary": build_validation_summary(
+                        expected_rows=parse_result.expected_rows,
+                        imported_rows=parse_result.imported_rows,
+                        incomplete_rows=parse_result.incomplete_rows,
+                        row_errors=parse_result.row_errors or [],
+                        confidence_score=quality_score,
+                    ),
                 },
             },
             distributor_id=primary_distributor_id,
@@ -524,7 +604,7 @@ class ReportService:
                         action=AuditAction.REPLACED,
                         details=(
                             f"Report Replacement complete | previous_report_id={previous_report_id} | "
-                            f"new_report_id={report.id} | distributor={distributor_name} | "
+                            f"new_report_id={report.id} | company={company} | representative={representative} | "
                             f"reporting_month={reporting_month} | sender={report.sender_email} | "
                             f"records={inserted} | confidence={quality_score}"
                         ),
@@ -601,6 +681,24 @@ class ReportService:
         result: List[FrontendReport] = []
         for report in reports:
             categories = report.categories or {}
+            extraction = categories.get("extraction") if isinstance(categories, dict) else None
+            validation = None
+            incomplete = None
+            imported = None
+            expected = None
+            validation_message = None
+            if isinstance(extraction, dict):
+                validation = extraction.get("validation_summary")
+                incomplete = extraction.get("incomplete_rows")
+                imported = extraction.get("imported_rows")
+                expected = extraction.get("expected_rows")
+                if isinstance(validation, dict):
+                    # Keep confidence on summary for older reports that lack it
+                    if validation.get("confidence_score") is None and report.confidence_score is not None:
+                        validation = {**validation, "confidence_score": report.confidence_score}
+                    from app.utils.validation_summary import validation_user_message
+
+                    validation_message = validation_user_message(validation)
             result.append(
                 FrontendReport(
                     id=str(report.id),
@@ -612,6 +710,12 @@ class ReportService:
                         products=list(categories.get("products") or []),
                         applications=list(categories.get("applications") or []),
                     ),
+                    confidenceScore=report.confidence_score,
+                    expectedRows=expected,
+                    importedRows=imported,
+                    incompleteRows=incomplete,
+                    validationSummary=validation if isinstance(validation, dict) else None,
+                    validationMessage=validation_message,
                 )
             )
         return result
@@ -628,10 +732,10 @@ class ReportService:
             self.db.scalars(
                 select(distinct(SalesRecord.segment))
                 .select_from(SalesRecord)
-                .outerjoin(Report, Report.id == SalesRecord.report_id)
+                .join(Report, Report.id == SalesRecord.report_id)
                 .where(
                     SalesRecord.is_deleted.is_(False),
-                    or_(Report.id.is_(None), Report.is_deleted.is_(False)),
+                    Report.is_deleted.is_(False),
                     SalesRecord.segment.is_not(None),
                     SalesRecord.segment != "",
                 )
