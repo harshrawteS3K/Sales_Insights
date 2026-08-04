@@ -168,6 +168,17 @@ export interface QuarterlyProductRow {
   customerCount: number;
 }
 
+export interface QuarterlyDetailRow {
+  srNo: number;
+  customer: string;
+  segment: string;
+  product: string;
+  quantity: number;
+  quantityDisplay: string;
+  unit: string;
+  contributionPct: number;
+}
+
 export interface QuarterlyReportResponse {
   success: boolean;
   period: { label: string; kind: string; year?: number | null; months: string[] };
@@ -181,7 +192,13 @@ export interface QuarterlyReportResponse {
   monthsSubmitted: string[];
   monthsExpected: string[];
   isPartial: boolean;
-  products: QuarterlyProductRow[];
+  items: QuarterlyDetailRow[];
+  totalRecords: number;
+  totalPages: number;
+  currentPage: number;
+  pageSize: number;
+  /** @deprecated use items */
+  products?: QuarterlyProductRow[];
 }
 
 export interface ConsolidatedRecordsPage {

@@ -774,13 +774,155 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             )
         return results
 
+    def _quarter_company_where(self, months: Sequence[str], company: str):
+        """Shared ACTIVE filters for company + quarter months."""
+        return (
+            *self._active_report_sales_where(),
+            Distributor.is_deleted.is_(False),
+            func.lower(Distributor.company) == company.strip().lower(),
+            or_(
+                Report.reporting_month.in_(list(months)),
+                SalesRecord.period.in_(list(months)),
+            ),
+        )
+
+    def quarterly_customer_detail(
+        self,
+        months: Sequence[str],
+        *,
+        company: str,
+        search: Optional[str] = None,
+        sort_by: str = "quantity",
+        sort_order: str = "desc",
+        page: int = 1,
+        page_size: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        Customer × Segment × Product SQL aggregation for one company + quarter.
+
+        Filtering, sorting, and pagination run in the database.
+        Contribution % uses the full quarter total (search does not change the denominator).
+        """
+        page = max(1, int(page or 1))
+        page_size = max(1, min(int(page_size or 10), 100))
+        empty = {
+            "items": [],
+            "totalRecords": 0,
+            "totalPages": 0,
+            "currentPage": page,
+            "pageSize": page_size,
+            "quarterTotalQty": 0.0,
+        }
+        if not months or not company:
+            return empty
+
+        scope = self._quarter_company_where(months, company)
+
+        # Full-quarter total for Contribution % (never filtered by search)
+        total_q = (
+            select(func.coalesce(func.sum(SalesRecord.quantity), 0))
+            .select_from(SalesRecord)
+            .join(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .where(*scope)
+        )
+        quarter_total = float(self.db.scalar(total_q) or 0)
+
+        qty_expr = func.coalesce(func.sum(SalesRecord.quantity), 0)
+        grouped = (
+            select(
+                SalesRecord.customer_name.label("customer"),
+                SalesRecord.segment.label("segment"),
+                SalesRecord.product.label("product"),
+                qty_expr.label("qty"),
+            )
+            .select_from(SalesRecord)
+            .join(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .where(*scope)
+        )
+
+        term = (search or "").strip()
+        if term:
+            pattern = f"%{term}%"
+            grouped = grouped.where(
+                or_(
+                    SalesRecord.customer_name.ilike(pattern),
+                    SalesRecord.segment.ilike(pattern),
+                    SalesRecord.product.ilike(pattern),
+                )
+            )
+
+        grouped = grouped.group_by(
+            SalesRecord.customer_name,
+            SalesRecord.segment,
+            SalesRecord.product,
+        )
+
+        subq = grouped.subquery("q_detail")
+        total_records = int(
+            self.db.scalar(select(func.count()).select_from(subq)) or 0
+        )
+        total_pages = (total_records + page_size - 1) // page_size if total_records else 0
+        if total_pages and page > total_pages:
+            page = total_pages
+
+        sort_key = (sort_by or "quantity").strip().lower().replace("-", "").replace("_", "").replace("%", "")
+        sort_cols = {
+            "customer": subq.c.customer,
+            "segment": subq.c.segment,
+            "product": subq.c.product,
+            "quantity": subq.c.qty,
+            "qty": subq.c.qty,
+            "contribution": subq.c.qty,
+            "contributionpct": subq.c.qty,
+        }
+        order_col = sort_cols.get(sort_key, subq.c.qty)
+        descending = (sort_order or "desc").strip().lower() != "asc"
+        order_expr = order_col.desc() if descending else order_col.asc()
+        secondary = (subq.c.customer.asc(), subq.c.product.asc())
+
+        offset = (page - 1) * page_size
+        page_q = (
+            select(subq.c.customer, subq.c.segment, subq.c.product, subq.c.qty)
+            .order_by(order_expr, *secondary)
+            .offset(offset)
+            .limit(page_size)
+        )
+        rows = self.db.execute(page_q).all()
+
+        items: List[Dict[str, Any]] = []
+        for idx, row in enumerate(rows):
+            qty = float(row.qty or 0)
+            items.append(
+                {
+                    "srNo": offset + idx + 1,
+                    "customer": row.customer or "",
+                    "segment": row.segment or "",
+                    "product": row.product or "",
+                    "quantity": qty,
+                    "contributionPct": (
+                        round((qty / quarter_total) * 100, 2) if quarter_total else 0.0
+                    ),
+                }
+            )
+
+        return {
+            "items": items,
+            "totalRecords": total_records,
+            "totalPages": total_pages,
+            "currentPage": page,
+            "pageSize": page_size,
+            "quarterTotalQty": quarter_total,
+        }
+
     def quarterly_product_breakdown(
         self,
         months: Sequence[str],
         *,
         company: str,
     ) -> List[Dict[str, Any]]:
-        """Product-level SQL aggregation for one company across quarter months."""
+        """Legacy product rollup — prefer ``quarterly_customer_detail`` for detail UI."""
         if not months or not company:
             return []
         query = (
@@ -792,15 +934,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             .select_from(SalesRecord)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .join(Report, Report.id == SalesRecord.report_id)
-            .where(
-                *self._active_report_sales_where(),
-                Distributor.is_deleted.is_(False),
-                func.lower(Distributor.company) == company.strip().lower(),
-                or_(
-                    Report.reporting_month.in_(list(months)),
-                    SalesRecord.period.in_(list(months)),
-                ),
-            )
+            .where(*self._quarter_company_where(months, company))
             .group_by(SalesRecord.product)
             .order_by(func.sum(SalesRecord.quantity).desc())
         )

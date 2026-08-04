@@ -49,20 +49,24 @@ class ExcelTemplateGenerator:
         periods: Optional[Sequence[str]] = None,
     ) -> Path:
         """
-        Create a distributor sales template workbook.
+        Create a blank distributor sales template workbook.
 
         Layout:
-          Rows 1–5  Distributor Details (Name, Company, Address, Phone, Reporting Month)
+          Rows 1–5  Distributor Details labels with EMPTY values
+                    (Name, Company, Address, Phone, Reporting Month)
           Row 7     Sales table headers
-          Row 8+    Sales data
+          Row 8+    Sales data entry rows (Sr. No. only; all other cells blank)
 
-        Customer and Product columns use master-data dropdowns (hidden `_lists` sheet).
+        Customer / Product / Segment / Reporting Month columns use master-data
+        dropdowns (hidden ``_lists`` sheet). Distributor header fields are
+        never prefilled from the database or prior uploads.
         """
         started = time.perf_counter()
         segment_values = list(segments) if segments is not None else list(DEFAULT_SEGMENTS)
         customer_values = list(customers) if customers else ["Sample Customer"]
         product_values = list(products) if products else ["SAMPLE-PRODUCT"]
-        distributor_values = list(distributors) if distributors else []
+        # Deprecated: do not prefill Name of Distributor from this list
+        _ = distributors
         month_values = list(periods) if periods else [
             "January 2026",
             "February 2026",
@@ -112,12 +116,8 @@ class ExcelTemplateGenerator:
         for row_idx, label in detail_labels:
             cell = sheet.cell(row=row_idx, column=1, value=label)
             cell.font = label_font
-            sheet.cell(row=row_idx, column=2, value="")
-
-        if distributor_values:
-            sheet.cell(row=1, column=2, value=distributor_values[0])
-        if month_values:
-            sheet.cell(row=5, column=2, value=month_values[0])
+            # Always blank — never prefill from DB, user, or prior uploads
+            sheet.cell(row=row_idx, column=2, value=None)
 
         table_header_row = 7
         for col_idx, header in enumerate(self.HEADERS, start=1):

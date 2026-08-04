@@ -49,6 +49,11 @@ export const ConsolidatedDataService = {
   getQuarterlyReport: async (params: {
     quarter: string;
     company: string;
+    page?: number;
+    page_size?: number;
+    search?: string;
+    sort_by?: string;
+    sort_order?: 'asc' | 'desc';
   }): Promise<QuarterlyReportResponse> => {
     return apiRequest<QuarterlyReportResponse>('/consolidated-data/quarterly/report', {
       params,

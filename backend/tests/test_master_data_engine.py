@@ -146,10 +146,65 @@ async def test_scenario3_generate_template_dropdowns(db: Session, tmp_path: Path
         "Quantity",
     ]
     assert len(sheet.data_validations.dataValidation) >= 2
+    # Distributor header values must always be blank
+    for row in range(1, 6):
+        assert sheet.cell(row, 2).value in (None, "")
 
 
 @pytest.mark.asyncio
-async def test_scenario4_customer_master_replace(db: Session, tmp_path: Path):
+async def test_generated_template_never_prefills_distributor_header(
+    db: Session, tmp_path: Path
+):
+    """
+    Regression: template must stay blank even when distributors / periods exist in DB
+    and even if a distributors list is passed into the generator.
+    """
+    from app.models.distributor import Distributor
+    from app.repositories.distributor_repository import DistributorRepository
+
+    cust_path = _write_customer_master(tmp_path / "c.xlsx", ["Cust A"])
+    prod_path = _write_product_master(tmp_path / "p.xlsx", [("PAPER", "PROD-1")])
+    await CustomerMasterService(db).upload_and_replace(_Upload(cust_path), actor="test")
+    await ProductMasterService(db).upload_and_replace(_Upload(prod_path), actor="test")
+
+    # Seed a distributor that previously would have been written into B1
+    DistributorRepository(db).create(
+        Distributor(name="Harsh", company="Harsh Co", address="Pune", phone="999")
+    )
+    db.flush()
+
+    out = tmp_path / "blank_template.xlsx"
+    ExcelTemplateGenerator().generate(
+        customers=["Cust A"],
+        products=["PROD-1"],
+        distributors=["Harsh", "Someone Else"],
+        periods=["August 2026", "July 2026"],
+        output_path=out,
+    )
+    sheet = load_workbook(out)["Sales Report"]
+    assert sheet.cell(1, 1).value == "Name of Distributor"
+    assert sheet.cell(2, 1).value == "Company Name"
+    assert sheet.cell(3, 1).value == "Address"
+    assert sheet.cell(4, 1).value == "Phone No"
+    assert sheet.cell(5, 1).value == "Reporting Month"
+    for row in range(1, 6):
+        assert sheet.cell(row, 2).value in (None, ""), (
+            f"Row {row} col B must be blank, got {sheet.cell(row, 2).value!r}"
+        )
+
+    # Service path must also produce a blank header
+    result = TemplateGenerationService(db).generate(actor="test")
+    assert result.success
+    path, _ = TemplateGenerationService(db).resolve_download_path(
+        preferred_name=result.file_name
+    )
+    svc_sheet = load_workbook(path)["Sales Report"]
+    for row in range(1, 6):
+        assert svc_sheet.cell(row, 2).value in (None, "")
+    # Sales entry cells (except Sr. No.) stay blank
+    for col in range(2, 8):
+        assert svc_sheet.cell(8, col).value in (None, "")
+
     svc = CustomerMasterService(db)
     await svc.upload_and_replace(
         _Upload(_write_customer_master(tmp_path / "c1.xlsx", ["Old A", "Old B"])),

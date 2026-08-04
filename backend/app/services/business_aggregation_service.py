@@ -53,7 +53,7 @@ class BusinessAggregationService:
         Case 1 — All companies (or filtered): one summary row per company.
 
         Case 2 — When ``company`` is set: still returns summary list (0–1 rows)
-        plus callers may request ``quarterly_report`` for product detail.
+        plus callers may request ``quarterly_report`` for customer-wise detail.
         """
         try:
             spec = resolve_period(
@@ -110,11 +110,17 @@ class BusinessAggregationService:
         quarter_label: Optional[str] = None,
         quarter: Optional[int] = None,
         year: Optional[int] = None,
+        page: int = 1,
+        page_size: int = 10,
+        search: Optional[str] = None,
+        sort_by: str = "quantity",
+        sort_order: str = "desc",
     ) -> Dict[str, Any]:
         """
         Case 2 — Virtual Quarterly Report for one Distributor Company.
 
-        Aggregates ACTIVE monthly reports for the quarter months via SQL.
+        Header KPIs from company summary; detail grid is Customer × Segment × Product
+        with server-side pagination, search, and sorting over ACTIVE monthly data.
         """
         if not company or not company.strip():
             raise ValidationAppError("Distributor Company is required for quarterly report")
@@ -129,18 +135,27 @@ class BusinessAggregationService:
             raise ValidationAppError(str(exc)) from exc
 
         company_name = company.strip()
+        empty_page = {
+            "items": [],
+            "totalRecords": 0,
+            "totalPages": 0,
+            "currentPage": max(1, int(page or 1)),
+            "pageSize": max(1, min(int(page_size or 10), 100)),
+        }
+        period_block = {
+            "label": spec.label,
+            "kind": spec.kind,
+            "year": spec.year,
+            "months": spec.month_list,
+        }
+
         summary_rows = self.sales.quarterly_company_summary(
             spec.month_list,
             company=company_name,
         )
         if not summary_rows:
             return {
-                "period": {
-                    "label": spec.label,
-                    "kind": spec.kind,
-                    "year": spec.year,
-                    "months": spec.month_list,
-                },
+                "period": period_block,
                 "company": company_name,
                 "unit": QUANTITY_UNIT,
                 "totalQuantity": 0.0,
@@ -152,31 +167,34 @@ class BusinessAggregationService:
                 "monthsExpected": spec.month_list,
                 "isPartial": True,
                 "products": [],
+                **empty_page,
             }
 
         header = summary_rows[0]
-        products = self.sales.quarterly_product_breakdown(
+        detail = self.sales.quarterly_customer_detail(
             spec.month_list,
             company=company_name,
+            search=search,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
         )
-        product_rows = [
+        items = [
             {
-                "product": p["product"],
-                "quantity": p["qty"],
-                "quantityDisplay": format_quantity(p["qty"]),
+                "srNo": row["srNo"],
+                "customer": row["customer"],
+                "segment": row["segment"],
+                "product": row["product"],
+                "quantity": row["quantity"],
+                "quantityDisplay": format_quantity(row["quantity"]),
                 "unit": QUANTITY_UNIT,
-                "contributionPct": p["contributionPct"],
-                "customerCount": p["customers"],
+                "contributionPct": row["contributionPct"],
             }
-            for p in products
+            for row in detail["items"]
         ]
         return {
-            "period": {
-                "label": spec.label,
-                "kind": spec.kind,
-                "year": spec.year,
-                "months": spec.month_list,
-            },
+            "period": period_block,
             "company": header["company"],
             "unit": QUANTITY_UNIT,
             "totalQuantity": header["qty"],
@@ -187,5 +205,10 @@ class BusinessAggregationService:
             "monthsSubmitted": header["months"],
             "monthsExpected": spec.month_list,
             "isPartial": len(header["months"]) < len(spec.month_list),
-            "products": product_rows,
+            "items": items,
+            "totalRecords": detail["totalRecords"],
+            "totalPages": detail["totalPages"],
+            "currentPage": detail["currentPage"],
+            "pageSize": detail["pageSize"],
+            "products": [],
         }

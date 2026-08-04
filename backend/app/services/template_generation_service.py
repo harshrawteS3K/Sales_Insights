@@ -14,7 +14,6 @@ from app.core.logging import get_logger
 from app.enums import AuditAction
 from app.exceptions import ValidationAppError
 from app.integrations.excel.template_generator import ExcelTemplateGenerator
-from app.repositories.distributor_repository import DistributorRepository
 from app.repositories.master_repository import CustomerMasterRepository, ProductMasterRepository
 from app.repositories.sales_record_repository import SalesRecordRepository
 from app.schemas.audit import AuditTrailCreate
@@ -32,7 +31,6 @@ class TemplateGenerationService:
         self.db = db
         self.customers = CustomerMasterRepository(db)
         self.products = ProductMasterRepository(db)
-        self.distributors = DistributorRepository(db)
         self.sales = SalesRecordRepository(db)
         self.templates = ExcelTemplateGenerator()
         self.audit = AuditService(db)
@@ -69,7 +67,7 @@ class TemplateGenerationService:
             | set(self.products.list_segments())
             | set(DEFAULT_SEGMENTS)
         )
-        distributors = [d.name for d in self.distributors.list(limit=1000)]
+        # Reporting Month dropdown options only — never prefill distributor header fields
         periods = self.sales.distinct_periods() or None
 
         version = self._version()
@@ -82,7 +80,6 @@ class TemplateGenerationService:
             customers=customer_names,
             products=product_codes,
             segments=segments,
-            distributors=distributors,
             periods=periods,
             output_path=output,
         )

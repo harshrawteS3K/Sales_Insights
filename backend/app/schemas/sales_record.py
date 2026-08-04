@@ -158,7 +158,7 @@ class QuarterlySummaryResponse(BaseModel):
 
 
 class QuarterlyProductRow(BaseModel):
-    """Product line in a virtual quarterly report."""
+    """Legacy product line (kept for older clients). Prefer QuarterlyDetailRow."""
 
     product: str
     quantity: float
@@ -166,6 +166,19 @@ class QuarterlyProductRow(BaseModel):
     unit: str = "MT"
     contributionPct: float = 0
     customerCount: int = 0
+
+
+class QuarterlyDetailRow(BaseModel):
+    """Customer × Segment × Product line in a virtual quarterly report."""
+
+    srNo: int
+    customer: str
+    segment: str
+    product: str
+    quantity: float
+    quantityDisplay: str
+    unit: str = "MT"
+    contributionPct: float = 0
 
 
 class QuarterlyReportResponse(BaseModel):
@@ -183,6 +196,12 @@ class QuarterlyReportResponse(BaseModel):
     monthsSubmitted: List[str] = Field(default_factory=list)
     monthsExpected: List[str] = Field(default_factory=list)
     isPartial: bool = False
+    items: List[QuarterlyDetailRow] = Field(default_factory=list)
+    totalRecords: int = 0
+    totalPages: int = 0
+    currentPage: int = 1
+    pageSize: int = 10
+    # Deprecated: empty for new clients; use ``items``
     products: List[QuarterlyProductRow] = Field(default_factory=list)
 
 

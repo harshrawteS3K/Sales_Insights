@@ -80,9 +80,91 @@ def test_quarterly_totals_equal_sum_of_months(db: Session, tmp_path: Path):
 
     report = engine.quarterly_report(company=company, quarter_label="Q1 2098")
     assert report["totalQuantity"] == 60.0
-    assert report["products"][0]["product"] == "ProdA"
-    assert report["products"][0]["quantity"] == 60.0
     assert report["unit"] == "MT"
+    assert report["totalRecords"] == 1
+    assert report["items"][0]["product"] == "ProdA"
+    assert report["items"][0]["customer"] == "Cust"
+    assert report["items"][0]["quantity"] == 60.0
+    assert report["items"][0]["contributionPct"] == 100.0
+
+
+def test_quarterly_customer_detail_pagination_search_sort(db: Session, tmp_path: Path):
+    """Customer×Segment×Product grid: page/search/sort at SQL level."""
+    company = "Detail Grid Co Unique"
+    rep = "Detail Grid Rep"
+    # Distinct customers 2–12; Cust1/Prod1 appears in Jul+Aug → 30 MT
+    rows_jul = [(1, "Reliance Alpha", "Paper", "Prod1", 10, 1, 2)] + [
+        (i, f"Cust{i}", "Paper", f"Prod{i}", 10, 1, 2) for i in range(2, 12)
+    ]
+    rows_aug = [(1, "Reliance Alpha", "Paper", "Prod1", 20, 1, 2)]
+    for month, rows in [("July 2095", rows_jul), ("August 2095", rows_aug)]:
+        path = build_official_workbook(
+            tmp_path / f"{month.replace(' ', '_')}.xlsx",
+            distributor=rep,
+            company=company,
+            reporting_month=month,
+            rows=rows,
+        )
+        ReportService(db).ingest_excel(path, actor="test")
+
+    engine = BusinessAggregationService(db)
+    page1 = engine.quarterly_report(
+        company=company,
+        quarter_label="Q3 2095",
+        page=1,
+        page_size=10,
+        sort_by="quantity",
+        sort_order="desc",
+    )
+    assert page1["totalQuantity"] == 10 * 11 + 20  # 130
+    assert page1["totalRecords"] == 11
+    assert page1["totalPages"] == 2
+    assert page1["currentPage"] == 1
+    assert page1["pageSize"] == 10
+    assert len(page1["items"]) == 10
+    top = page1["items"][0]
+    assert top["customer"] == "Reliance Alpha"
+    assert top["product"] == "Prod1"
+    assert top["quantity"] == 30.0
+    assert top["contributionPct"] == round(30 / 130 * 100, 2)
+    assert top["srNo"] == 1
+
+    page2 = engine.quarterly_report(
+        company=company,
+        quarter_label="Q3 2095",
+        page=2,
+        page_size=10,
+        sort_by="quantity",
+        sort_order="desc",
+    )
+    assert page2["currentPage"] == 2
+    assert len(page2["items"]) == 1
+    assert page2["items"][0]["srNo"] == 11
+
+    searched = engine.quarterly_report(
+        company=company,
+        quarter_label="Q3 2095",
+        search="Reliance",
+        page=1,
+        page_size=10,
+    )
+    assert searched["totalRecords"] == 1
+    assert searched["items"][0]["customer"] == "Reliance Alpha"
+    # Contribution still vs full quarter total (130), not filtered total
+    assert searched["items"][0]["contributionPct"] == round(30 / 130 * 100, 2)
+    # Header KPIs unchanged by search
+    assert searched["totalQuantity"] == 130.0
+
+    by_customer = engine.quarterly_report(
+        company=company,
+        quarter_label="Q3 2095",
+        sort_by="customer",
+        sort_order="asc",
+        page=1,
+        page_size=5,
+    )
+    names = [r["customer"] for r in by_customer["items"]]
+    assert names == sorted(names)
 
 
 def test_replaced_month_excluded_from_quarter(db: Session, tmp_path: Path):

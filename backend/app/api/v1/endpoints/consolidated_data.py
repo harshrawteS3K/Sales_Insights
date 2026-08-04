@@ -67,10 +67,28 @@ def get_quarterly_report(
     db: Annotated[Session, Depends(get_db)],
     company: str = Query(..., min_length=1, description="Distributor Company"),
     quarter: Optional[str] = Query(None, description="Quarter label e.g. Q1 2026"),
+    page: int = Query(1, ge=1, description="1-based page number"),
+    page_size: int = Query(10, ge=1, le=100, description="Rows per page"),
+    search: Optional[str] = Query(
+        None, description="Case-insensitive match on customer, segment, or product"
+    ),
+    sort_by: str = Query(
+        "quantity",
+        description="customer | segment | product | quantity | contributionPct",
+    ),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> QuarterlyReportResponse:
     """Aggregate ACTIVE monthly reports for company + quarter (SQL only)."""
     engine = BusinessAggregationService(db)
-    payload = engine.quarterly_report(company=company, quarter_label=quarter)
+    payload = engine.quarterly_report(
+        company=company,
+        quarter_label=quarter,
+        page=page,
+        page_size=page_size,
+        search=search,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
     return QuarterlyReportResponse(**payload)
 
 
