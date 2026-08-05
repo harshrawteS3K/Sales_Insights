@@ -14,11 +14,11 @@ Enterprise Sales Insights platform.
 ```bash
 cd frontend
 npm install
-copy .env.example .env.local
 npm run dev
 ```
 
-Vite binds to `0.0.0.0:5173`. API URL comes from `VITE_API_BASE_URL` (defaults to `http://localhost:8000/api` if unset).
+Vite binds to `0.0.0.0:5173`.  
+If `VITE_API_BASE_URL` is unset, the client calls `{page-hostname}:8000/api` automatically (localhost, LAN, and VPN IPs all work).
 
 ### Backend
 
@@ -56,11 +56,14 @@ Replace `<SERVER-IP>` with the real address (e.g. `10.0.3.213`). If the Vite Ori
 
 ### 2. Frontend env
 
+Optional. Leave `VITE_API_BASE_URL` **unset** so the UI auto-calls `http://<SERVER-IP>:8000/api` when users open `http://<SERVER-IP>:5173`.
+
+Override only if the API is on a different host/port:
+
 ```powershell
 cd frontend
-copy .env.example .env.local
-# Set:
-# VITE_API_BASE_URL=http://<SERVER-IP>:8000/api
+# optional:
+# $env:VITE_API_BASE_URL = "http://<API-HOST>:8000/api"
 ```
 
 ### 3. First-time DB migrate
@@ -89,12 +92,12 @@ Or: `.\scripts\start_uat.ps1`
 
 ```powershell
 cd frontend
-$env:VITE_API_BASE_URL = "http://<SERVER-IP>:8000/api"
 npm run dev
 # equivalent: vite --host 0.0.0.0 --port 5173
+# API host is derived from the browser URL (no VITE_API_BASE_URL required)
 ```
 
-Or: `.\scripts\start_uat.ps1` (after setting `VITE_API_BASE_URL`)
+Or: `.\scripts\start_uat.ps1`
 
 ### 5. Firewall
 

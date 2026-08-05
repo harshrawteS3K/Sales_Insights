@@ -1,9 +1,28 @@
 import { getSession } from './session';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api').replace(
-  /\/$/,
-  ''
-);
+/** Backend HTTP port when deriving API URL from the page host (Vite UI is typically :5173). */
+const DEFAULT_API_PORT = '8000';
+
+/**
+ * Resolve API base URL (including `/api`).
+ * Priority: 1) VITE_API_BASE_URL  2) same host as the browser, port 8000
+ * so LAN / VPN / Windows Server IPs work without hardcoding.
+ */
+export function resolveApiBaseUrl(): string {
+  const fromEnv = String(import.meta.env.VITE_API_BASE_URL || '').trim();
+  if (fromEnv) {
+    return fromEnv.replace(/\/$/, '');
+  }
+  if (typeof window !== 'undefined' && window.location?.hostname) {
+    const { protocol, hostname } = window.location;
+    return `${protocol}//${hostname}:${DEFAULT_API_PORT}/api`;
+  }
+  return `http://localhost:${DEFAULT_API_PORT}/api`;
+}
+
+function apiBaseUrl(): string {
+  return resolveApiBaseUrl();
+}
 
 export class ApiError extends Error {
   status: number;
@@ -93,7 +112,7 @@ const CONNECTION_ERROR_MESSAGE =
   'Unable to connect to the server. Please verify the server is running and reachable.';
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const url = `${API_BASE_URL}${withQuery(path.startsWith('/') ? path : `/${path}`, options.params)}`;
+  const url = `${apiBaseUrl()}${withQuery(path.startsWith('/') ? path : `/${path}`, options.params)}`;
   let response: Response;
   try {
     response = await fetch(url, {
@@ -126,7 +145,7 @@ export async function apiUpload<T>(
   fieldName = 'file',
   onProgress?: (percent: number) => void
 ): Promise<T> {
-  const url = `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+  const url = `${apiBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`;
 
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -178,5 +197,5 @@ export async function apiUpload<T>(
 }
 
 export function getApiBaseUrl(): string {
-  return API_BASE_URL;
+  return apiBaseUrl();
 }
