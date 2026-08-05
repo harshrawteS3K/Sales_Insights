@@ -9,6 +9,33 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
+_DEFAULT_CORS = (
+    "http://localhost:5173,"
+    "http://localhost:3000,"
+    "http://127.0.0.1:5173,"
+    "http://127.0.0.1:3000"
+)
+
+
+def _parse_cors_value(value: object) -> List[str]:
+    """Parse CORS origins from comma-separated string, JSON list, or list."""
+    if value is None:
+        return [p.strip() for p in _DEFAULT_CORS.split(",") if p.strip()]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return [p.strip() for p in _DEFAULT_CORS.split(",") if p.strip()]
+        if text.startswith("["):
+            import json
+
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        return [item.strip() for item in text.split(",") if item.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()]
+
 
 class Settings(BaseSettings):
     """Central application settings sourced from `.env`."""
@@ -28,15 +55,8 @@ class Settings(BaseSettings):
     app_version: str = Field(default="1.0.0", alias="APP_VERSION")
     api_v1_prefix: str = Field(default="/api/v1", alias="API_V1_PREFIX")
     debug: bool = Field(default=True, alias="DEBUG")
-    cors_origins: List[str] = Field(
-        default_factory=lambda: [
-            "http://localhost:5173",
-            "http://localhost:3000",
-            "http://127.0.0.1:5173",
-            "http://127.0.0.1:3000",
-        ],
-        alias="CORS_ORIGINS",
-    )
+    # Stored as str so DotEnv does not JSON-decode; exposed as list via property.
+    cors_origins_raw: str = Field(default=_DEFAULT_CORS, alias="CORS_ORIGINS")
 
     # Database
     database_host: str = Field(default="localhost", alias="DATABASE_HOST")
@@ -121,12 +141,22 @@ class Settings(BaseSettings):
     super_admin_password: str = Field(default="", alias="SUPER_ADMIN_PASSWORD")
     password_min_length: int = Field(default=8, alias="PASSWORD_MIN_LENGTH", ge=6)
 
-    @field_validator("cors_origins", mode="before")
+    @property
+    def cors_origins(self) -> List[str]:
+        """Browser origins allowed by CORS (from CORS_ORIGINS env)."""
+        return _parse_cors_value(self.cors_origins_raw)
+
+    @field_validator("graph_excel_extensions", mode="before")
     @classmethod
-    def parse_cors_origins(cls, value: object) -> object:
-        """Allow comma-separated CORS origins from environment."""
+    def parse_graph_extensions(cls, value: object) -> object:
+        """Allow comma-separated excel extensions from environment."""
         if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
+            text = value.strip()
+            if text.startswith("["):
+                import json
+
+                return json.loads(text)
+            return [item.strip() for item in text.split(",") if item.strip()]
         return value
 
     @property

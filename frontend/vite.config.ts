@@ -29,4 +29,10 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  // Windows Server / VPN UAT: bind all interfaces so clients can open http://<SERVER-IP>:5173
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    strictPort: true,
+  },
 })

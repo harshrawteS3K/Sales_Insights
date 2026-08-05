@@ -34,15 +34,29 @@ Swagger UI: http://localhost:8000/docs
 
 ## Environment
 
-Configure secrets in `.env` (never commit secrets):
+Configure secrets in `.env` (never commit secrets). See `.env.example`.
 
 | Variable | Purpose |
 |----------|---------|
+| `APP_HOST` | Bind address (UAT: `0.0.0.0`) |
+| `APP_PORT` | Listen port (UAT: `8000`) |
+| `CORS_ORIGINS` | Comma-separated browser origins (include `http://<SERVER-IP>:5173` for UAT) |
 | `DATABASE_URL` | PostgreSQL connection string |
 | `GRAPH_TENANT_ID` | Azure AD tenant |
 | `GRAPH_CLIENT_ID` | App registration client id |
 | `GRAPH_CLIENT_SECRET` | App registration secret |
 | `GRAPH_MAILBOX` | Shared mailbox to sync |
+| `SUPER_ADMIN_USERNAME` / `SUPER_ADMIN_PASSWORD` | Env-only Super Admin |
+
+### UAT start (Windows)
+
+```powershell
+alembic upgrade head
+python run.py
+# or: uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Swagger UI: http://localhost:8000/docs (or http://\<SERVER-IP\>:8000/docs on VPN)
 
 ## RBAC (Phase 1)
 
