@@ -47,7 +47,7 @@ class DashboardService:
         total_qty = float(self.sales.total_quantity())
         # Distributors that actually contribute active sales (matches Consolidated / charts)
         total_distributors = len(self.sales.distributor_totals())
-        total_reports = self.reports.count()
+        total_reports = self.sales.count_contributing_reports()
         total_sales = self.sales.count_active_with_parents()
         total_emails = self.emails.count()
         pending = self.reports.count_by_status(ReportStatus.PENDING.value)
@@ -191,14 +191,27 @@ class DashboardService:
         product: Optional[str] = None,
         distributor: Optional[str] = None,
         products: Optional[List[str]] = None,
+        top_products: int = 4,
+        distributor_limit: int = 15,
     ) -> List[Dict[str, Any]]:
-        """Distributor × product pivot (stacked bar fallback / product mix)."""
-        focus = products or ["CB 300", "CB 4600", "CB 4400", "CB 548"]
+        """Distributor × product pivot — Top products × Top companies (scale-safe)."""
+        p = _norm_filter(period)
+        prod = _norm_filter(product)
+        dist = _norm_filter(distributor)
+        if products:
+            focus = list(products)[: max(1, min(int(top_products or 4), 12))]
+        else:
+            ranked = self.sales.product_quantities(period=p, product=prod, distributor=dist)
+            n = max(1, min(int(top_products or 4), 12))
+            focus = [r["product"] for r in ranked[:n]]
+        if not focus:
+            return []
         return self.sales.distributor_product_mix(
             focus,
-            period=_norm_filter(period),
-            product=_norm_filter(product),
-            distributor=_norm_filter(distributor),
+            period=p,
+            product=prod,
+            distributor=dist,
+            distributor_limit=max(1, min(int(distributor_limit or 15), 50)),
         )
 
     def top_distributors(
@@ -209,13 +222,19 @@ class DashboardService:
         distributor: Optional[str] = None,
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
-        """Top N distributors by quantity (horizontal bar)."""
+        """Top N distributor companies by quantity (+ Others for remainder)."""
         rows = self.sales.distributor_totals(
             period=_norm_filter(period),
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
         )
-        return [{"name": row["name"], "qty": row["qty"]} for row in rows[:limit]]
+        n = max(1, min(int(limit or 10), 50))
+        top = rows[:n]
+        others_qty = sum(float(r["qty"]) for r in rows[n:])
+        result = [{"name": row["name"], "qty": row["qty"]} for row in top]
+        if others_qty > 0:
+            result.append({"name": "Others", "qty": others_qty})
+        return result
 
     def distributor_contribution(
         self,

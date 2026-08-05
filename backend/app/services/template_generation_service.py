@@ -8,7 +8,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.constants import DEFAULT_SEGMENTS, DISTRIBUTOR_TEMPLATE_FILENAME
+from app.constants import DISTRIBUTOR_TEMPLATE_FILENAME
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.enums import AuditAction
@@ -46,27 +46,24 @@ class TemplateGenerationService:
         """
         Build template from active master data.
 
-        Customer dropdown ← customer_master.customer_name (A–Z)
-        Product dropdown  ← product_master.product_code (all codes, no segment filter)
+        Customer dropdown ← customer_master.customer_name (A–Z, unique, active)
+        Segment dropdown  ← product_master.industry_type (unique, A–Z)
+        Product dropdown  ← product codes for the selected Segment only
         """
         started = time.perf_counter()
         customer_names = self.customers.list_names()
-        product_codes = self.products.list_product_codes()
+        products_by_segment = self.products.list_codes_by_segment()
+        product_count = sum(len(v) for v in products_by_segment.values())
 
         if not customer_names:
             raise ValidationAppError(
                 "Cannot generate template: Customer Master is empty. Upload Customer Master first."
             )
-        if not product_codes:
+        if not products_by_segment:
             raise ValidationAppError(
                 "Cannot generate template: Product Master is empty. Upload Product Master first."
             )
 
-        segments = sorted(
-            set(self.customers.list_segments())
-            | set(self.products.list_segments())
-            | set(DEFAULT_SEGMENTS)
-        )
         # Reporting Month dropdown options only — never prefill distributor header fields
         periods = self.sales.distinct_periods() or None
 
@@ -78,8 +75,7 @@ class TemplateGenerationService:
         gen_started = time.perf_counter()
         path = self.templates.generate(
             customers=customer_names,
-            products=product_codes,
-            segments=segments,
+            products_by_segment=products_by_segment,
             periods=periods,
             output_path=output,
         )
@@ -95,19 +91,31 @@ class TemplateGenerationService:
         self.audit.log(
             AuditTrailCreate(
                 user_name=actor,
-                action=AuditAction.DOWNLOADED,
+                action=AuditAction.GENERATED,
                 details=(
                     f"Generated distributor template {file_name} "
-                    f"({len(customer_names)} customers, {len(product_codes)} products)"
+                    f"using Customer Master ({len(customer_names):,} customers) and "
+                    f"Product Master ({product_count:,} products across "
+                    f"{len(products_by_segment)} segments)"
                 ),
                 entity_type="template",
+                module="Master Data",
+                status="Success",
+                extra_metadata={
+                    "file_name": file_name,
+                    "customers": len(customer_names),
+                    "products": product_count,
+                    "segments": len(products_by_segment),
+                    "elapsed_ms": elapsed_ms,
+                },
             )
         )
         logger.info(
-            "Template generated | file={} customers={} products={} gen_ms={} total_ms={}",
+            "Template generated | file={} customers={} products={} segments={} gen_ms={} total_ms={}",
             file_name,
             len(customer_names),
-            len(product_codes),
+            product_count,
+            len(products_by_segment),
             gen_ms,
             elapsed_ms,
         )
@@ -118,7 +126,7 @@ class TemplateGenerationService:
             template_version=version,
             file_name=file_name,
             customers_count=len(customer_names),
-            products_count=len(product_codes),
+            products_count=product_count,
             generated_at=generated_at,
         )
 

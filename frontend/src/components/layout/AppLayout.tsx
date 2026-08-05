@@ -2,9 +2,10 @@ import { Outlet, useOutletContext } from 'react-router';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
 import type { LayoutContext } from '../../types';
+import type { UserRole } from '../../types';
 
 interface AppLayoutProps {
-  userRole: 'admin' | 'user' | null;
+  userRole: UserRole | null;
   userName: string;
   userTitle: string;
   onLogout: () => void;

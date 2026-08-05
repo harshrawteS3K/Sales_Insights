@@ -151,15 +151,15 @@ async def get_current_user(
             logger.warning("Unknown AUTH_MODE={!r} — falling back to headers", mode)
         user = _user_from_headers(request, x_user_role, x_user_name, x_user_id)
 
-        # Production guard: never silently accept spoofed admin without gateway/JWT.
+        # Production guard: never silently accept spoofed elevated roles without gateway/JWT.
         if (
             settings.is_production
             and mode in {"headers", "header", "dev"}
-            and user.role == UserRole.ADMIN
+            and user.role in {UserRole.ADMIN, UserRole.SUPER_ADMIN}
             and not (settings.auth_trusted_secret or settings.auth_jwt_secret)
         ):
             logger.error(
-                "Production AUTH_MODE=headers with admin role and no AUTH_TRUSTED_SECRET/JWT — "
+                "Production AUTH_MODE=headers with elevated role and no AUTH_TRUSTED_SECRET/JWT — "
                 "configure trusted_headers or jwt before exposing outside the corp network"
             )
 
@@ -201,6 +201,13 @@ def require_roles(*allowed_roles: UserRole) -> Callable:
     return _dependency
 
 
-RequireAdmin = Annotated[RequestUser, Depends(require_roles(UserRole.ADMIN))]
-RequireUser = Annotated[RequestUser, Depends(require_roles(UserRole.ADMIN, UserRole.USER))]
+RequireSuperAdmin = Annotated[RequestUser, Depends(require_roles(UserRole.SUPER_ADMIN))]
+RequireAdmin = Annotated[
+    RequestUser,
+    Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)),
+]
+RequireUser = Annotated[
+    RequestUser,
+    Depends(require_roles(UserRole.ADMIN, UserRole.USER, UserRole.SUPER_ADMIN)),
+]
 CurrentUser = Annotated[RequestUser, Depends(get_current_user)]

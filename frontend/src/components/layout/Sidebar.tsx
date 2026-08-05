@@ -5,11 +5,15 @@ import {
   Table2,
   BarChart3,
   Database,
+  ScrollText,
+  Users,
   Settings,
   LogOut,
 } from 'lucide-react';
 import APCOTEX_LOGO from '../../assets/images/apcotexindustrieslogo.png';
 import { BLUE, TEAL, RED, BORDER } from '../../constants/theme';
+import { isAdminRole, isSuperAdminRole } from '../../utils/rbac';
+import type { UserRole } from '../../types';
 
 const mainNavItems = [
   { path: '/',                  label: 'Dashboard',         icon: LayoutDashboard, exact: true },
@@ -17,6 +21,8 @@ const mainNavItems = [
   { path: '/consolidated-data', label: 'Consolidated Data', icon: Table2           },
   { path: '/visualizations',    label: 'Visualizations',    icon: BarChart3        },
   { path: '/master-data',       label: 'Master Data',       icon: Database         },
+  { path: '/audit-trail',       label: 'Audit Trail',       icon: ScrollText, adminOnly: true },
+  { path: '/user-management',   label: 'User Management',   icon: Users, superAdminOnly: true },
 ];
 
 export function Sidebar({
@@ -27,14 +33,15 @@ export function Sidebar({
 }: {
   userName?: string;
   userTitle?: string;
-  userRole?: 'admin' | 'user' | null;
+  userRole?: UserRole | null;
   onLogout?: () => void;
 }) {
   const navigate = useNavigate();
   const location = useLocation();
 
   const filteredNavItems = mainNavItems.filter(item => {
-    if ('adminOnly' in item && item.adminOnly && userRole !== 'admin') return false;
+    if ('superAdminOnly' in item && item.superAdminOnly && !isSuperAdminRole(userRole)) return false;
+    if ('adminOnly' in item && item.adminOnly && !isAdminRole(userRole)) return false;
     return true;
   });
 

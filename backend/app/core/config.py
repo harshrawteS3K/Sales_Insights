@@ -116,6 +116,11 @@ class Settings(BaseSettings):
     rbac_user_header: str = Field(default="X-User-Name", alias="RBAC_USER_HEADER")
     rbac_user_id_header: str = Field(default="X-User-Id", alias="RBAC_USER_ID_HEADER")
 
+    # Super Admin — permanent system identity; credentials live only in .env (never DB)
+    super_admin_username: str = Field(default="superadmin", alias="SUPER_ADMIN_USERNAME")
+    super_admin_password: str = Field(default="", alias="SUPER_ADMIN_PASSWORD")
+    password_min_length: int = Field(default=8, alias="PASSWORD_MIN_LENGTH", ge=6)
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, value: object) -> object:

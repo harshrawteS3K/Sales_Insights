@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react';
 import { ArrowDown, Info } from 'lucide-react';
 import { BORDER, BLUE, TEXT_SECONDARY } from '../../constants/theme';
-import { FutureBadge } from './FutureBadge';
 
 type FlowItem = {
   title: string;
@@ -12,20 +11,28 @@ type Props = {
   title?: string;
   children?: ReactNode;
   flow?: FlowItem[];
-  showFuture?: boolean;
 };
 
 const DEFAULT_FLOW: FlowItem[] = [
-  { title: 'Customer Master', subtitle: 'Customer Dropdown' },
-  { title: 'Product Master', subtitle: 'Product Dropdown' },
-  { title: 'Future', subtitle: 'Segment-based Product Filtering' },
+  {
+    title: 'Customer Master',
+    subtitle:
+      'Customer dropdown list generated from Customer Master. Unique customer names are extracted and used in the distributor template.',
+  },
+  {
+    title: 'Product Master',
+    subtitle:
+      'Segment-based product dropdowns generated from Product Master. After selecting a Segment, only the corresponding Product Codes are available in the template.',
+  },
 ];
+
+const DEFAULT_DESCRIPTION =
+  'Uploaded Customer Master and Product Master datasets automatically populate dropdown lists inside the official APCOTEX distributor template. Products are dynamically filtered based on the selected Segment, ensuring distributors only see valid product codes for the chosen industry.';
 
 export function InfoCard({
   title = 'How Template Generation Works',
   children,
   flow = DEFAULT_FLOW,
-  showFuture = true,
 }: Props) {
   return (
     <div
@@ -52,30 +59,28 @@ export function InfoCard({
           <Info size={16} color={BLUE} />
         </div>
         <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 700, color: '#111827' }}>{title}</h2>
-        {showFuture && <FutureBadge />}
       </div>
 
-      {children && (
-        <p style={{ margin: '0 0 18px', fontSize: '0.8125rem', color: TEXT_SECONDARY, lineHeight: 1.55, maxWidth: 720 }}>
-          {children}
-        </p>
-      )}
-
-      {!children && (
-        <p style={{ margin: '0 0 18px', fontSize: '0.8125rem', color: TEXT_SECONDARY, lineHeight: 1.55, maxWidth: 720 }}>
-          Uploaded master datasets populate dropdown lists inside the official distributor Excel template.
-          Segment-based product filtering will be added in a later phase.
-        </p>
-      )}
+      <p
+        style={{
+          margin: '0 0 18px',
+          fontSize: '0.8125rem',
+          color: TEXT_SECONDARY,
+          lineHeight: 1.55,
+          maxWidth: 820,
+        }}
+      >
+        {children ?? DEFAULT_DESCRIPTION}
+      </p>
 
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
           gap: 16,
         }}
       >
-        {flow.map((item, idx) => (
+        {flow.map(item => (
           <div
             key={item.title}
             style={{
@@ -84,20 +89,25 @@ export function InfoCard({
               alignItems: 'flex-start',
               gap: 8,
               padding: '14px 16px',
-              background: idx === flow.length - 1 ? 'rgba(31,95,168,0.03)' : '#F9FAFB',
+              background: '#F9FAFB',
               border: `1px solid ${BORDER}`,
               borderRadius: 10,
-              position: 'relative',
             }}
           >
-            <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#111827' }}>{item.title}</div>
+            <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#111827' }}>
+              {item.title}
+            </div>
             <ArrowDown size={14} color={BLUE} />
-            <div style={{ fontSize: '0.8125rem', color: TEXT_SECONDARY, fontWeight: 500 }}>{item.subtitle}</div>
-            {idx === flow.length - 1 && (
-              <div style={{ marginTop: 4 }}>
-                <FutureBadge />
-              </div>
-            )}
+            <div
+              style={{
+                fontSize: '0.8125rem',
+                color: TEXT_SECONDARY,
+                fontWeight: 500,
+                lineHeight: 1.5,
+              }}
+            >
+              {item.subtitle}
+            </div>
           </div>
         ))}
       </div>

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useLayoutContext } from '../../hooks/useLayoutContext';
+import { isAdminRole } from '../../utils/rbac';
 import { Upload, Download, Eye, MessageSquare, FileText } from 'lucide-react';
 import type { Report, ChatMessage } from '../../types';
 import { ReportsService } from '../../services/reports.service';
@@ -91,7 +92,7 @@ export function ExistingReports() {
       return;
     }
 
-    if (userRole !== 'admin') {
+    if (!isAdminRole(userRole)) {
       setUploadError('Admin role is required to upload reports');
       setUploadSuccess(null);
       return;

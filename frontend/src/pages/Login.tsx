@@ -1,28 +1,37 @@
 import { useState } from 'react';
 import APCOTEX_LOGO from '../assets/images/apcotexindustrieslogo.png';
 import { BLUE, TEAL, RED, BORDER } from '../constants/theme';
+import { AuthService } from '../services/auth.service';
+import { ApiError } from '../api';
+import type { UserRole } from '../types';
 
 const TEXT = '#1F2937';
 
-const USERS = {
-  admin: { password: 'admin123', role: 'admin' as const, name: 'Debabrata C', title: 'CMO' },
-  user:  { password: 'user123',  role: 'user'  as const, name: 'Rajesh Kumar', title: 'Research Analyst' },
-};
-
-export function Login({ onLogin }: { onLogin: (role: 'admin' | 'user', name: string, title: string) => void }) {
+export function Login({
+  onLogin,
+}: {
+  onLogin: (role: UserRole, name: string, title: string) => void;
+}) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError]       = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    if (!username || !password) { setError('Please Enter the Credentials'); return; }
-    const user = USERS[username as keyof typeof USERS];
-    if (user && user.password === password) {
+    if (!username || !password) {
+      setError('Please Enter the Credentials');
+      return;
+    }
+    setLoading(true);
+    try {
+      const user = await AuthService.login(username.trim(), password);
       onLogin(user.role, user.name, user.title);
-    } else {
-      setError('Invalid username or password');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Invalid username or password');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -71,6 +80,8 @@ export function Login({ onLogin }: { onLogin: (role: 'admin' | 'user', name: str
               value={username}
               onChange={e => setUsername(e.target.value)}
               placeholder="Enter username"
+              autoComplete="username"
+              disabled={loading}
               style={{ width: '100%', padding: '10px 14px', fontSize: '0.875rem', border: `1px solid ${BORDER}`, borderRadius: 8, outline: 'none', transition: 'border-color 0.15s' }}
               onFocus={e => { e.currentTarget.style.borderColor = TEAL; }}
               onBlur={e => { e.currentTarget.style.borderColor = BORDER; }}
@@ -86,6 +97,8 @@ export function Login({ onLogin }: { onLogin: (role: 'admin' | 'user', name: str
               value={password}
               onChange={e => setPassword(e.target.value)}
               placeholder="Enter password"
+              autoComplete="current-password"
+              disabled={loading}
               style={{ width: '100%', padding: '10px 14px', fontSize: '0.875rem', border: `1px solid ${BORDER}`, borderRadius: 8, outline: 'none', transition: 'border-color 0.15s' }}
               onFocus={e => { e.currentTarget.style.borderColor = TEAL; }}
               onBlur={e => { e.currentTarget.style.borderColor = BORDER; }}
@@ -100,11 +113,23 @@ export function Login({ onLogin }: { onLogin: (role: 'admin' | 'user', name: str
 
           <button
             type="submit"
-            style={{ width: '100%', padding: '12px', fontSize: '0.875rem', fontWeight: 600, color: 'white', background: TEAL, border: 'none', borderRadius: 8, cursor: 'pointer', transition: 'background 0.15s' }}
-            onMouseEnter={e => { e.currentTarget.style.background = '#1ba09e'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = TEAL; }}
+            disabled={loading}
+            style={{
+              width: '100%',
+              padding: '12px',
+              fontSize: '0.875rem',
+              fontWeight: 600,
+              color: 'white',
+              background: loading ? '#9CA3AF' : TEAL,
+              border: 'none',
+              borderRadius: 8,
+              cursor: loading ? 'not-allowed' : 'pointer',
+              transition: 'background 0.15s',
+            }}
+            onMouseEnter={e => { if (!loading) e.currentTarget.style.background = '#1ba09e'; }}
+            onMouseLeave={e => { if (!loading) e.currentTarget.style.background = TEAL; }}
           >
-            Sign In
+            {loading ? 'Signing In…' : 'Sign In'}
           </button>
         </form>
       </div>

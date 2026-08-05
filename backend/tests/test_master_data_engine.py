@@ -118,7 +118,7 @@ async def test_scenario3_generate_template_dropdowns(db: Session, tmp_path: Path
     out = tmp_path / "template.xlsx"
     ExcelTemplateGenerator().generate(
         customers=CustomerMasterRepository(db).list_names(),
-        products=ProductMasterRepository(db).list_product_codes(),
+        products_by_segment=ProductMasterRepository(db).list_codes_by_segment(),
         output_path=out,
     )
     wb = load_workbook(out)
@@ -128,11 +128,10 @@ async def test_scenario3_generate_template_dropdowns(db: Session, tmp_path: Path
     assert lists.sheet_state == "hidden"
     customers = [lists["A2"].value, lists["A3"].value, lists["A4"].value]
     assert customers == ["Alpha Co", "Beta Co", "Zeta Co"]
-    products = [lists["B2"].value, lists["B3"].value]
-    assert products == ["FGCB200-200", "FGC8200-200"] or set(products) == {
-        "FGC8200-200",
-        "FGCB200-200",
-    }
+    assert set(filter(None, [lists["B2"].value, lists["B3"].value])) == {"CARPET", "PAPER"}
+    assert "SEG_CARPET" in wb.defined_names
+    assert "SEG_PAPER" in wb.defined_names
+    assert "SegmentMap" in wb.defined_names
     # Headers include Customer + Product for dropdowns
     sheet = wb["Sales Report"]
     headers = [sheet.cell(7, c).value for c in range(1, 8)]
@@ -145,6 +144,8 @@ async def test_scenario3_generate_template_dropdowns(db: Session, tmp_path: Path
         "Closing Stock",
         "Quantity",
     ]
+    formulas = [str(dv.formula1) for dv in sheet.data_validations.dataValidation]
+    assert any("INDIRECT" in f and "SegmentMap" in f for f in formulas)
     assert len(sheet.data_validations.dataValidation) >= 2
     # Distributor header values must always be blank
     for row in range(1, 6):
@@ -277,10 +278,75 @@ def test_parser_dedupes_and_trims(tmp_path: Path):
         tmp_path / "dup.xlsx",
         ["  Acme  ", "Acme", "Beta", "", "beta"],
     )
-    rows, dups = ExcelParserService().parse_customer_master(path)
-    names = [r["customer_name"] for r in rows]
+    parsed = ExcelParserService().parse_customer_master(path)
+    names = [r["customer_name"] for r in parsed.records]
     assert names == ["Acme", "Beta"]
-    assert dups == 2
+    assert parsed.duplicate_names == 2
+    assert parsed.blank_customer_name == 1
+    assert parsed.imported == 2
+    assert parsed.excel_rows == 5
+    assert parsed.skipped == 3
+    assert "Blank Customer Name" in parsed.summary_message()
+
+
+@pytest.mark.asyncio
+async def test_customer_replace_returns_full_summary(db: Session, tmp_path: Path):
+    path = _write_customer_master(
+        tmp_path / "sum.xlsx",
+        ["Alpha", "alpha", "Beta", "", "Gamma"],
+    )
+    result = await CustomerMasterService(db).upload_and_replace(_Upload(path), actor="test")
+    assert result.records_imported == 3
+    assert result.duplicate_names == 1
+    assert result.blank_customer_name == 1
+    assert result.excel_rows == 5
+    assert result.records_skipped == 2
+    assert "Customer Master Replace Complete" in result.message
+    assert "Imported            : 3" in result.message
+
+
+def test_segment_product_filter_excludes_other_segments(tmp_path: Path):
+    """CARPET named range must not contain PAPER products."""
+    out = tmp_path / "seg.xlsx"
+    ExcelTemplateGenerator().generate(
+        customers=["Metro Tyres"],
+        products_by_segment={
+            "CARPET": ["FGCB200-200", "FGCB200-220"],
+            "PAPER": ["FGC8200-200", "FGP8040-200"],
+            "CONSTRUCTION B2B IH": ["FGABSSHS400-1"],
+        },
+        output_path=out,
+    )
+    wb = load_workbook(out)
+    lists = wb["_lists"]
+    carpet_col = None
+    for col in range(5, 20):
+        if lists.cell(1, col).value == "CARPET":
+            carpet_col = col
+            break
+    assert carpet_col is not None
+    carpet_codes = []
+    r = 2
+    while lists.cell(r, carpet_col).value:
+        carpet_codes.append(lists.cell(r, carpet_col).value)
+        r += 1
+    assert carpet_codes == ["FGCB200-200", "FGCB200-220"]
+    assert "FGC8200-200" not in carpet_codes
+    assert "SEG_CARPET" in wb.defined_names
+    assert "SEG_CONSTRUCTION_B2B_IH" in wb.defined_names
+    sheet = wb["Sales Report"]
+    # Conditional formatting flags stale Product after Segment change (no VBA)
+    assert len(sheet.conditional_formatting._cf_rules) >= 1
+    formulas = [str(dv.formula1) for dv in sheet.data_validations.dataValidation]
+    assert any("INDIRECT" in f for f in formulas)
+
+
+def test_segment_range_name_sanitizes_spaces():
+    from app.utils.excel_names import segment_range_name
+
+    assert segment_range_name("CARPET") == "SEG_CARPET"
+    assert segment_range_name("CONSTRUCTION B2B IH") == "SEG_CONSTRUCTION_B2B_IH"
+    assert segment_range_name("123Start").startswith("SEG_N_")
 
 
 @pytest.mark.asyncio

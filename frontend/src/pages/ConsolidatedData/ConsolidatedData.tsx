@@ -23,7 +23,9 @@ import type {
   ConsolidatedRecordQuery,
 } from '../../types';
 import { ConsolidatedDataService } from '../../services/consolidatedData.service';
+import { AuditTrailService } from '../../services/auditTrail.service';
 import { ApiError, getSession } from '../../api';
+import { isAdminRole } from '../../utils/rbac';
 import { StatusBanner } from '../../components/common/StatusBanner';
 import { DataQualityWarning } from '../../components/ui/DataQualityWarning';
 import { SearchAutocomplete } from '../../components/ui/SearchAutocomplete';
@@ -90,7 +92,7 @@ function csvEscape(value: string | number | null | undefined): string {
 
 export function ConsolidatedData() {
   const navigate = useNavigate();
-  const isAdmin = getSession()?.role === 'admin';
+  const isAdmin = isAdminRole(getSession()?.role);
 
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
@@ -446,7 +448,16 @@ export function ConsolidatedData() {
           <button
             key={key}
             type="button"
-            onClick={() => setViewMode(key)}
+            onClick={() => {
+              setViewMode(key);
+              void AuditTrailService.recordEvent({
+                action: key === 'quarterly' ? 'Quarterly View Opened' : 'Monthly View Opened',
+                module: 'Consolidated Data',
+                description: `Switched Consolidated Data to ${label} view`,
+                status: 'Info',
+                entity_type: 'consolidated_data',
+              });
+            }}
             style={{
               padding: '8px 18px',
               borderRadius: 7,

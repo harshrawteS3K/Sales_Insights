@@ -1,4 +1,4 @@
-"""Audit trail ORM model."""
+"""Audit trail ORM model — immutable enterprise activity log."""
 
 from typing import TYPE_CHECKING, Optional
 
@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin
-from app.enums import AuditAction
+from app.enums import AuditAction, AuditStatus
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -23,16 +23,28 @@ class AuditTrail(Base, TimestampMixin):
         Index("ix_audit_trail_entity_type", "entity_type"),
         Index("ix_audit_trail_created_at", "created_at"),
         Index("ix_audit_trail_report_name", "report_name"),
+        Index("ix_audit_trail_user_role", "user_role"),
+        Index("ix_audit_trail_module", "module"),
+        Index("ix_audit_trail_status", "status"),
+        Index("ix_audit_trail_module_created", "module", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    user_role: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     action: Mapped[str] = mapped_column(
-        String(50),
+        String(80),
         nullable=False,
         default=AuditAction.VIEWED.value,
     )
-    details: Mapped[str] = mapped_column(Text, nullable=False)
+    module: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    details: Mapped[str] = mapped_column(Text, nullable=False)  # description
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=AuditStatus.SUCCESS.value,
+        server_default=AuditStatus.SUCCESS.value,
+    )
     report_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     entity_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     entity_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)

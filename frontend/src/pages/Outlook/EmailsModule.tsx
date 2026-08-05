@@ -6,10 +6,11 @@ import { ConfidenceBadge } from '../../components/ui/Badge';
 import type { EmailRecord } from '../../types';
 import { EmailsService } from '../../services/emails.service';
 import { ApiError, getSession } from '../../api';
+import { isAdminRole } from '../../utils/rbac';
 
 export function EmailsModule() {
   const navigate = useNavigate();
-  const isAdmin = getSession()?.role === 'admin';
+  const isAdmin = isAdminRole(getSession()?.role);
   const [extracting, setExtracting] = useState(false);
   const [extracted, setExtracted] = useState(false);
   const [emails, setEmails] = useState<EmailRecord[]>([]);

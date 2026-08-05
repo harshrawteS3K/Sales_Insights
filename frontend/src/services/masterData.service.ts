@@ -47,6 +47,10 @@ export type MasterUploadResult = {
   errors: string[];
   uploaded_at?: string;
   file_name?: string;
+  excel_rows?: number;
+  blank_customer_name?: number;
+  duplicate_names?: number;
+  validation_errors?: number;
 };
 
 export type TemplateGenerateResult = {

@@ -53,33 +53,47 @@ class CustomerMasterService:
         success = False
 
         try:
-            # Single pass: parse validates headers then extracts rows
+            # Single pass: parse validates headers then extracts rows with skip reasons
             parse_started = time.perf_counter()
-            rows, duplicates_ignored = self.parser.parse_customer_master(path)
+            parsed = self.parser.parse_customer_master(path)
             parse_ms = round((time.perf_counter() - parse_started) * 1000, 2)
-            names = [r["customer_name"] for r in rows]
+            names = [r["customer_name"] for r in parsed.records]
 
             tx_started = time.perf_counter()
             imported = self.repo.replace_all(names)
             tx_ms = round((time.perf_counter() - tx_started) * 1000, 2)
 
             elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+            summary = parsed.summary_message()
             self.audit.log(
                 AuditTrailCreate(
                     user_name=actor,
                     action=AuditAction.UPLOADED,
-                    details=(
-                        f"Replaced customer master: {imported} imported, "
-                        f"{duplicates_ignored} duplicates ignored ({elapsed_ms} ms)"
-                    ),
+                    details=summary.replace("\n", " | "),
                     entity_type="customer_master",
+                    module="Master Data",
+                    status="Success",
+                    extra_metadata={
+                        "excel_rows": parsed.excel_rows,
+                        "imported": imported,
+                        "duplicate_names": parsed.duplicate_names,
+                        "blank_customer_name": parsed.blank_customer_name,
+                        "validation_errors": parsed.validation_errors,
+                        "skipped": parsed.skipped,
+                        "parse_ms": parse_ms,
+                        "tx_ms": tx_ms,
+                    },
                 )
             )
             logger.info(
-                "Customer master replaced | imported={} duplicates={} "
-                "parse_ms={} tx_ms={} total_ms={}",
+                "Customer master replaced | excel_rows={} imported={} blank={} "
+                "duplicates={} validation={} skipped={} parse_ms={} tx_ms={} total_ms={}",
+                parsed.excel_rows,
                 imported,
-                duplicates_ignored,
+                parsed.blank_customer_name,
+                parsed.duplicate_names,
+                parsed.validation_errors,
+                parsed.skipped,
                 parse_ms,
                 tx_ms,
                 elapsed_ms,
@@ -88,13 +102,17 @@ class CustomerMasterService:
             return MasterDataUploadResponse(
                 success=True,
                 status="success",
-                message=f"Customer Master replaced: {imported} records imported",
+                message=summary,
                 records_imported=imported,
-                duplicates_ignored=duplicates_ignored,
+                duplicates_ignored=parsed.duplicate_names,
                 processing_time_ms=elapsed_ms,
                 records_upserted=imported,
-                records_skipped=duplicates_ignored,
+                records_skipped=parsed.skipped,
                 errors=[],
+                excel_rows=parsed.excel_rows,
+                blank_customer_name=parsed.blank_customer_name,
+                duplicate_names=parsed.duplicate_names,
+                validation_errors=parsed.validation_errors,
             )
         except Exception:
             logger.exception(

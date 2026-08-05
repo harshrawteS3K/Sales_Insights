@@ -20,6 +20,9 @@ from app.utils.db_locks import (
 
 logger = get_logger(__name__)
 
+# Bound statement size / memory for large master replaces (50k+)
+_BULK_INSERT_CHUNK = 2500
+
 
 class CustomerMasterRepository(BaseRepository[CustomerMaster]):
     """Data access for customer master."""
@@ -69,7 +72,7 @@ class CustomerMasterRepository(BaseRepository[CustomerMaster]):
         """
         Replace the active Customer Master dataset.
 
-        Soft-deletes previous active rows, then bulk-inserts the new set.
+        Soft-deletes previous active rows, then bulk-inserts the new set in chunks.
         Serialized via PostgreSQL advisory lock for concurrent admin safety.
         Optionally purges soft-deleted history past MASTER_HISTORY_RETENTION_DAYS.
         """
@@ -80,7 +83,6 @@ class CustomerMasterRepository(BaseRepository[CustomerMaster]):
             self.purge_soft_deleted_older_than()
             return 0
 
-        # bulk_insert_mappings: single multi-row INSERT, no ORM identity map overhead
         mappings = [
             {
                 "customer_name": name,
@@ -91,7 +93,8 @@ class CustomerMasterRepository(BaseRepository[CustomerMaster]):
             }
             for name in customer_names
         ]
-        self.db.bulk_insert_mappings(CustomerMaster, mappings)
+        for i in range(0, len(mappings), _BULK_INSERT_CHUNK):
+            self.db.bulk_insert_mappings(CustomerMaster, mappings[i : i + _BULK_INSERT_CHUNK])
         self.db.flush()
         self.purge_soft_deleted_older_than()
         return len(mappings)
@@ -200,7 +203,8 @@ class ProductMasterRepository(BaseRepository[ProductMaster]):
                     "is_deleted": False,
                 }
             )
-        self.db.bulk_insert_mappings(ProductMaster, mappings)
+        for i in range(0, len(mappings), _BULK_INSERT_CHUNK):
+            self.db.bulk_insert_mappings(ProductMaster, mappings[i : i + _BULK_INSERT_CHUNK])
         self.db.flush()
         self.purge_soft_deleted_older_than()
         return len(mappings)
@@ -213,6 +217,33 @@ class ProductMasterRepository(BaseRepository[ProductMaster]):
             .order_by(ProductMaster.product_code.asc())
         )
         return [c for c in self.db.scalars(query).all() if c]
+
+    def list_codes_by_segment(self) -> dict[str, List[str]]:
+        """
+        Active product codes grouped by Industry Type Description (segment).
+
+        Single query + in-memory group (O(n)). Codes sorted A–Z within each segment.
+        Blank industry/code rows excluded. Duplicate codes within a segment ignored.
+        """
+        query = (
+            select(ProductMaster.industry_type, ProductMaster.product_code)
+            .where(ProductMaster.is_deleted.is_(False), ProductMaster.is_active.is_(True))
+            .order_by(ProductMaster.industry_type.asc(), ProductMaster.product_code.asc())
+        )
+        grouped: dict[str, List[str]] = {}
+        seen: dict[str, set[str]] = {}
+        for industry, code in self.db.execute(query).all():
+            segment = (industry or "").strip()
+            product = (code or "").strip()
+            if not segment or not product:
+                continue
+            bucket = seen.setdefault(segment, set())
+            key = product.casefold()
+            if key in bucket:
+                continue
+            bucket.add(key)
+            grouped.setdefault(segment, []).append(product)
+        return grouped
 
     def list_names(self) -> List[str]:
         """Return active product display names (falls back to product_code)."""

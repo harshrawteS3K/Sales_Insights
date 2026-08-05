@@ -23,6 +23,7 @@ import { SearchAutocomplete } from '../../components/ui/SearchAutocomplete';
 import { SalesHeatmap } from '../../components/ui/SalesHeatmap';
 import type { TabKey, KpiItem } from '../../types';
 import { VisualizationsService } from '../../services/visualizations.service';
+import { AuditTrailService } from '../../services/auditTrail.service';
 import { ApiError } from '../../api';
 import { StatusBanner } from '../../components/common/StatusBanner';
 
@@ -139,6 +140,13 @@ export function Visualizations() {
 
   useEffect(() => {
     loadData();
+    void AuditTrailService.recordEvent({
+      action: 'Visualization Opened',
+      module: 'Visualization',
+      description: 'Opened Visualizations workspace',
+      status: 'Info',
+      entity_type: 'visualization',
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

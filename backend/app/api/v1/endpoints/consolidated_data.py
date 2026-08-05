@@ -63,7 +63,7 @@ def get_quarterly_summary(
     summary="Virtual quarterly report for one Distributor Company",
 )
 def get_quarterly_report(
-    _: RequireUser,
+    current: RequireUser,
     db: Annotated[Session, Depends(get_db)],
     company: str = Query(..., min_length=1, description="Distributor Company"),
     quarter: Optional[str] = Query(None, description="Quarter label e.g. Q1 2026"),
@@ -89,6 +89,32 @@ def get_quarterly_report(
         sort_by=sort_by,
         sort_order=sort_order,
     )
+    # Log once per report open (first page only) to avoid pagination noise
+    if page == 1 and not search:
+        from app.services.audit_service import AuditService
+        from app.schemas.audit import AuditTrailCreate
+        from app.enums import AuditAction
+
+        AuditService(db).log(
+            AuditTrailCreate(
+                user_name=current.name,
+                user_role=current.role.value if hasattr(current.role, "value") else str(current.role),
+                action=AuditAction.GENERATED,
+                details=(
+                    f"Generated quarterly report for {company} · {quarter or payload.get('period', {}).get('label', '')} "
+                    f"({payload.get('totalQuantityDisplay', 0)} MT)"
+                ),
+                entity_type="consolidated_data",
+                module="Consolidated Data",
+                status="Success",
+                report_name=f"{company} {quarter or ''}".strip(),
+                extra_metadata={
+                    "company": company,
+                    "quarter": quarter,
+                    "totalQuantity": payload.get("totalQuantity"),
+                },
+            )
+        )
     return QuarterlyReportResponse(**payload)
 
 

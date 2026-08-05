@@ -14,18 +14,26 @@ if TYPE_CHECKING:
 
 
 class User(Base, TimestampMixin, SoftDeleteMixin):
-    """Application user with RBAC role."""
+    """Application user with RBAC role and hashed credentials."""
 
     __tablename__ = "users"
     __table_args__ = (
         Index("ix_users_email_active", "email", unique=True, postgresql_where="is_deleted = false"),
+        Index(
+            "ix_users_username_active",
+            "username",
+            unique=True,
+            postgresql_where="is_deleted = false",
+        ),
         Index("ix_users_role", "role"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(100), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     role: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
@@ -54,4 +62,4 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     )
 
     def __repr__(self) -> str:
-        return f"<User id={self.id} email={self.email!r} role={self.role!r}>"
+        return f"<User id={self.id} username={self.username!r} role={self.role!r}>"

@@ -7,4 +7,3 @@ export { TemplatePreview } from './TemplatePreview';
 export { ProgressTimeline } from './ProgressTimeline';
 export type { TimelineStep } from './ProgressTimeline';
 export { InfoCard } from './InfoCard';
-export { FutureBadge } from './FutureBadge';

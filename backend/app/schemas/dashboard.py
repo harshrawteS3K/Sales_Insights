@@ -64,6 +64,11 @@ class MasterDataUploadResponse(BaseModel):
     records_upserted: int = 0
     records_skipped: int = 0
     errors: List[str] = Field(default_factory=list)
+    # Customer Master replace accounting (explicit; never silent)
+    excel_rows: int = 0
+    blank_customer_name: int = 0
+    duplicate_names: int = 0
+    validation_errors: int = 0
 
 
 class TemplateGenerateResponse(BaseModel):

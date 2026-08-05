@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
-from app.enums import AuditAction, EmailProcessStatus, ReportSource, SyncStatus
+from app.enums import AuditAction, AuditStatus, EmailProcessStatus, ReportSource, SyncStatus
 from app.exceptions import GraphAPIError
 from app.integrations.graph.client import GraphClient
 from app.models.email_message import EmailAttachment, EmailMessage
@@ -292,6 +292,41 @@ class OutlookSyncService:
             job.details = details
             self.db.flush()
             self.db.refresh(job)
+            status_badge = (
+                AuditStatus.FAILED.value
+                if job.status == SyncStatus.FAILED.value
+                else (
+                    AuditStatus.WARNING.value
+                    if job.status == SyncStatus.PARTIAL.value
+                    else AuditStatus.SUCCESS.value
+                )
+            )
+            self.audit.log(
+                AuditTrailCreate(
+                    user_name=actor,
+                    action=AuditAction.EXTRACTED
+                    if job.status != SyncStatus.FAILED.value
+                    else AuditAction.FAILED,
+                    details=(
+                        f"Outlook sync {job.status}: processed {job.emails_processed} emails, "
+                        f"imported {job.reports_created} reports, "
+                        f"replaced/skipped {job.duplicates_skipped}, "
+                        f"failures {job.failures}"
+                    ),
+                    entity_type="sync_job",
+                    entity_id=str(job.id),
+                    module="Emails",
+                    status=status_badge,
+                    extra_metadata={
+                        "emails_found": job.emails_found,
+                        "emails_processed": job.emails_processed,
+                        "reports_created": job.reports_created,
+                        "records_inserted": job.records_inserted,
+                        "duplicates_skipped": job.duplicates_skipped,
+                        "failures": job.failures,
+                    },
+                )
+            )
             logger.info(
                 "Sync Completed | job={} | status={} | processed={} | failures={} | "
                 "warnings={} | records={}",
@@ -310,6 +345,17 @@ class OutlookSyncService:
             job.details = details
             self.db.flush()
             self.db.refresh(job)
+            self.audit.log(
+                AuditTrailCreate(
+                    user_name=actor,
+                    action=AuditAction.FAILED,
+                    details=f"Outlook sync failed: {exc}",
+                    entity_type="sync_job",
+                    entity_id=str(job.id),
+                    module="Emails",
+                    status=AuditStatus.FAILED.value,
+                )
+            )
             logger.exception("Outlook sync failed | job={} | stage=sync | error={}", job.id, exc)
             if isinstance(exc, GraphAPIError):
                 raise

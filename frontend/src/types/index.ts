@@ -4,12 +4,42 @@
  */
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
-export type UserRole = 'admin' | 'user';
+export type UserRole = 'admin' | 'user' | 'super_admin';
 
 export interface AuthUser {
   role: UserRole;
   name: string;
   title: string;
+}
+
+export interface ManagedUser {
+  id: number;
+  username: string;
+  email: string;
+  full_name: string;
+  title?: string | null;
+  role: 'admin' | 'user';
+  is_active: boolean;
+  phone?: string | null;
+  department?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface UserListResponse {
+  success: boolean;
+  data: ManagedUser[];
+  total: number;
+}
+
+export interface UserCreatePayload {
+  full_name: string;
+  username: string;
+  password: string;
+  role: 'admin' | 'user';
+  is_active: boolean;
+  title?: string;
+  email?: string;
 }
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
@@ -26,6 +56,7 @@ export interface NavItem {
   icon: React.ComponentType<{ size?: number; strokeWidth?: number; style?: React.CSSProperties }>;
   exact?: boolean;
   adminOnly?: boolean;
+  superAdminOnly?: boolean;
 }
 
 export interface QuickLink {
@@ -284,8 +315,15 @@ export type AuditAction =
   | 'Downloaded'
   | 'Processed'
   | 'Login'
+  | 'Logout'
   | 'Failed'
+  | 'Exported'
+  | 'Generated'
+  | 'Opened'
+  | 'Extract Emails'
   | string;
+
+export type AuditStatus = 'Success' | 'Warning' | 'Failed' | 'Info';
 
 export interface AuditLog {
   id: string;
@@ -294,6 +332,48 @@ export interface AuditLog {
   details: string;
   timestamp: string;
   reportName?: string;
+  role?: string | null;
+  module?: string | null;
+  status?: AuditStatus | string | null;
+}
+
+export interface AuditTrailRow {
+  id: number;
+  timestamp: string;
+  user: string;
+  role?: string | null;
+  module?: string | null;
+  action: string;
+  description: string;
+  status: AuditStatus | string;
+  entityType?: string | null;
+  entityId?: string | null;
+  reportName?: string | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  metadata?: Record<string, unknown> | null;
+  createdAt?: string | null;
+}
+
+export interface AuditTrailPage {
+  success: boolean;
+  data: AuditTrailRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+export interface AuditTrailQuery {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  role?: string;
+  module?: string;
+  status?: string;
+  action?: string;
+  date_from?: string;
+  date_to?: string;
 }
 
 // ─── Reports / ExistingReports ────────────────────────────────────────────────

@@ -12,6 +12,7 @@ import {
   type MasterUploadResult,
   type TemplateGenerateResult,
 } from '../../services/masterData.service';
+import { AuditTrailService } from '../../services/auditTrail.service';
 
 type UploadSlice = {
   status: UploadStatusState;
@@ -137,9 +138,24 @@ export function MasterData() {
     if (!templateMeta) return;
     try {
       await MasterDataService.downloadTemplate(undefined, templateMeta.file_name);
+      void AuditTrailService.recordEvent({
+        action: 'Template Downloaded',
+        module: 'Master Data',
+        description: `Downloaded distributor template ${templateMeta.file_name}`,
+        status: 'Success',
+        entity_type: 'template',
+        report_name: templateMeta.file_name,
+      });
     } catch (err) {
       setTemplateStatus('error');
       setTemplateMessage(err instanceof Error ? err.message : 'Template download failed');
+      void AuditTrailService.recordEvent({
+        action: 'Template Generation Failed',
+        module: 'Master Data',
+        description: err instanceof Error ? err.message : 'Template download failed',
+        status: 'Failed',
+        entity_type: 'template',
+      });
     }
   };
 

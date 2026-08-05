@@ -523,47 +523,81 @@ class ExcelParserService:
 
         return details
 
-    def parse_customer_master(self, path: Union[str, Path]) -> tuple[List[dict], int]:
+    def parse_customer_master(self, path: Union[str, Path]):
         """
         Parse customer master Excel (Phase 2).
 
         Extracts CUSTOMER NAME only: trim, drop blanks, de-duplicate (case-insensitive).
-        Returns (records, duplicates_ignored).
+        All other columns are ignored.
+
+        Returns ``CustomerMasterParseResult`` with explicit skip reasons
+        (blank name, duplicate, validation). Fully blank spreadsheet rows
+        are counted as Blank Customer Name — never silent.
         """
-        df = self.read_dataframe(path)
-        mapping = validate_customer_master_dataframe(df)
+        import pandas as pd
+
+        from app.schemas.master_parse import CustomerMasterParseResult
+
+        file_path = Path(path)
+        if not file_path.exists():
+            raise ExcelProcessingError(f"Excel file not found: {file_path}")
+        try:
+            engine = "xlrd" if file_path.suffix.lower() == ".xls" else "openpyxl"
+            df_raw = pd.read_excel(file_path, sheet_name=0, engine=engine)
+        except Exception as exc:
+            raise ExcelProcessingError(f"Unable to read Excel file: {exc}") from exc
+
+        df_raw.columns = [str(c).strip() for c in df_raw.columns]
+        excel_rows = int(len(df_raw))
+        df = df_raw.dropna(how="all")
+        fully_blank_rows = excel_rows - int(len(df))
+
+        mapping = validate_customer_master_dataframe(df if not df.empty else df_raw)
+        name_col = mapping["customer_name"]
+
         seen: set[str] = set()
         records: List[dict] = []
-        duplicates_ignored = 0
+        blank_customer_name = fully_blank_rows
+        duplicate_names = 0
+        validation_errors = 0
+        max_len = 255
 
-        for _, series in df.iterrows():
-            name = safe_str(series.get(mapping["customer_name"]))
+        for raw in df[name_col].tolist():
+            name = safe_str(raw)
             if not name:
+                blank_customer_name += 1
+                continue
+            if len(name) > max_len:
+                validation_errors += 1
                 continue
             key = name.casefold()
             if key in seen:
-                duplicates_ignored += 1
+                duplicate_names += 1
                 continue
             seen.add(key)
-            row: dict = {"customer_name": name}
-            if "customer_code" in mapping:
-                code = safe_str(series.get(mapping["customer_code"]))
-                if code:
-                    row["customer_code"] = code
-            if "segment" in mapping:
-                segment = safe_str(series.get(mapping["segment"]))
-                if segment:
-                    row["segment"] = segment
-            records.append(row)
+            records.append({"customer_name": name})
 
         if not records:
             raise ExcelProcessingError("No valid customer names found in Customer Master")
-        logger.info(
-            "Parsed {} customer master rows (duplicates_ignored={})",
-            len(records),
-            duplicates_ignored,
+
+        result = CustomerMasterParseResult(
+            records=records,
+            excel_rows=excel_rows,
+            blank_customer_name=blank_customer_name,
+            duplicate_names=duplicate_names,
+            validation_errors=validation_errors,
         )
-        return records, duplicates_ignored
+        logger.info(
+            "Parsed customer master | excel_rows={} imported={} blank={} "
+            "duplicates={} validation_errors={} skipped={}",
+            result.excel_rows,
+            result.imported,
+            result.blank_customer_name,
+            result.duplicate_names,
+            result.validation_errors,
+            result.skipped,
+        )
+        return result
 
     def parse_product_master(self, path: Union[str, Path]) -> tuple[List[dict], int]:
         """

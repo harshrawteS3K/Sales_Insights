@@ -68,7 +68,7 @@ export function UploadStatus({
           }}
         >
           <CheckCircle2 size={16} color={GREEN} style={{ flexShrink: 0, marginTop: 1 }} />
-          <span style={{ fontSize: '0.8125rem', color: '#065F46', lineHeight: 1.45 }}>{message}</span>
+          <span style={{ fontSize: '0.8125rem', color: '#065F46', lineHeight: 1.45, whiteSpace: 'pre-line' }}>{message}</span>
         </div>
       )}
 
