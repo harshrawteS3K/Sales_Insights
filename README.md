@@ -48,10 +48,11 @@ Keep Graph/DB secrets as-is. Ensure:
 ```env
 APP_HOST=0.0.0.0
 APP_PORT=8000
+# Local + UAT together (replace <SERVER-IP>; keep localhost for on-server testing)
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://<SERVER-IP>:5173
 ```
 
-Replace `<SERVER-IP>` with the real server address (e.g. `10.0.3.213`).
+Replace `<SERVER-IP>` with the real address (e.g. `10.0.3.213`). If the Vite Origin is missing from this list, login OPTIONS preflight returns HTTP 400 and POST never runs.
 
 ### 2. Frontend env
 

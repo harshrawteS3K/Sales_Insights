@@ -89,14 +89,23 @@ function withQuery(path: string, params?: RequestOptions['params']): string {
   return query ? `${path}?${query}` : path;
 }
 
+const CONNECTION_ERROR_MESSAGE =
+  'Unable to connect to the server. Please verify the server is running and reachable.';
+
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const url = `${API_BASE_URL}${withQuery(path.startsWith('/') ? path : `/${path}`, options.params)}`;
-  const response = await fetch(url, {
-    method: options.method || 'GET',
-    headers: buildHeaders(options.headers),
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    signal: options.signal,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: options.method || 'GET',
+      headers: buildHeaders(options.headers),
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: options.signal,
+    });
+  } catch (err) {
+    // CORS preflight failures, connection refused, offline, DNS, etc. never yield a Response.
+    throw new ApiError(CONNECTION_ERROR_MESSAGE, 0, 'NETWORK_ERROR', err);
+  }
 
   if (!response.ok) {
     throw await parseError(response);

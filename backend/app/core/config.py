@@ -55,7 +55,9 @@ class Settings(BaseSettings):
     app_version: str = Field(default="1.0.0", alias="APP_VERSION")
     api_v1_prefix: str = Field(default="/api/v1", alias="API_V1_PREFIX")
     debug: bool = Field(default=True, alias="DEBUG")
-    # Stored as str so DotEnv does not JSON-decode; exposed as list via property.
+    # Stored as str so pydantic-settings does not JSON-decode List fields.
+    # Set CORS_ORIGINS in .env (comma-separated). Do not hardcode UAT IPs here.
+    # Property cors_origins: split, strip, drop empties.
     cors_origins_raw: str = Field(default=_DEFAULT_CORS, alias="CORS_ORIGINS")
 
     # Database

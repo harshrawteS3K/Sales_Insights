@@ -7,6 +7,38 @@ import type { UserRole } from '../types';
 
 const TEXT = '#1F2937';
 
+const CONNECTION_ERROR =
+  'Unable to connect to the server. Please verify the server is running and reachable.';
+
+/** Map login failures: auth vs network/CORS — never mislabel connectivity as bad password. */
+function resolveLoginError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 401) {
+      return err.message?.trim() || 'Invalid username or password';
+    }
+    if (err.status === 0 || err.code === 'NETWORK_ERROR') {
+      return err.message?.trim() || CONNECTION_ERROR;
+    }
+    return err.message?.trim() || CONNECTION_ERROR;
+  }
+  if (err instanceof TypeError || err instanceof DOMException) {
+    return CONNECTION_ERROR;
+  }
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    if (
+      msg.includes('failed to fetch') ||
+      msg.includes('network') ||
+      msg.includes('load failed') ||
+      msg.includes('aborted') ||
+      msg.includes('timeout')
+    ) {
+      return CONNECTION_ERROR;
+    }
+  }
+  return CONNECTION_ERROR;
+}
+
 export function Login({
   onLogin,
 }: {
@@ -29,7 +61,7 @@ export function Login({
       const user = await AuthService.login(username.trim(), password);
       onLogin(user.role, user.name, user.title);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Invalid username or password');
+      setError(resolveLoginError(err));
     } finally {
       setLoading(false);
     }

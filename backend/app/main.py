@@ -49,6 +49,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.error("Database is unreachable at startup")
 
+    logger.info("CORS allow_origins | {}", settings.cors_origins)
+
     auth_mode = (settings.auth_mode or "headers").strip().lower()
     logger.info(
         "Auth configuration | AUTH_MODE={} | production={} | trusted_secret_set={} | jwt_secret_set={}",
@@ -88,6 +90,9 @@ def create_app() -> FastAPI:
     )
     application.state.debug = settings.debug
 
+    # Middleware: last added runs first (outermost).
+    # Request path: RequestLogging → CORSMiddleware (handles OPTIONS preflight) → routers.
+    # CORS must run before auth/route handlers so preflight never hits login validation.
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
