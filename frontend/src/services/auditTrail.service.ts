@@ -1,6 +1,7 @@
 import type { AuditTrailPage, AuditTrailRow, AuditTrailQuery } from '../types';
 import { apiRequest, getApiBaseUrl } from '../api';
 import { getSession } from '../api/session';
+import { triggerBrowserDownload } from '../utils/download';
 
 export type AuditEventPayload = {
   action: string;
@@ -56,10 +57,12 @@ export const AuditTrailService = {
       throw new Error('Failed to export audit trail');
     }
     const blob = await res.blob();
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `audit_trail_${new Date().toISOString().slice(0, 10)}.xlsx`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    const excelBlob = new Blob([blob], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    triggerBrowserDownload(
+      excelBlob,
+      `audit_trail_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    );
   },
 };

@@ -1,5 +1,6 @@
 import { apiRequest, getApiBaseUrl, ApiError } from '../api';
 import { getSession } from '../api/session';
+import { triggerBrowserDownload } from '../utils/download';
 import type { ManagedUser, UserListResponse, UserCreatePayload } from '../types';
 
 export type UserListQuery = {
@@ -68,10 +69,9 @@ export const UserManagementService = {
       throw new ApiError('Export failed', response.status);
     }
     const blob = await response.blob();
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `users_export.xlsx`;
-    link.click();
-    URL.revokeObjectURL(link.href);
+    const excelBlob = new Blob([blob], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    triggerBrowserDownload(excelBlob, 'users_export.xlsx');
   },
 };

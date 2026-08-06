@@ -78,7 +78,7 @@ def download_template(
         path=str(path),
         filename=filename,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        content_disposition_type="attachment",
     )
 
 

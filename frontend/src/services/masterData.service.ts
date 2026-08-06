@@ -5,6 +5,7 @@
 
 import { apiRequest, apiUpload, getApiBaseUrl, ApiError } from '../api';
 import { getSession } from '../api/session';
+import { filenameFromContentDisposition, triggerBrowserDownload } from '../utils/download';
 
 export type CustomerMaster = {
   id: number;
@@ -137,16 +138,17 @@ export const MasterDataService = {
       throw new ApiError(message, res.status);
     }
     const blob = await res.blob();
-    const disposition = res.headers.get('Content-Disposition') || '';
-    const match = /filename="?([^"]+)"?/i.exec(disposition);
-    const name = fileName || match?.[1] || 'Apcotex_Distributor_Template.xlsx';
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const name = filenameFromContentDisposition(
+      res.headers.get('Content-Disposition'),
+      fileName || 'Apcotex_Distributor_Template.xlsx',
+    );
+    // Ensure Excel MIME so the browser treats the blob as a downloadable file.
+    const excelBlob =
+      blob.type && blob.type !== 'application/octet-stream' && blob.type !== ''
+        ? blob
+        : new Blob([blob], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          });
+    triggerBrowserDownload(excelBlob, name);
   },
 };

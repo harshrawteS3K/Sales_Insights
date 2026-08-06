@@ -99,7 +99,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["X-Request-ID"],
+        expose_headers=["X-Request-ID", "Content-Disposition"],
     )
     application.add_middleware(RequestLoggingMiddleware)
 
