@@ -13,6 +13,7 @@ import {
   type TemplateGenerateResult,
 } from '../../services/masterData.service';
 import { AuditTrailService } from '../../services/auditTrail.service';
+import type { TemplateGenerateMode } from '../../types';
 
 type UploadSlice = {
   status: UploadStatusState;
@@ -33,31 +34,24 @@ const emptyUpload = (): UploadSlice => ({
 });
 
 export function MasterData() {
-  const [customer, setCustomer] = useState<UploadSlice>(emptyUpload);
   const [product, setProduct] = useState<UploadSlice>(emptyUpload);
   const [templateStatus, setTemplateStatus] = useState<TemplateGenStatus>('idle');
   const [templateMessage, setTemplateMessage] = useState<string | null>(null);
   const [templateMeta, setTemplateMeta] = useState<TemplateGenerateResult | null>(null);
+  const [templateMode, setTemplateMode] = useState<TemplateGenerateMode>('generic');
+  const [templateDistributorId, setTemplateDistributorId] = useState<number | null>(null);
 
-  const customerDone = customer.status === 'success';
   const productDone = product.status === 'success';
   const templateDone = templateStatus === 'ready';
 
   const timeline = useMemo(
     () => [
       {
-        id: 'customer',
-        label: 'Upload Customer Master',
-        detail: customerDone ? 'Completed' : customer.status === 'uploading' ? 'In progress' : 'Pending',
-        done: customerDone,
-        active: !customerDone && (customer.status === 'uploading' || (!customerDone && !productDone)),
-      },
-      {
         id: 'product',
         label: 'Upload Product Master',
         detail: productDone ? 'Completed' : product.status === 'uploading' ? 'In progress' : 'Pending',
         done: productDone,
-        active: customerDone && !productDone,
+        active: !productDone,
       },
       {
         id: 'template',
@@ -68,23 +62,14 @@ export function MasterData() {
             ? 'Generating'
             : 'Pending',
         done: templateDone,
-        active: customerDone && productDone && !templateDone,
+        active: productDone && !templateDone,
       },
     ],
-    [customer.status, customerDone, product.status, productDone, templateStatus, templateDone],
+    [product.status, productDone, templateStatus, templateDone],
   );
 
-  const runUpload = async (
-    kind: 'customer' | 'product',
-    file: File,
-  ) => {
-    const setSlice = kind === 'customer' ? setCustomer : setProduct;
-    const uploadFn =
-      kind === 'customer'
-        ? MasterDataService.uploadCustomerMaster
-        : MasterDataService.uploadProductMaster;
-
-    setSlice(prev => ({
+  const runProductUpload = async (file: File) => {
+    setProduct(prev => ({
       ...prev,
       status: 'uploading',
       progress: 0,
@@ -92,16 +77,15 @@ export function MasterData() {
       fileName: file.name,
     }));
 
-    // Reset template if masters change
     setTemplateMeta(null);
     setTemplateStatus('idle');
     setTemplateMessage(null);
 
     try {
-      const result: MasterUploadResult = await uploadFn(file, p => {
-        setSlice(prev => ({ ...prev, progress: p }));
+      const result: MasterUploadResult = await MasterDataService.uploadProductMaster(file, p => {
+        setProduct(prev => ({ ...prev, progress: p }));
       });
-      setSlice({
+      setProduct({
         status: 'success',
         progress: null,
         message: result.message,
@@ -110,7 +94,7 @@ export function MasterData() {
         fileName: result.file_name,
       });
     } catch (err) {
-      setSlice(prev => ({
+      setProduct(prev => ({
         ...prev,
         status: 'error',
         progress: null,
@@ -120,14 +104,20 @@ export function MasterData() {
   };
 
   const handleGenerate = async () => {
-    if (!customerDone || !productDone) return;
+    if (!productDone) return;
+    if (templateMode === 'distributor' && !templateDistributorId) return;
     setTemplateStatus('generating');
     setTemplateMessage(null);
     try {
-      const result = await MasterDataService.generateTemplate();
+      const result = await MasterDataService.generateTemplate({
+        mode: templateMode,
+        ...(templateMode === 'distributor' && templateDistributorId
+          ? { distributor_id: templateDistributorId }
+          : {}),
+      });
       setTemplateMeta(result);
       setTemplateStatus('ready');
-      setTemplateMessage(result.message);
+      setTemplateMessage(result.warning || result.message);
     } catch (err) {
       setTemplateStatus('error');
       setTemplateMessage(err instanceof Error ? err.message : 'Template generation failed');
@@ -168,7 +158,7 @@ export function MasterData() {
           Master Data Management
         </h1>
         <p style={{ fontSize: '0.875rem', color: '#6B7280', margin: 0 }}>
-          Manage master datasets and generate official distributor templates.
+          Upload Product Master and generate the quarterly distributor sales template.
         </p>
       </div>
 
@@ -184,30 +174,13 @@ export function MasterData() {
         }}
       >
         <MasterUploadCard
-          title="Upload Customer Master"
-          description="Upload APCOTEX Customer Master Excel file."
-          helperText={
-            <>
-              The <strong>CUSTOMER NAME</strong> column will be extracted and used to populate the Customer
-              dropdown inside the distributor template.
-            </>
-          }
-          status={customer.status}
-          progress={customer.progress}
-          message={customer.message}
-          lastUploaded={customer.lastUploaded}
-          recordsImported={customer.recordsImported}
-          fileName={customer.fileName}
-          onUpload={file => runUpload('customer', file)}
-        />
-
-        <MasterUploadCard
           title="Upload Product Master"
           description="Upload APCOTEX Product Master Excel file."
           helperText={
             <>
-              The Product Master will be used to populate Product dropdowns inside the distributor template.
-              Products are linked by <strong>Industry Type → Product Code</strong>.
+              Used to populate Segment and Product dropdowns. Products are linked by{' '}
+              <strong>Industry Type Description → Product Code</strong>. Distributors enter Customer
+              Name as free text and Reporting Quarter manually (e.g. Q1 2026).
             </>
           }
           status={product.status}
@@ -216,7 +189,7 @@ export function MasterData() {
           lastUploaded={product.lastUploaded}
           recordsImported={product.recordsImported}
           fileName={product.fileName}
-          onUpload={file => runUpload('product', file)}
+          onUpload={runProductUpload}
         />
 
         <TemplateGenerationCard
@@ -224,8 +197,24 @@ export function MasterData() {
           message={templateMessage}
           templateVersion={templateMeta?.template_version ?? null}
           generatedAt={templateMeta?.generated_at ?? null}
-          canGenerate={customerDone && productDone}
+          canGenerate={productDone}
           canDownload={templateDone && !!templateMeta}
+          mode={templateMode}
+          distributorId={templateDistributorId}
+          fallbackGeneric={Boolean(templateMeta?.fallback_generic)}
+          onModeChange={mode => {
+            setTemplateMode(mode);
+            if (mode === 'generic') setTemplateDistributorId(null);
+            setTemplateStatus('idle');
+            setTemplateMessage(null);
+            setTemplateMeta(null);
+          }}
+          onDistributorChange={id => {
+            setTemplateDistributorId(id);
+            setTemplateStatus('idle');
+            setTemplateMessage(null);
+            setTemplateMeta(null);
+          }}
           onGenerate={handleGenerate}
           onDownload={handleDownload}
         />

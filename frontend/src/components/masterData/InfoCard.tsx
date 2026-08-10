@@ -15,19 +15,19 @@ type Props = {
 
 const DEFAULT_FLOW: FlowItem[] = [
   {
-    title: 'Customer Master',
-    subtitle:
-      'Customer dropdown list generated from Customer Master. Unique customer names are extracted and used in the distributor template.',
-  },
-  {
     title: 'Product Master',
     subtitle:
-      'Segment-based product dropdowns generated from Product Master. After selecting a Segment, only the corresponding Product Codes are available in the template.',
+      'Segment and Product dropdowns come from Product Master (Industry Type Description → Product Code). Customer Name is entered freely by the distributor.',
+  },
+  {
+    title: 'Quarterly Template',
+    subtitle:
+      'One template per quarter: Name of Person, Reporting Quarter (manual, e.g. Q1 2026), then Sr. No., Customer Name, Segment, Product, Sales Quantity.',
   },
 ];
 
 const DEFAULT_DESCRIPTION =
-  'Uploaded Customer Master and Product Master datasets automatically populate dropdown lists inside the official APCOTEX distributor template. Products are dynamically filtered based on the selected Segment, ensuring distributors only see valid product codes for the chosen industry.';
+  'Upload Product Master, then generate the official quarterly distributor template. Segment selection filters Product. Customer names are typed manually — Customer Master is not required for template generation.';
 
 export function InfoCard({
   title = 'How Template Generation Works',

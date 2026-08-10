@@ -1,4 +1,4 @@
-"""Reporting month normalization helpers."""
+"""Reporting month / quarter normalization helpers."""
 
 from __future__ import annotations
 
@@ -11,15 +11,20 @@ _ISO_DT = re.compile(
     r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?"
 )
 
+# Strict: "Q1 2026" / "q1  2026" — space(s) between quarter and year only
+_QUARTER_STRICT = re.compile(r"^Q([1-4])\s+(\d{4})$", flags=re.IGNORECASE)
+
 
 def normalize_reporting_month(value: object) -> str:
     """
-    Normalize Reporting Month to a stable business key string.
+    Normalize Reporting Quarter / Month to a stable business key string.
 
-    Excel often stores months as date cells (``2026-07-01``). Those must become
-    ``July 2026`` so Distributor + Reporting Month identity matches across uploads.
+    Quarters (strict):
+      - ``Q1 2026``, ``q3 2026`` → ``Q3 2026``
+      - Rejects: ``Q1-2026``, ``2026 Q1``, ``Quarter1``, ``Q5 2026``
 
-    Already-human values (``July 2026``, ``Q2 FY26``) are returned trimmed as-is.
+    Months (legacy):
+      - ``July 2026``, Excel date cells → ``July 2026``
     """
     if value is None:
         return ""
@@ -29,14 +34,12 @@ def normalize_reporting_month(value: object) -> str:
     if isinstance(value, date):
         return value.strftime("%B %Y")
 
-    # Excel serial numbers occasionally appear as int/float
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
-            # Excel epoch 1899-12-30
             from datetime import timedelta
 
             serial = float(value)
-            if 20000 < serial < 80000:  # rough sane range for 1950–2100
+            if 20000 < serial < 80000:
                 dt = datetime(1899, 12, 30) + timedelta(days=serial)
                 return dt.strftime("%B %Y")
         except (OverflowError, ValueError):
@@ -46,7 +49,22 @@ def normalize_reporting_month(value: object) -> str:
     if not text or text.lower() in {"nan", "none", "null", "nat"}:
         return ""
 
-    # Datetime/date string from openpyxl str() or DB backfill
+    # Collapse internal whitespace for quarter matching
+    collapsed = re.sub(r"\s+", " ", text).strip()
+    quarter = _QUARTER_STRICT.match(collapsed)
+    if quarter:
+        return f"Q{quarter.group(1)} {quarter.group(2)}"
+
+    # Reject explicit invalid quarter shapes (Prompt 1A)
+    if re.match(r"^Q[1-4]\s*[-/]\s*\d{4}$", collapsed, flags=re.IGNORECASE):
+        return ""  # Q1-2026 / Q1/2026
+    if re.match(r"^Q[5-9]", collapsed, flags=re.IGNORECASE):
+        return ""  # Q5 …
+    if re.match(r"^\d{4}\s*Q[1-4]\b", collapsed, flags=re.IGNORECASE):
+        return ""  # 2026 Q1
+    if re.match(r"^quarter\s*\d", collapsed, flags=re.IGNORECASE):
+        return ""  # Quarter1
+
     match = _ISO_DT.match(text)
     if match:
         year, month = int(match.group(1)), int(match.group(2))

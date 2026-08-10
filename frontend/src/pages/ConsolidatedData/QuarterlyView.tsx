@@ -22,7 +22,7 @@ type SortKey = 'customer' | 'segment' | 'product' | 'quantity' | 'contributionPc
 const PAGE_SIZE = 10;
 
 /**
- * Virtual Quarterly View — SQL-aggregated ACTIVE monthly data by Distributor Company.
+ * Virtual Quarterly View — SQL-aggregated ACTIVE quarterly reports by Distributor Company.
  * Does not create or store quarterly reports.
  */
 export function QuarterlyView({ quarters, companies }: Props) {
@@ -135,7 +135,7 @@ export function QuarterlyView({ quarters, companies }: Props) {
             fontSize: '0.875rem',
           }}
         >
-          No ACTIVE monthly reports found for {quarter || 'this quarter'}.
+          No ACTIVE quarterly reports found for {quarter || 'this quarter'}.
         </div>
       )}
 
@@ -159,7 +159,7 @@ export function QuarterlyView({ quarters, companies }: Props) {
                     'Total Quantity (MT)',
                     'Products Sold',
                     'Reports Included',
-                    'Months Submitted',
+                    'Periods Included',
                   ].map(h => (
                     <th
                       key={h}
@@ -211,7 +211,7 @@ export function QuarterlyView({ quarters, companies }: Props) {
                       {row.isPartial && (
                         <div style={{ fontSize: '0.6875rem', color: '#B45309', marginTop: 2 }}>
                           Partial quarter ({row.monthsSubmitted.length}/
-                          {row.monthsExpected.length} months)
+                          {row.monthsExpected.length} periods)
                         </div>
                       )}
                     </td>
@@ -352,7 +352,7 @@ function QuarterlyReportPanel({
             <span style={{ color: '#374151' }}>{report.period.label}</span>
           </div>
           <div style={{ marginTop: 6, fontSize: '0.8125rem', color: '#6B7280' }}>
-            Virtual quarterly report · ACTIVE monthly data only · Not stored
+            Virtual quarterly report · ACTIVE quarterly reports only · Not stored
           </div>
           <div
             style={{
@@ -367,7 +367,7 @@ function QuarterlyReportPanel({
             <Stat label="Customers" value={String(report.customerCount)} />
             <Stat label="Reports Included" value={String(report.reportsIncluded)} />
             <Stat
-              label="Months Submitted"
+              label="Periods Included"
               value={report.monthsSubmitted.join(', ') || '—'}
             />
           </div>

@@ -107,9 +107,24 @@ SALES_REPORT_COLUMN_ALIASES = {
         "product",
         "product name",
         "product_name",
+        "product (fg code)",
+        "product fg code",
+        "fg code",
         "grade",
         "sku",
     ],
+    "quantity": [
+        "sales quantity",
+        "quantity",
+        "qty",
+        "qty kg",
+        "qty (kg)",
+        "quantity kg",
+        "quantity (kg)",
+        "volume",
+        "qty_kg",
+    ],
+    # Legacy stock columns — ignored by quarterly parser if present
     "opening_stock": [
         "opening stock",
         "opening_stock",
@@ -132,17 +147,7 @@ SALES_REPORT_COLUMN_ALIASES = {
         "closing qty",
         "closing quantity",
     ],
-    "quantity": [
-        "quantity",
-        "qty",
-        "qty kg",
-        "qty (kg)",
-        "quantity kg",
-        "quantity (kg)",
-        "volume",
-        "qty_kg",
-    ],
-    # Legacy per-row period (final template uses Reporting Month in header only)
+    # Legacy per-row period (final template uses Reporting Quarter in header only)
     "period": [
         "period",
         "reporting period",

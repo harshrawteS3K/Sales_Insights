@@ -107,17 +107,14 @@ async def test_scenario2_upload_product_master_200(db: Session, tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_scenario3_generate_template_dropdowns(db: Session, tmp_path: Path):
-    cust_path = _write_customer_master(tmp_path / "c.xlsx", ["Alpha Co", "Beta Co", "Zeta Co"])
     prod_path = _write_product_master(
         tmp_path / "p.xlsx",
         [("PAPER", "FGC8200-200"), ("CARPET", "FGCB200-200")],
     )
-    await CustomerMasterService(db).upload_and_replace(_Upload(cust_path), actor="test")
     await ProductMasterService(db).upload_and_replace(_Upload(prod_path), actor="test")
 
     out = tmp_path / "template.xlsx"
     ExcelTemplateGenerator().generate(
-        customers=CustomerMasterRepository(db).list_names(),
         products_by_segment=ProductMasterRepository(db).list_codes_by_segment(),
         output_path=out,
     )
@@ -126,29 +123,33 @@ async def test_scenario3_generate_template_dropdowns(db: Session, tmp_path: Path
     assert "_lists" in wb.sheetnames
     lists = wb["_lists"]
     assert lists.sheet_state == "hidden"
-    customers = [lists["A2"].value, lists["A3"].value, lists["A4"].value]
-    assert customers == ["Alpha Co", "Beta Co", "Zeta Co"]
+    # Customers column A is unused; segments live in column B
     assert set(filter(None, [lists["B2"].value, lists["B3"].value])) == {"CARPET", "PAPER"}
     assert "SEG_CARPET" in wb.defined_names
     assert "SEG_PAPER" in wb.defined_names
     assert "SegmentMap" in wb.defined_names
-    # Headers include Customer + Product for dropdowns
+    assert "CustomerList" not in wb.defined_names
     sheet = wb["Sales Report"]
-    headers = [sheet.cell(7, c).value for c in range(1, 8)]
+    headers = [sheet.cell(6, c).value for c in range(1, 6)]
     assert headers == [
         "Sr. No.",
-        "Name of Customer",
+        "Customer Name",
         "Segment",
         "Product",
-        "Opening Stock",
-        "Closing Stock",
-        "Quantity",
+        "Sales Quantity",
     ]
+    assert sheet.cell(1, 1).value == "Name of Person"
+    assert sheet.cell(2, 1).value == "Company Name"
+    assert sheet.cell(3, 1).value == "Reporting Quarter"
+    assert "QuarterList" not in wb.defined_names
+    assert "Q1 = April" in str(sheet.cell(4, 1).value or "")
     formulas = [str(dv.formula1) for dv in sheet.data_validations.dataValidation]
     assert any("INDIRECT" in f and "SegmentMap" in f for f in formulas)
-    assert len(sheet.data_validations.dataValidation) >= 2
-    # Distributor header values must always be blank
-    for row in range(1, 6):
+    assert len(sheet.data_validations.dataValidation) >= 1
+    # No quarter dropdown on B3
+    for dv in sheet.data_validations.dataValidation:
+        assert "QuarterList" not in str(dv.formula1)
+    for row in range(1, 4):
         assert sheet.cell(row, 2).value in (None, "")
 
 
@@ -157,18 +158,15 @@ async def test_generated_template_never_prefills_distributor_header(
     db: Session, tmp_path: Path
 ):
     """
-    Regression: template must stay blank even when distributors / periods exist in DB
-    and even if a distributors list is passed into the generator.
+    Regression: template metadata values must stay blank even when distributors /
+    periods exist in DB and even if a distributors list is passed into the generator.
     """
     from app.models.distributor import Distributor
     from app.repositories.distributor_repository import DistributorRepository
 
-    cust_path = _write_customer_master(tmp_path / "c.xlsx", ["Cust A"])
     prod_path = _write_product_master(tmp_path / "p.xlsx", [("PAPER", "PROD-1")])
-    await CustomerMasterService(db).upload_and_replace(_Upload(cust_path), actor="test")
     await ProductMasterService(db).upload_and_replace(_Upload(prod_path), actor="test")
 
-    # Seed a distributor that previously would have been written into B1
     DistributorRepository(db).create(
         Distributor(name="Harsh", company="Harsh Co", address="Pune", phone="999")
     )
@@ -176,19 +174,16 @@ async def test_generated_template_never_prefills_distributor_header(
 
     out = tmp_path / "blank_template.xlsx"
     ExcelTemplateGenerator().generate(
-        customers=["Cust A"],
         products=["PROD-1"],
         distributors=["Harsh", "Someone Else"],
-        periods=["August 2026", "July 2026"],
+        periods=["Q3 2026", "Q2 2026"],
         output_path=out,
     )
     sheet = load_workbook(out)["Sales Report"]
-    assert sheet.cell(1, 1).value == "Name of Distributor"
+    assert sheet.cell(1, 1).value == "Name of Person"
     assert sheet.cell(2, 1).value == "Company Name"
-    assert sheet.cell(3, 1).value == "Address"
-    assert sheet.cell(4, 1).value == "Phone No"
-    assert sheet.cell(5, 1).value == "Reporting Month"
-    for row in range(1, 6):
+    assert sheet.cell(3, 1).value == "Reporting Quarter"
+    for row in range(1, 4):
         assert sheet.cell(row, 2).value in (None, ""), (
             f"Row {row} col B must be blank, got {sheet.cell(row, 2).value!r}"
         )
@@ -200,12 +195,15 @@ async def test_generated_template_never_prefills_distributor_header(
         preferred_name=result.file_name
     )
     svc_sheet = load_workbook(path)["Sales Report"]
-    for row in range(1, 6):
+    for row in range(1, 4):
         assert svc_sheet.cell(row, 2).value in (None, "")
-    # Sales entry cells (except Sr. No.) stay blank
-    for col in range(2, 8):
-        assert svc_sheet.cell(8, col).value in (None, "")
+    # Sales entry cells (except Sr. No.) stay blank — data starts at row 7
+    for col in range(2, 6):
+        assert svc_sheet.cell(7, col).value in (None, "")
 
+
+@pytest.mark.asyncio
+async def test_scenario4_customer_master_replace(db: Session, tmp_path: Path):
     svc = CustomerMasterService(db)
     await svc.upload_and_replace(
         _Upload(_write_customer_master(tmp_path / "c1.xlsx", ["Old A", "Old B"])),
@@ -350,13 +348,12 @@ def test_segment_range_name_sanitizes_spaces():
 
 
 @pytest.mark.asyncio
-async def test_generate_requires_masters(db: Session):
-    # Clear via replace with empty is not allowed by parser; soft-delete manually
-    CustomerMasterRepository(db).soft_delete_all_active()
+async def test_generate_requires_product_master(db: Session):
     ProductMasterRepository(db).soft_delete_all_active()
     svc = TemplateGenerationService(db)
-    with pytest.raises(ValidationAppError):
+    with pytest.raises(ValidationAppError) as exc:
         svc.generate(actor="test")
+    assert "Product Master" in str(exc.value)
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,26 @@ export type VizQuery = {
   distributor_limit?: number;
 };
 
+export type TrendPoint = {
+  qty: number;
+  quarter?: string;
+  month?: string;
+};
+
+export type HeatmapCell = {
+  distributor: string;
+  qty: number;
+  quarter?: string;
+  month?: string;
+};
+
+export type HeatmapResponse = {
+  months: string[];
+  distributors: string[];
+  cells: HeatmapCell[];
+  quarters?: string[];
+};
+
 export const VisualizationsService = {
   getProductQuantities: async (q: VizQuery = {}): Promise<ProductQty[]> => {
     return apiRequest<ProductQty[]>('/visualizations/products', { params: q });
@@ -57,18 +77,26 @@ export const VisualizationsService = {
     );
   },
 
-  getMonthlyTrend: async (q: VizQuery = {}) => {
-    return apiRequest<Array<{ month: string; qty: number }>>('/visualizations/monthly-trend', {
+  getQuarterlyTrend: async (q: VizQuery = {}): Promise<TrendPoint[]> => {
+    return apiRequest<TrendPoint[]>('/visualizations/quarterly-trend', {
       params: q,
     });
   },
 
-  getDistributorMonthHeatmap: async (q: VizQuery = {}) => {
-    return apiRequest<{
-      months: string[];
-      distributors: string[];
-      cells: Array<{ distributor: string; month: string; qty: number }>;
-    }>('/visualizations/distributor-month-heatmap', { params: q });
+  /** @deprecated Prefer getQuarterlyTrend */
+  getMonthlyTrend: async (q: VizQuery = {}): Promise<TrendPoint[]> => {
+    return VisualizationsService.getQuarterlyTrend(q);
+  },
+
+  getDistributorQuarterHeatmap: async (q: VizQuery = {}): Promise<HeatmapResponse> => {
+    return apiRequest<HeatmapResponse>('/visualizations/distributor-quarter-heatmap', {
+      params: q,
+    });
+  },
+
+  /** @deprecated Prefer getDistributorQuarterHeatmap */
+  getDistributorMonthHeatmap: async (q: VizQuery = {}): Promise<HeatmapResponse> => {
+    return VisualizationsService.getDistributorQuarterHeatmap(q);
   },
 
   getProductsKpi: async (q: VizQuery = {}): Promise<KpiItem[]> => {

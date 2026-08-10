@@ -26,12 +26,11 @@ function DropdownHint({ label }: { label: string }) {
 
 export function TemplatePreview() {
   const salesCols = [
-    { key: 'customer', label: 'Customer', dropdown: true },
-    { key: 'segment', label: 'Segment', dropdown: false },
+    { key: 'sr', label: 'Sr. No.', dropdown: false },
+    { key: 'customer', label: 'Customer Name', dropdown: false },
+    { key: 'segment', label: 'Segment', dropdown: true },
     { key: 'product', label: 'Product', dropdown: true },
-    { key: 'opening', label: 'Opening Stock', dropdown: false },
-    { key: 'closing', label: 'Closing Stock', dropdown: false },
-    { key: 'qty', label: 'Quantity', dropdown: false },
+    { key: 'qty', label: 'Sales Quantity', dropdown: false },
   ];
 
   return (
@@ -53,7 +52,7 @@ export function TemplatePreview() {
           letterSpacing: '0.02em',
         }}
       >
-        Official Template Preview
+        Quarterly Template Preview
       </div>
 
       <div style={{ padding: '14px 14px 16px' }}>
@@ -67,17 +66,17 @@ export function TemplatePreview() {
             marginBottom: 8,
           }}
         >
-          Distributor Details
+          Report Metadata
         </div>
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
             gap: 8,
-            marginBottom: 16,
+            marginBottom: 10,
           }}
         >
-          {['Distributor Name', 'Company', 'Address', 'Phone', 'Reporting Month'].map(f => (
+          {['Name of Person', 'Company Name', 'Reporting Quarter'].map(f => (
             <div
               key={f}
               style={{
@@ -90,9 +89,25 @@ export function TemplatePreview() {
                 fontWeight: 500,
               }}
             >
-              {f}
+              {f === 'Reporting Quarter' ? `${f} (type e.g. Q1 2026)` : f}
             </div>
           ))}
+        </div>
+
+        <div
+          style={{
+            marginBottom: 16,
+            padding: '8px 10px',
+            background: 'rgba(31,95,168,0.06)',
+            border: `1px solid rgba(31,95,168,0.15)`,
+            borderRadius: 6,
+            fontSize: '0.6875rem',
+            color: '#1E3A5F',
+            lineHeight: 1.45,
+          }}
+        >
+          <strong>Note:</strong> Q1 = April – June · Q2 = July – September · Q3 = October – December ·
+          Q4 = January – March
         </div>
 
         <div
@@ -109,7 +124,7 @@ export function TemplatePreview() {
         </div>
 
         <div style={{ overflowX: 'auto', border: `1px solid ${BORDER}`, borderRadius: 8, background: 'white' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 520 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 480 }}>
             <thead>
               <tr style={{ background: '#F3F4F6' }}>
                 {salesCols.map(col => (
@@ -143,7 +158,11 @@ export function TemplatePreview() {
                         color: '#9CA3AF',
                       }}
                     >
-                      {col.dropdown ? 'Select…' : '—'}
+                      {col.key === 'customer'
+                        ? 'Type…'
+                        : col.dropdown
+                          ? 'Select…'
+                          : '—'}
                     </td>
                   ))}
                 </tr>
@@ -154,12 +173,16 @@ export function TemplatePreview() {
 
         <div style={{ marginTop: 10, fontSize: '0.75rem', color: TEXT_SECONDARY, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: '#9CA3AF' }} />
+            Customer Name — free text
+          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <span style={{ width: 8, height: 8, borderRadius: 2, background: BLUE }} />
-            Customer — dropdown from Customer Master
+            Segment — from Product Master
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <span style={{ width: 8, height: 8, borderRadius: 2, background: TEAL }} />
-            Product — dropdown from Product Master
+            Product — filtered by Segment (FG code)
           </span>
         </div>
       </div>

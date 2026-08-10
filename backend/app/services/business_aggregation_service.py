@@ -1,4 +1,4 @@
-"""Business Aggregation Engine — dynamic period rollups over ACTIVE monthly data.
+"""Business Aggregation Engine — dynamic period rollups over ACTIVE quarterly data.
 
 No quarterly tables. No duplicate storage. SQL aggregation only.
 Designed for Quarterly today; Yearly / Half-Yearly / FY / custom via PeriodSpec.
@@ -120,7 +120,7 @@ class BusinessAggregationService:
         Case 2 — Virtual Quarterly Report for one Distributor Company.
 
         Header KPIs from company summary; detail grid is Customer × Segment × Product
-        with server-side pagination, search, and sorting over ACTIVE monthly data.
+        with server-side pagination, search, and sorting over ACTIVE quarterly data.
         """
         if not company or not company.strip():
             raise ValidationAppError("Distributor Company is required for quarterly report")

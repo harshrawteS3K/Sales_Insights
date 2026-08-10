@@ -51,9 +51,10 @@ class ConsolidatedDataService:
             segments=self.sales.distinct_column_values("segment"),
             products=self.sales.distinct_column_values("product"),
             companies=companies,
+            reportingQuarters=months,
             reportingMonths=months,
             periods=months,
-            quarters=quarters,
+            quarters=quarters or months,
             quantityUnit=QUANTITY_UNIT,
         )
 
@@ -176,7 +177,7 @@ class ConsolidatedDataService:
                 action=AuditAction.DELETED,
                 details=(
                     f"Deleted sales record id={record_id} | customer={customer} | "
-                    f"distributor={distributor_name} | reporting_month={month}"
+                    f"distributor={distributor_name} | reporting_quarter={month}"
                 ),
                 report_name=None,
                 entity_type="sales_record",
@@ -186,27 +187,28 @@ class ConsolidatedDataService:
         return DeleteResult(message="Sales record deleted", deletedCount=1)
 
     def preview_delete_report(self, distributor: str, reporting_month: str) -> DeleteReportPreview:
-        """Return how many rows would be deleted for distributor + reporting month."""
+        """Return how many rows would be deleted for distributor + reporting quarter."""
         if not distributor.strip() or not reporting_month.strip():
-            raise ValidationAppError("Distributor and Reporting Month are required")
+            raise ValidationAppError("Distributor and Reporting Quarter are required")
         count = self.sales.count_by_distributor_period(distributor, reporting_month)
         return DeleteReportPreview(
             distributor=distributor,
+            reportingQuarter=reporting_month,
             reportingMonth=reporting_month,
             period=reporting_month,
             rowCount=count,
         )
 
     def delete_report(self, distributor: str, reporting_month: str, *, actor: str) -> DeleteResult:
-        """Soft-delete the active business report for Distributor + Reporting Month."""
+        """Soft-delete the active business report for Distributor + Reporting Quarter."""
         if not distributor.strip() or not reporting_month.strip():
-            raise ValidationAppError("Distributor and Reporting Month are required")
+            raise ValidationAppError("Distributor and Reporting Quarter are required")
 
         count = self.sales.count_by_distributor_period(distributor, reporting_month)
         if count == 0:
             raise NotFoundError(
                 f"No sales records found for distributor={distributor!r} "
-                f"reporting_month={reporting_month!r}"
+                f"reporting_quarter={reporting_month!r}"
             )
 
         deleted, report_ids = self.sales.soft_delete_by_distributor_period(
@@ -225,7 +227,7 @@ class ConsolidatedDataService:
                 action=AuditAction.DELETED,
                 details=(
                     f"Deleted imported report | distributor={distributor} | "
-                    f"reporting_month={reporting_month} | rows_deleted={deleted} | "
+                    f"reporting_quarter={reporting_month} | rows_deleted={deleted} | "
                     f"reports_soft_deleted={report_ids}"
                 ),
                 report_name=f"{distributor} / {reporting_month}",
@@ -246,7 +248,7 @@ class ConsolidatedDataService:
             AuditTrailCreate(
                 user_name=actor,
                 action=AuditAction.DOWNLOADED,
-                details=f"Exported consolidated sales data ({total} rows){filters_summary}",
+                details=f"Exported Quarterly Report ({total} rows){filters_summary}",
                 entity_type="consolidated_data",
             )
         )
@@ -304,8 +306,7 @@ class ConsolidatedDataService:
                     reportId=report_id,
                     distributor=dist.name if dist else "",
                     company=(dist.company if dist else None) or None,
-                    address=(dist.address if dist else None) or None,
-                    phone=(dist.phone if dist else None) or None,
+                    reportingQuarter=reporting_month,
                     reportingMonth=reporting_month,
                     senderName=getattr(report, "sender_name", None) if report else None,
                     senderEmail=getattr(report, "sender_email", None) if report else None,
@@ -329,16 +330,6 @@ class ConsolidatedDataService:
                 segment=record.segment,
                 product=record.product,
                 quantity=record.quantity_display or format_quantity(record.quantity),
-                openingStock=(
-                    format_quantity(record.opening_stock)
-                    if record.opening_stock is not None
-                    else None
-                ),
-                closingStock=(
-                    format_quantity(record.closing_stock)
-                    if record.closing_stock is not None
-                    else None
-                ),
             )
             groups[report_id].sales.append(line)
             groups[report_id].recordCount = len(groups[report_id].sales)

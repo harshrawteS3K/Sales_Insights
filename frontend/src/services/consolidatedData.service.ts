@@ -17,6 +17,7 @@ export interface DeleteResult {
 
 export interface DeleteReportPreview {
   distributor: string;
+  reportingQuarter?: string;
   reportingMonth?: string;
   period?: string;
   rowCount: number;
@@ -73,18 +74,28 @@ export const ConsolidatedDataService = {
   /** GET /api/consolidated-data/report/preview */
   previewDeleteReport: async (
     distributor: string,
-    reportingMonth: string
+    reportingQuarter: string
   ): Promise<DeleteReportPreview> => {
     return apiRequest<DeleteReportPreview>('/consolidated-data/report/preview', {
-      params: { distributor, reportingMonth, period: reportingMonth },
+      params: {
+        distributor,
+        reportingQuarter,
+        reportingMonth: reportingQuarter,
+        period: reportingQuarter,
+      },
     });
   },
 
   /** DELETE /api/consolidated-data/report */
-  deleteReport: async (distributor: string, reportingMonth: string): Promise<DeleteResult> => {
+  deleteReport: async (distributor: string, reportingQuarter: string): Promise<DeleteResult> => {
     return apiRequest<DeleteResult>('/consolidated-data/report', {
       method: 'DELETE',
-      body: { distributor, reportingMonth, period: reportingMonth },
+      body: {
+        distributor,
+        reportingQuarter,
+        reportingMonth: reportingQuarter,
+        period: reportingQuarter,
+      },
     });
   },
 

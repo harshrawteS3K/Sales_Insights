@@ -122,31 +122,41 @@ def get_distributor_contribution(
 @router.get(
     "/monthly-trend",
     response_model=List[Dict[str, Any]],
-    summary="Monthly sales trend",
+    summary="Quarterly sales trend (legacy path)",
 )
-def get_monthly_trend(
+@router.get(
+    "/quarterly-trend",
+    response_model=List[Dict[str, Any]],
+    summary="Quarterly sales trend",
+)
+def get_quarterly_trend(
     service: DashboardServiceDep,
     _: RequireUser,
     product: Optional[str] = Query(None),
     distributor: Optional[str] = Query(None),
 ) -> List[Dict[str, Any]]:
-    """GET /api/visualizations/monthly-trend — line chart data."""
+    """GET /api/visualizations/quarterly-trend — quantity by reporting quarter."""
     return service.monthly_sales_trend(product=product, distributor=distributor)
 
 
 @router.get(
     "/distributor-month-heatmap",
     response_model=Dict[str, Any],
-    summary="Distributor vs month heatmap",
+    summary="Distributor vs quarter heatmap (legacy path)",
 )
-def get_distributor_month_heatmap(
+@router.get(
+    "/distributor-quarter-heatmap",
+    response_model=Dict[str, Any],
+    summary="Distributor vs quarter heatmap",
+)
+def get_distributor_quarter_heatmap(
     service: DashboardServiceDep,
     _: RequireUser,
     product: Optional[str] = Query(None),
     distributor: Optional[str] = Query(None),
     distributor_limit: int = Query(15, ge=1, le=40),
 ) -> Dict[str, Any]:
-    """GET /api/visualizations/distributor-month-heatmap."""
+    """GET /api/visualizations/distributor-quarter-heatmap."""
     return service.distributor_month_heatmap(
         product=product,
         distributor=distributor,

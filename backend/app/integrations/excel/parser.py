@@ -31,7 +31,7 @@ from app.integrations.excel.headers import (
 )
 from app.schemas.sales_record import ParsedSalesRow
 from app.utils.hashing import build_sales_row_hash
-from app.utils.quantity import optional_int, parse_optional_stock, parse_quantity, safe_str
+from app.utils.quantity import optional_int, parse_quantity, safe_str
 from app.utils.reporting_month import normalize_reporting_month
 from app.validators.excel_validators import validate_customer_master_dataframe
 from app.integrations.excel.product_master_parser import parse_product_master_workbook
@@ -102,12 +102,10 @@ class ExcelParserService:
 
         distributor_details = self._extract_distributor_details(raw_rows)
         logger.info(
-            "Distributor Parsed | name={!r} | company={!r} | phone={!r} | reporting_month={!r} | address_lines={}",
+            "Distributor Parsed | name={!r} | company={!r} | reporting_month={!r}",
             distributor_details.get("name") or "",
             distributor_details.get("company") or "",
-            distributor_details.get("phone") or "",
             distributor_details.get("reporting_month") or "",
-            len((distributor_details.get("address") or "").splitlines()),
         )
 
         header_row_idx = find_sales_header_row(raw_rows)
@@ -167,8 +165,6 @@ class ExcelParserService:
         template_detected = is_official or bool(
             distributor_details.get("name")
             or distributor_details.get("company")
-            or distributor_details.get("address")
-            or distributor_details.get("phone")
         )
 
         logger.info(
@@ -187,12 +183,12 @@ class ExcelParserService:
         if "distributor" not in mapping and not header_distributor:
             raise ExcelProcessingError(
                 "Official APCOTEX Template validation failed. "
-                "Missing Distributor Name in Distributor Details "
+                "Missing Name of Person in report metadata "
                 "and no Distributor column in the sales table.",
                 details={"distributor_details": distributor_details},
             )
 
-        # --- Reporting Month (report-level; required) ---
+        # --- Reporting Quarter (stored as reporting_month key; required) ---
         reporting_month = normalize_reporting_month(
             distributor_details.get("reporting_month")
         )
@@ -205,11 +201,14 @@ class ExcelParserService:
         if not reporting_month:
             raise ExcelProcessingError(
                 "Official APCOTEX Template validation failed. "
-                "Missing Reporting Month in Distributor Details.",
+                "Missing Reporting Quarter in report metadata.",
                 details={"distributor_details": distributor_details},
             )
         distributor_details["reporting_month"] = reporting_month
-        logger.info("Reporting Month Resolved | value={!r}", reporting_month)
+        # Company defaults to Name of Person when Company Name row is absent
+        if not (distributor_details.get("company") or "").strip():
+            distributor_details["company"] = header_distributor
+        logger.info("Reporting Quarter Resolved | value={!r}", reporting_month)
 
         # --- Row processing ---
         rows: List[ParsedSalesRow] = []
@@ -217,9 +216,7 @@ class ExcelParserService:
         incomplete_rows = 0
         expected_rows = 0
         default_distributor = header_distributor
-        default_company = distributor_details.get("company") or ""
-        default_address = distributor_details.get("address") or ""
-        default_phone = distributor_details.get("phone") or ""
+        default_company = distributor_details.get("company") or header_distributor
 
         for index, series in table_df.iterrows():
             if self._is_completely_empty_row(series, mapping):
@@ -248,29 +245,10 @@ class ExcelParserService:
                     if legacy:
                         row_period = legacy
 
-                opening_stock = None
-                closing_stock = None
-                if "opening_stock" in mapping:
-                    try:
-                        opening_stock = parse_optional_stock(
-                            series.get(mapping["opening_stock"]),
-                            field_label="Opening Stock",
-                        )
-                    except ValueError as stock_err:
-                        row_errors.append(str(stock_err))
-                if "closing_stock" in mapping:
-                    try:
-                        closing_stock = parse_optional_stock(
-                            series.get(mapping["closing_stock"]),
-                            field_label="Closing Stock",
-                        )
-                    except ValueError as stock_err:
-                        row_errors.append(str(stock_err))
-
                 if not distributor:
-                    row_errors.append("Missing Distributor")
+                    row_errors.append("Missing Name of Person / Distributor")
                 if not customer_name:
-                    row_errors.append("Missing Customer")
+                    row_errors.append("Missing Customer Name")
                 if not segment:
                     row_errors.append("Missing Segment")
                 if not product:
@@ -278,8 +256,11 @@ class ExcelParserService:
 
                 try:
                     quantity, quantity_display = parse_quantity(quantity_raw)
+                    if quantity <= 0:
+                        row_errors.append("Sales Quantity must be a positive number")
+                        quantity, quantity_display = None, ""  # type: ignore[assignment]
                 except ValueError as qty_err:
-                    row_errors.append(f"Invalid Quantity ({qty_err})")
+                    row_errors.append(f"Invalid Sales Quantity ({qty_err})")
                     quantity, quantity_display = None, ""  # type: ignore[assignment]
 
                 sr_no = None
@@ -290,7 +271,7 @@ class ExcelParserService:
 
                 if row_errors or quantity is None:
                     incomplete_rows += 1
-                    reason = "; ".join(row_errors) if row_errors else "Invalid Quantity"
+                    reason = "; ".join(row_errors) if row_errors else "Invalid Sales Quantity"
                     msg = f"Row {sr_no} (excel row {excel_row_num}): {reason}"
                     errors.append(msg)
                     logger.warning("Row Skipped | {}", msg)
@@ -306,14 +287,10 @@ class ExcelParserService:
                         customer_name=customer_name,
                         segment=segment,
                         product=product,
-                        opening_stock=opening_stock,
-                        closing_stock=closing_stock,
                         quantity=quantity,
                         quantity_display=quantity_display,
                         period=row_period,
                         company=default_company or None,
-                        address=default_address or None,
-                        phone=default_phone or None,
                         row_hash=row_hash,
                         errors=[],
                     )

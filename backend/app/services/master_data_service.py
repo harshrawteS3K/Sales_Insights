@@ -1,7 +1,7 @@
 """Master data service facade — lists + Phase 2 upload/template orchestration."""
 
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.customer_master import CustomerMaster
 from app.models.product_master import ProductMaster
 from app.schemas.dashboard import MasterDataUploadResponse, TemplateGenerateResponse
+from app.schemas.distributor import TemplateGenerateRequest
 from app.services.customer_master_service import CustomerMasterService
 from app.services.product_master_service import ProductMasterService
 from app.services.template_generation_service import TemplateGenerationService
@@ -61,8 +62,32 @@ class MasterDataService:
         path, _ = self.template_service.resolve_download_path(preferred_name=result.file_name)
         return path
 
-    def generate_template(self, *, actor: str = "system") -> TemplateGenerateResponse:
-        return self.template_service.generate(actor=actor)
+    def generate_template(
+        self,
+        *,
+        actor: str = "system",
+        request: Optional[TemplateGenerateRequest] = None,
+    ) -> TemplateGenerateResponse:
+        req = request or TemplateGenerateRequest()
+        return self.template_service.generate(
+            actor=actor,
+            mode=req.mode,
+            distributor_id=req.distributor_id,
+            reporting_quarter=req.reporting_quarter,
+        )
+
+    def generate_quarterly_package(
+        self,
+        *,
+        distributor_id: int,
+        reporting_quarter: str,
+        actor: str = "system",
+    ) -> tuple[Path, str]:
+        return self.template_service.generate_quarterly_package(
+            distributor_id=distributor_id,
+            reporting_quarter=reporting_quarter,
+            actor=actor,
+        )
 
     def resolve_template_download(self, *, preferred_name: str | None = None) -> tuple[Path, str]:
         return self.template_service.resolve_download_path(preferred_name=preferred_name)

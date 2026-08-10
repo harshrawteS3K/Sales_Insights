@@ -78,6 +78,62 @@ export interface EmailRecord {
   mailbox?: string | null;
 }
 
+// ─── Distributors (admin CRUD) ────────────────────────────────────────────────
+export interface Distributor {
+  id: number;
+  name: string;
+  company: string;
+  code?: string | null;
+  contact_person?: string | null;
+  address?: string | null;
+  email?: string | null;
+  cc_email?: string | null;
+  phone?: string | null;
+  region?: string | null;
+  state?: string | null;
+  city?: string | null;
+  pincode?: string | null;
+  is_active: boolean;
+  is_deleted?: boolean;
+  notes?: string | null;
+  customer_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface DistributorListResponse {
+  success: boolean;
+  data: Distributor[];
+  total: number;
+}
+
+export interface DistributorCreatePayload {
+  name: string;
+  company: string;
+  code?: string | null;
+  contact_person?: string | null;
+  email?: string | null;
+  cc_email?: string | null;
+  is_active?: boolean;
+  address?: string | null;
+  phone?: string | null;
+  region?: string | null;
+  state?: string | null;
+  city?: string | null;
+  pincode?: string | null;
+  notes?: string | null;
+}
+
+export type DistributorUpdatePayload = Partial<DistributorCreatePayload>;
+
+export type TemplateGenerateMode = 'generic' | 'distributor';
+
+export interface TemplateGeneratePayload {
+  mode: TemplateGenerateMode;
+  distributor_id?: number;
+  reporting_quarter?: string;
+}
+
 // ─── Consolidated Data (report-centric) ───────────────────────────────────────
 export interface DistributorInfo {
   name: string;
@@ -94,8 +150,6 @@ export interface SalesLineItem {
   segment: string;
   product: string;
   quantity: string;
-  openingStock?: string | null;
-  closingStock?: string | null;
 }
 
 /** One imported report with nested sales rows. */
@@ -103,9 +157,8 @@ export interface ReportSalesGroup {
   reportId: number;
   distributor: string;
   company?: string | null;
-  address?: string | null;
-  phone?: string | null;
-  reportingMonth?: string | null;
+  reportingQuarter?: string | null;
+  reportingMonth?: string | null; // backward-compat alias
   senderName?: string | null;
   senderEmail?: string | null;
   emailReceivedAt?: string | null;
@@ -140,9 +193,8 @@ export interface SalesRecord {
   customerName: string;
   segment: string;
   product: string;
-  openingStock?: string | null;
-  closingStock?: string | null;
   quantity: string;
+  reportingQuarter?: string;
   reportingMonth?: string;
   period?: string;
   importedAt?: string;
@@ -161,6 +213,7 @@ export interface ConsolidatedFilterOptions {
   segments: string[];
   products: string[];
   companies: string[];
+  reportingQuarters?: string[];
   reportingMonths: string[];
   periods: string[];
   quarters: string[];
@@ -251,6 +304,7 @@ export interface ConsolidatedRecordQuery {
   product?: string;
   company?: string;
   period?: string;
+  reportingQuarter?: string;
   reportingMonth?: string;
   quarter?: string;
   quantity_min?: number | string;
@@ -268,9 +322,8 @@ export type SortKey =
   | 'customerName'
   | 'segment'
   | 'product'
-  | 'openingStock'
-  | 'closingStock'
   | 'quantity'
+  | 'reportingQuarter'
   | 'reportingMonth'
   | 'period'
   | 'importedAt'

@@ -13,6 +13,8 @@ import {
   ChevronLeft,
   ChevronRight,
   ArrowRight,
+  CalendarDays,
+  Building2,
 } from 'lucide-react';
 import { BLUE, BORDER } from '../../constants/theme';
 import type {
@@ -23,13 +25,16 @@ import type {
   ConsolidatedRecordQuery,
 } from '../../types';
 import { ConsolidatedDataService } from '../../services/consolidatedData.service';
-import { AuditTrailService } from '../../services/auditTrail.service';
 import { ApiError, getSession } from '../../api';
 import { isAdminRole } from '../../utils/rbac';
 import { StatusBanner } from '../../components/common/StatusBanner';
 import { DataQualityWarning } from '../../components/ui/DataQualityWarning';
 import { SearchAutocomplete } from '../../components/ui/SearchAutocomplete';
-import { QuarterlyView } from './QuarterlyView';
+import {
+  buildYearQuarterTimeline,
+  flattenQuarterOverview,
+  formatMt,
+} from '../../utils/quarter';
 
 type FilterState = {
   distributor: string;
@@ -37,7 +42,7 @@ type FilterState = {
   segment: string;
   product: string;
   company: string;
-  reportingMonth: string;
+  reportingQuarter: string;
   quarter: string;
   quantityMin: string;
   quantityMax: string;
@@ -51,7 +56,7 @@ const EMPTY_FILTERS: FilterState = {
   segment: '',
   product: '',
   company: '',
-  reportingMonth: '',
+  reportingQuarter: '',
   quarter: '',
   quantityMin: '',
   quantityMax: '',
@@ -59,24 +64,19 @@ const EMPTY_FILTERS: FilterState = {
   importedTo: '',
 };
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 200;
 const EXPAND_ALL_THRESHOLD = 3;
 
 type ViewTarget = { report: ReportSalesGroup; line: SalesLineItem };
 type DeleteRecordTarget = { report: ReportSalesGroup; line: SalesLineItem };
 
-function reportingMonthOf(report: ReportSalesGroup): string {
-  return report.reportingMonth?.trim() || '—';
+function reportingQuarterOf(report: ReportSalesGroup): string {
+  return (report.reportingQuarter || report.reportingMonth)?.trim() || '—';
 }
 
 /** Primary business entity label for reporting. */
 function companyOf(report: ReportSalesGroup): string {
   return (report.company || report.distributor || '').trim() || '—';
-}
-
-function formatPhone(phone?: string | null): string {
-  if (!phone) return '';
-  return phone.startsWith('Ph') ? phone : `Ph. ${phone}`;
 }
 
 function formatConfidence(score?: number | null): string {
@@ -116,27 +116,31 @@ export function ConsolidatedData() {
     segments: [],
     products: [],
     companies: [],
+    reportingQuarters: [],
     reportingMonths: [],
     periods: [],
     quarters: [],
   });
 
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [expandedQuarters, setExpandedQuarters] = useState<Set<string>>(new Set());
   const [viewTarget, setViewTarget] = useState<ViewTarget | null>(null);
   const [deleteRecordTarget, setDeleteRecordTarget] = useState<DeleteRecordTarget | null>(null);
   const [deleteReportTarget, setDeleteReportTarget] = useState<ReportSalesGroup | null>(null);
   const [deleteReportCount, setDeleteReportCount] = useState<number | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'monthly' | 'quarterly'>('monthly');
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingAudit = useRef(false);
 
-  const reportingMonthOptions = useMemo(
-    () => filterOptions.reportingMonths?.length
-      ? filterOptions.reportingMonths
-      : filterOptions.periods || [],
+  const reportingQuarterOptions = useMemo(
+    () =>
+      filterOptions.reportingQuarters?.length
+        ? filterOptions.reportingQuarters
+        : filterOptions.reportingMonths?.length
+          ? filterOptions.reportingMonths
+          : filterOptions.periods || [],
     [filterOptions]
   );
 
@@ -147,7 +151,7 @@ export function ConsolidatedData() {
   const buildQuery = useCallback(
     (opts?: { skip?: number; audit?: boolean; limit?: number }): ConsolidatedRecordQuery => {
       const f = appliedFilters;
-      const month = f.reportingMonth || undefined;
+      const quarter = f.reportingQuarter || f.quarter || undefined;
       return {
         skip: opts?.skip ?? page * PAGE_SIZE,
         limit: opts?.limit ?? PAGE_SIZE,
@@ -157,9 +161,10 @@ export function ConsolidatedData() {
         segment: f.segment || undefined,
         product: f.product || undefined,
         company: f.company || undefined,
-        reportingMonth: month,
-        period: month,
-        quarter: f.quarter || undefined,
+        reportingQuarter: quarter,
+        reportingMonth: quarter,
+        period: quarter,
+        quarter: quarter,
         quantity_min: f.quantityMin || undefined,
         quantity_max: f.quantityMax || undefined,
         imported_from: f.importedFrom || undefined,
@@ -175,14 +180,30 @@ export function ConsolidatedData() {
   const syncExpanded = useCallback((groups: ReportSalesGroup[]) => {
     if (groups.length === 0) {
       setExpandedIds(new Set());
+      setExpandedQuarters(new Set());
       return;
     }
+    const built = buildYearQuarterTimeline(groups);
+    const newestQuarter = built[0]?.quarters[0]?.label;
+    setExpandedQuarters(newestQuarter ? new Set([newestQuarter]) : new Set());
     if (groups.length <= EXPAND_ALL_THRESHOLD) {
       setExpandedIds(new Set(groups.map(g => g.reportId)));
       return;
     }
-    setExpandedIds(new Set([groups[0].reportId]));
+    setExpandedIds(new Set());
   }, []);
+
+  const timeline = useMemo(() => buildYearQuarterTimeline(reportGroups), [reportGroups]);
+  const quarterOverview = useMemo(() => flattenQuarterOverview(timeline), [timeline]);
+
+  const toggleQuarter = (label: string) => {
+    setExpandedQuarters(prev => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  };
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -266,34 +287,22 @@ export function ConsolidatedData() {
       let exportedLines = 0;
 
       all.data.forEach(report => {
-        const month = reportingMonthOf(report);
+        const quarter = reportingQuarterOf(report);
         const detailLines = [
           report.distributor,
           report.company || '',
-          report.address || '',
-          formatPhone(report.phone),
-          `Reporting Month: ${month}`,
+          `Reporting Quarter: ${quarter}`,
         ].filter(Boolean);
 
         csvRows.push(csvEscape(detailLines.join('\n')));
         csvRows.push(
-          ['Sr No', 'Customer', 'Segment', 'Product', 'Quantity (MT)', 'Opening Stock', 'Closing Stock']
-            .map(csvEscape)
-            .join(',')
+          ['Sr No', 'Customer', 'Segment', 'Product', 'Quantity (MT)'].map(csvEscape).join(',')
         );
 
         report.sales.forEach(line => {
           exportedLines += 1;
           csvRows.push(
-            [
-              line.srNo,
-              line.customerName,
-              line.segment,
-              line.product,
-              line.quantity,
-              line.openingStock ?? '',
-              line.closingStock ?? '',
-            ]
+            [line.srNo, line.customerName, line.segment, line.product, line.quantity]
               .map(csvEscape)
               .join(',')
           );
@@ -308,7 +317,7 @@ export function ConsolidatedData() {
       link.setAttribute('href', url);
       link.setAttribute(
         'download',
-        `consolidated_sales_data_${new Date().toISOString().split('T')[0]}.csv`
+        `Consolidated_Quarterly_Report_${new Date().toISOString().split('T')[0]}.csv`
       );
       link.style.visibility = 'hidden';
       document.body.appendChild(link);
@@ -327,16 +336,16 @@ export function ConsolidatedData() {
     setActionError(null);
     setDeleteReportTarget(report);
     setDeleteReportCount(null);
-    const month = report.reportingMonth?.trim();
-    if (!month) {
-      setActionError('Reporting month is missing for this report.');
+    const quarter = (report.reportingQuarter || report.reportingMonth)?.trim();
+    if (!quarter) {
+      setActionError('Reporting quarter is missing for this report.');
       setDeleteReportCount(0);
       return;
     }
     try {
       const preview = await ConsolidatedDataService.previewDeleteReport(
         report.company || report.distributor,
-        month
+        quarter
       );
       setDeleteReportCount(preview.rowCount);
     } catch (err) {
@@ -361,9 +370,9 @@ export function ConsolidatedData() {
 
   const confirmDeleteReport = async () => {
     if (!deleteReportTarget) return;
-    const month = deleteReportTarget.reportingMonth?.trim();
-    if (!month) {
-      setActionError('Reporting month is missing for this report.');
+    const quarter = (deleteReportTarget.reportingQuarter || deleteReportTarget.reportingMonth)?.trim();
+    if (!quarter) {
+      setActionError('Reporting quarter is missing for this report.');
       return;
     }
     setActionBusy(true);
@@ -371,7 +380,7 @@ export function ConsolidatedData() {
     try {
       await ConsolidatedDataService.deleteReport(
         deleteReportTarget.company || deleteReportTarget.distributor,
-        month
+        quarter
       );
       setDeleteReportTarget(null);
       setDeleteReportCount(null);
@@ -423,66 +432,10 @@ export function ConsolidatedData() {
           Consolidated Sales Data
         </h1>
         <p style={{ fontSize: '0.875rem', color: '#6B7280', margin: 0 }}>
-          Master repository of distributor company sales — ACTIVE monthly reports (quantity in MT)
+          Master repository of distributor company sales — ACTIVE quarterly reports (quantity in MT)
         </p>
       </div>
 
-      {/* View mode toggle */}
-      <div
-        style={{
-          display: 'flex',
-          gap: 4,
-          marginBottom: 16,
-          background: '#F3F4F6',
-          padding: 4,
-          borderRadius: 10,
-          width: 'fit-content',
-        }}
-      >
-        {(
-          [
-            { key: 'monthly' as const, label: 'Monthly' },
-            { key: 'quarterly' as const, label: 'Quarterly' },
-          ] as const
-        ).map(({ key, label }) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => {
-              setViewMode(key);
-              void AuditTrailService.recordEvent({
-                action: key === 'quarterly' ? 'Quarterly View Opened' : 'Monthly View Opened',
-                module: 'Consolidated Data',
-                description: `Switched Consolidated Data to ${label} view`,
-                status: 'Info',
-                entity_type: 'consolidated_data',
-              });
-            }}
-            style={{
-              padding: '8px 18px',
-              borderRadius: 7,
-              border: 'none',
-              background: viewMode === key ? 'white' : 'transparent',
-              color: viewMode === key ? BLUE : '#6B7280',
-              fontWeight: viewMode === key ? 700 : 500,
-              fontSize: '0.875rem',
-              cursor: 'pointer',
-              boxShadow: viewMode === key ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
-              fontFamily: 'inherit',
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {viewMode === 'quarterly' ? (
-        <QuarterlyView
-          quarters={filterOptions.quarters || []}
-          companies={filterOptions.companies?.length ? filterOptions.companies : filterOptions.distributors || []}
-        />
-      ) : (
-        <>
       <StatusBanner loading={loading} error={error} onRetry={() => loadData()} loadingText="Loading sales data…" />
 
       {loaded && (
@@ -502,7 +455,7 @@ export function ConsolidatedData() {
               <input
                 value={searchInput}
                 onChange={e => setSearchInput(e.target.value)}
-                placeholder="Search distributor, company, customer, product, segment, reporting month…"
+                placeholder="Search distributor, company, customer, product, segment, reporting quarter…"
                 style={{
                   width: '100%',
                   height: 36,
@@ -616,14 +569,176 @@ export function ConsolidatedData() {
                 fontSize: '0.875rem',
               }}
             >
-              No reports match your search or filters.
+              No quarterly reports available
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {reportGroups.map(report => {
-                const expanded = expandedIds.has(report.reportId);
-                const month = reportingMonthOf(report);
-                return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {quarterOverview.length > 0 && (
+                <div
+                  style={{
+                    background: 'white',
+                    border: `1px solid ${BORDER}`,
+                    borderRadius: 12,
+                    padding: '16px 18px',
+                    marginBottom: 8,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: '0.75rem',
+                      fontWeight: 700,
+                      color: '#6B7280',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                      marginBottom: 10,
+                    }}
+                  >
+                    Quarterly Overview
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {quarterOverview.map(q => (
+                      <div
+                        key={`ov-${q.label}`}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 16,
+                          flexWrap: 'wrap',
+                          fontSize: '0.8125rem',
+                          color: '#374151',
+                          padding: '6px 0',
+                          borderBottom: `1px solid ${BORDER}`,
+                        }}
+                      >
+                        <span style={{ fontWeight: 700, minWidth: 88, color: '#111827' }}>
+                          {q.label}
+                          {q.range ? (
+                            <span style={{ fontWeight: 500, color: '#9CA3AF' }}> ({q.range})</span>
+                          ) : null}
+                        </span>
+                        <span style={{ color: '#6B7280' }}>
+                          {q.distributorCount} distributor{q.distributorCount === 1 ? '' : 's'}
+                        </span>
+                        <span style={{ marginLeft: 'auto', fontWeight: 700, color: BLUE }}>
+                          {formatMt(q.totalQuantity)} MT
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {timeline.map(yearBucket => (
+                <div key={`year-${yearBucket.year}`} style={{ marginBottom: 8 }}>
+                  <div
+                    style={{
+                      position: 'sticky',
+                      top: 0,
+                      zIndex: 10,
+                      background: 'white',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 16,
+                      padding: '16px 0',
+                      borderBottom: `1px solid ${BORDER}`,
+                    }}
+                  >
+                    <div style={{ height: 1, flex: 1, background: '#D1D5DB' }} />
+                    <div
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '8px 16px',
+                        borderRadius: 999,
+                        background: 'rgba(31,95,168,0.06)',
+                        border: '1px solid rgba(31,95,168,0.22)',
+                      }}
+                    >
+                      <CalendarDays size={18} color={BLUE} />
+                      <span style={{ fontSize: '1.0625rem', fontWeight: 700, color: '#111827' }}>
+                        {yearBucket.year || 'Unknown'}
+                      </span>
+                    </div>
+                    <div style={{ height: 1, flex: 1, background: '#D1D5DB' }} />
+                    <span style={{ fontSize: '0.75rem', color: '#6B7280', whiteSpace: 'nowrap' }}>
+                      {yearBucket.reportCount} quarterly report
+                      {yearBucket.reportCount === 1 ? '' : 's'}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 14 }}>
+                    {yearBucket.quarters.map(qBucket => {
+                      const qOpen = expandedQuarters.has(qBucket.label);
+                      return (
+                        <div
+                          key={qBucket.label}
+                          style={{
+                            borderRadius: 12,
+                            border: `1px solid ${BORDER}`,
+                            background: '#F9FAFB',
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggleQuarter(qBucket.label)}
+                            style={{
+                              width: '100%',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 12,
+                              padding: '14px 16px',
+                              border: 'none',
+                              background: qOpen ? '#F3F4F6' : 'transparent',
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                              fontFamily: 'inherit',
+                            }}
+                          >
+                            <span
+                              style={{
+                                display: 'inline-flex',
+                                transform: qOpen ? 'rotate(90deg)' : 'rotate(0deg)',
+                                transition: 'transform 0.15s',
+                                color: BLUE,
+                              }}
+                            >
+                              <ChevronRight size={16} />
+                            </span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: '0.9375rem', fontWeight: 700, color: '#111827' }}>
+                                {qBucket.label}
+                                {qBucket.range ? (
+                                  <span style={{ fontWeight: 500, color: '#6B7280' }}>
+                                    {' '}
+                                    ({qBucket.range})
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div style={{ marginTop: 2, fontSize: '0.75rem', color: '#6B7280' }}>
+                                {qBucket.distributorCount} distributor
+                                {qBucket.distributorCount === 1 ? '' : 's'}
+                                {' · '}
+                                {formatMt(qBucket.totalQuantity)} MT
+                              </div>
+                            </div>
+                          </button>
+
+                          {qOpen && (
+                            <div
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 10,
+                                padding: '0 12px 12px',
+                              }}
+                            >
+                              {qBucket.reports.map(report => {
+                                const expanded = expandedIds.has(report.reportId);
+                                const quarter = reportingQuarterOf(report);
+                                return (
                   <div
                     key={report.reportId}
                     style={{
@@ -657,6 +772,21 @@ export function ConsolidatedData() {
                           display: 'inline-flex',
                           alignItems: 'center',
                           justifyContent: 'center',
+                          width: 28,
+                          height: 28,
+                          borderRadius: 8,
+                          background: 'rgba(31,95,168,0.08)',
+                          color: BLUE,
+                          flexShrink: 0,
+                        }}
+                      >
+                        <Building2 size={15} />
+                      </span>
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
                           width: 24,
                           height: 24,
                           borderRadius: 6,
@@ -679,8 +809,6 @@ export function ConsolidatedData() {
                           }}
                         >
                           {companyOf(report)}
-                          <span style={{ color: '#9CA3AF', fontWeight: 500 }}> · </span>
-                          <span style={{ color: '#374151', fontWeight: 600 }}>{month}</span>
                         </div>
                         <div
                           style={{
@@ -692,11 +820,30 @@ export function ConsolidatedData() {
                             gap: '4px 14px',
                           }}
                         >
-                          <span>{report.recordCount} sales line{report.recordCount === 1 ? '' : 's'}</span>
-                          {report.senderName && <span>Sender: {report.senderName}</span>}
                           {report.importedAt && <span>Imported: {report.importedAt}</span>}
+                          {(report.senderEmail || report.senderName) && (
+                            <span>
+                              Sender: {report.senderEmail || report.senderName}
+                            </span>
+                          )}
+                          <span>Confidence: {formatConfidence(report.confidenceScore)}</span>
+                          <span>
+                            {report.recordCount} sales line{report.recordCount === 1 ? '' : 's'}
+                          </span>
                         </div>
                       </div>
+                      <button
+                        type="button"
+                        title="View details"
+                        onClick={e => {
+                          e.stopPropagation();
+                          toggleExpanded(report.reportId);
+                        }}
+                        style={actionBtn}
+                      >
+                        <Eye size={13} />
+                        View
+                      </button>
                       {isAdmin && (
                         <button
                           type="button"
@@ -747,9 +894,7 @@ export function ConsolidatedData() {
                               <InfoCell label="Representative" value={report.distributor} />
                             )}
                             <InfoCell label="Company" value={report.company || '—'} />
-                            <InfoCell label="Address" value={report.address || '—'} />
-                            <InfoCell label="Phone" value={formatPhone(report.phone) || '—'} />
-                            <InfoCell label="Reporting Month" value={month} />
+                            <InfoCell label="Reporting Quarter" value={quarter} />
                             <InfoCell
                               label="Sender"
                               value={
@@ -802,16 +947,6 @@ export function ConsolidatedData() {
                                     Quantity (MT) <SortIcon col="quantity" />
                                   </div>
                                 </th>
-                                <th onClick={() => handleSort('openingStock')} style={thStyle('right')}>
-                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                    Opening Stock <SortIcon col="openingStock" />
-                                  </div>
-                                </th>
-                                <th onClick={() => handleSort('closingStock')} style={thStyle('right')}>
-                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                    Closing Stock <SortIcon col="closingStock" />
-                                  </div>
-                                </th>
                                 <th style={{ ...thStyle('left'), cursor: 'default' }}>Actions</th>
                               </tr>
                             </thead>
@@ -854,28 +989,6 @@ export function ConsolidatedData() {
                                   >
                                     {line.quantity}
                                   </td>
-                                  <td
-                                    style={{
-                                      padding: '12px 16px',
-                                      fontSize: '0.875rem',
-                                      color: '#374151',
-                                      textAlign: 'right',
-                                      whiteSpace: 'nowrap',
-                                    }}
-                                  >
-                                    {line.openingStock ?? '—'}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: '12px 16px',
-                                      fontSize: '0.875rem',
-                                      color: '#374151',
-                                      textAlign: 'right',
-                                      whiteSpace: 'nowrap',
-                                    }}
-                                  >
-                                    {line.closingStock ?? '—'}
-                                  </td>
                                   <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                       <button
@@ -908,7 +1021,7 @@ export function ConsolidatedData() {
                               {report.sales.length === 0 && (
                                 <tr>
                                   <td
-                                    colSpan={8}
+                                    colSpan={6}
                                     style={{
                                       padding: '28px',
                                       textAlign: 'center',
@@ -926,8 +1039,16 @@ export function ConsolidatedData() {
                       </div>
                     )}
                   </div>
-                );
-              })}
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 
@@ -1035,7 +1156,7 @@ export function ConsolidatedData() {
       )}
 
       {/* Filter Drawer */}
-      {viewMode === 'monthly' && showFilters && (
+      {showFilters && (
         <div style={overlayStyle} onClick={() => setShowFilters(false)}>
           <div
             style={{
@@ -1115,18 +1236,10 @@ export function ConsolidatedData() {
                 labelStyle={labelStyle}
               />
               <FilterSelect
-                label="Reporting Month"
-                value={filters.reportingMonth}
-                options={reportingMonthOptions}
-                onChange={v => setFilters(f => ({ ...f, reportingMonth: v }))}
-                selectStyle={selectStyle}
-                labelStyle={labelStyle}
-              />
-              <FilterSelect
-                label="Quarter"
-                value={filters.quarter}
-                options={filterOptions.quarters}
-                onChange={v => setFilters(f => ({ ...f, quarter: v }))}
+                label="Reporting Quarter"
+                value={filters.reportingQuarter}
+                options={reportingQuarterOptions}
+                onChange={v => setFilters(f => ({ ...f, reportingQuarter: v, quarter: v }))}
                 selectStyle={selectStyle}
                 labelStyle={labelStyle}
               />
@@ -1243,7 +1356,7 @@ export function ConsolidatedData() {
                   : '—'
               }
             />
-            <DetailRow label="Reporting Month" value={reportingMonthOf(viewTarget.report)} />
+            <DetailRow label="Reporting Quarter" value={reportingQuarterOf(viewTarget.report)} />
             <DetailRow
               label="Sender"
               value={
@@ -1272,8 +1385,6 @@ export function ConsolidatedData() {
           <DetailRow label="Segment" value={viewTarget.line.segment} />
           <DetailRow label="Product" value={viewTarget.line.product} />
           <DetailRow label="Quantity (MT)" value={viewTarget.line.quantity} />
-          <DetailRow label="Opening Stock" value={viewTarget.line.openingStock ?? '—'} />
-          <DetailRow label="Closing Stock" value={viewTarget.line.closingStock ?? '—'} />
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
             <button type="button" onClick={() => setViewTarget(null)} style={modalSecondaryBtn}>
               Close
@@ -1293,7 +1404,7 @@ export function ConsolidatedData() {
             {' · '}
             {deleteRecordTarget.report.distributor}
             {' · '}
-            {reportingMonthOf(deleteRecordTarget.report)}
+            {reportingQuarterOf(deleteRecordTarget.report)}
           </p>
           <p style={{ margin: '0 0 16px', fontSize: '0.8125rem', color: '#DC2626', fontWeight: 500 }}>
             This action cannot be undone.
@@ -1331,7 +1442,7 @@ export function ConsolidatedData() {
                 : '—'
             }
           />
-          <DetailRow label="Reporting Month" value={reportingMonthOf(deleteReportTarget)} />
+          <DetailRow label="Reporting Quarter" value={reportingQuarterOf(deleteReportTarget)} />
           <p style={{ margin: '12px 0', fontSize: '0.875rem', fontWeight: 700, color: '#111827' }}>
             {deleteReportCount === null
               ? 'Calculating…'
@@ -1360,8 +1471,6 @@ export function ConsolidatedData() {
             </button>
           </div>
         </Modal>
-      )}
-        </>
       )}
     </div>
   );

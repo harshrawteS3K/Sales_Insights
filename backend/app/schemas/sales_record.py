@@ -3,7 +3,7 @@
 from decimal import Decimal
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.common import TimestampSchema
 
@@ -15,11 +15,9 @@ class SalesRecordBase(BaseModel):
     customer_name: str
     segment: str
     product: str
-    opening_stock: Optional[Decimal] = None
-    closing_stock: Optional[Decimal] = None
     quantity: Decimal
     quantity_display: Optional[str] = None
-    period: Optional[str] = None  # legacy denormalized reporting month
+    period: Optional[str] = None  # denormalized reporting quarter / month
     unit: str = "KG"
 
 
@@ -50,8 +48,6 @@ class SalesLineItem(BaseModel):
     segment: str
     product: str
     quantity: str
-    openingStock: Optional[str] = None
-    closingStock: Optional[str] = None
 
 
 class ReportSalesGroup(BaseModel):
@@ -60,9 +56,9 @@ class ReportSalesGroup(BaseModel):
     reportId: int
     distributor: str
     company: Optional[str] = None
-    address: Optional[str] = None
-    phone: Optional[str] = None
-    reportingMonth: Optional[str] = None
+    # DB column remains reporting_month; API exposes reporting_quarter as primary.
+    reportingQuarter: Optional[str] = None
+    reportingMonth: Optional[str] = None  # backward-compat alias of reportingQuarter
     senderName: Optional[str] = None
     senderEmail: Optional[str] = None
     emailReceivedAt: Optional[str] = None
@@ -78,6 +74,13 @@ class ReportSalesGroup(BaseModel):
     validationMessage: Optional[str] = None
     sales: List[SalesLineItem] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _sync_reporting_quarter(self) -> "ReportSalesGroup":
+        value = (self.reportingQuarter or self.reportingMonth or "").strip() or None
+        self.reportingQuarter = value
+        self.reportingMonth = value
+        return self
+
 
 # Backward-compatible flat shape (still used by some clients / exports)
 class FrontendSalesRecord(BaseModel):
@@ -91,11 +94,10 @@ class FrontendSalesRecord(BaseModel):
     customerName: str
     segment: str
     product: str
-    openingStock: Optional[str] = None
-    closingStock: Optional[str] = None
     quantity: str
-    reportingMonth: Optional[str] = None
-    period: Optional[str] = None  # alias of reportingMonth for older clients
+    reportingQuarter: Optional[str] = None
+    reportingMonth: Optional[str] = None  # backward-compat
+    period: Optional[str] = None
     importedAt: Optional[str] = None
     senderName: Optional[str] = None
     senderEmail: Optional[str] = None
@@ -104,6 +106,14 @@ class FrontendSalesRecord(BaseModel):
     graphMessageId: Optional[str] = None
     internetMessageId: Optional[str] = None
     confidenceScore: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _sync_reporting_quarter(self) -> "FrontendSalesRecord":
+        value = (self.reportingQuarter or self.reportingMonth or self.period or "").strip() or None
+        self.reportingQuarter = value
+        self.reportingMonth = value
+        self.period = value
+        return self
 
 
 class ConsolidatedFilterOptions(BaseModel):
@@ -114,11 +124,21 @@ class ConsolidatedFilterOptions(BaseModel):
     segments: List[str] = Field(default_factory=list)
     products: List[str] = Field(default_factory=list)
     companies: List[str] = Field(default_factory=list)
-    reportingMonths: List[str] = Field(default_factory=list)
-    # Legacy aliases
-    periods: List[str] = Field(default_factory=list)
+    reportingQuarters: List[str] = Field(default_factory=list)
+    reportingMonths: List[str] = Field(default_factory=list)  # alias of reportingQuarters
+    periods: List[str] = Field(default_factory=list)  # alias
     quarters: List[str] = Field(default_factory=list)
     quantityUnit: str = "MT"
+
+    @model_validator(mode="after")
+    def _sync_quarters(self) -> "ConsolidatedFilterOptions":
+        values = self.reportingQuarters or self.reportingMonths or self.periods or []
+        self.reportingQuarters = list(values)
+        self.reportingMonths = list(values)
+        self.periods = list(values)
+        if not self.quarters:
+            self.quarters = list(values)
+        return self
 
 
 class QuarterlySummaryRow(BaseModel):
@@ -217,23 +237,41 @@ class ConsolidatedRecordsPage(BaseModel):
 
 
 class DeleteReportRequest(BaseModel):
-    """Delete all sales rows for a distributor + reporting month."""
+    """Delete all sales rows for a distributor + reporting quarter."""
 
     distributor: str = Field(..., min_length=1)
-    reportingMonth: Optional[str] = None
+    reportingQuarter: Optional[str] = None
+    reportingMonth: Optional[str] = None  # backward-compat alias of reportingQuarter
     period: Optional[str] = None  # legacy alias
 
     def resolved_month(self) -> str:
-        return (self.reportingMonth or self.period or "").strip()
+        return (self.reportingQuarter or self.reportingMonth or self.period or "").strip()
+
+    @model_validator(mode="after")
+    def _sync_reporting_quarter(self) -> "DeleteReportRequest":
+        value = (self.reportingQuarter or self.reportingMonth or self.period or "").strip() or None
+        self.reportingQuarter = value
+        self.reportingMonth = value
+        self.period = value
+        return self
 
 
 class DeleteReportPreview(BaseModel):
     """Preview of rows that would be deleted for a report unit."""
 
     distributor: str
-    reportingMonth: str
+    reportingQuarter: Optional[str] = None
+    reportingMonth: Optional[str] = None
     period: Optional[str] = None  # legacy alias
     rowCount: int
+
+    @model_validator(mode="after")
+    def _sync_reporting_quarter(self) -> "DeleteReportPreview":
+        value = (self.reportingQuarter or self.reportingMonth or self.period or "").strip() or None
+        self.reportingQuarter = value
+        self.reportingMonth = value
+        self.period = value
+        return self
 
 
 class DeleteResult(BaseModel):
@@ -260,14 +298,10 @@ class ParsedSalesRow(BaseModel):
     customer_name: str
     segment: str
     product: str
-    opening_stock: Optional[Decimal] = None
-    closing_stock: Optional[Decimal] = None
     quantity: Decimal
     quantity_display: str
-    period: Optional[str] = None  # denormalized reporting month
+    period: Optional[str] = None  # denormalized reporting quarter
     unit: str = "KG"
     company: Optional[str] = None
-    address: Optional[str] = None
-    phone: Optional[str] = None
     row_hash: str = ""
     errors: List[str] = Field(default_factory=list)

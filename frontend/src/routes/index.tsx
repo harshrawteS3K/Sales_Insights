@@ -11,6 +11,7 @@ import { ExistingReports } from '../pages/Reports/ExistingReports';
 import { MarketResearchDashboard } from '../pages/MarketResearch/MarketResearchDashboard';
 import { MarketResearchCompanion } from '../pages/MarketResearch/MarketResearchCompanion';
 import { MasterData } from '../pages/MasterData/MasterData';
+import { DistributorManagement } from '../pages/DistributorManagement/DistributorManagement';
 import { PlaceholderPage } from '../pages/Settings/PlaceholderPage';
 import type { UserRole } from '../types';
 
@@ -41,6 +42,7 @@ export const createAppRouter = (
         { path: 'consolidated-data', Component: ConsolidatedData },
         { path: 'visualizations', Component: Visualizations },
         { path: 'master-data', Component: MasterData },
+        { path: 'distributors', Component: DistributorManagement },
         { path: 'audit-trail', Component: AuditTrail },
         { path: 'user-management', Component: UserManagement },
         { path: 'existing-reports', Component: ExistingReports },

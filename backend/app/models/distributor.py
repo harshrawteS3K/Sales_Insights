@@ -8,6 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.base import Base, SoftDeleteMixin, TimestampMixin
 
 if TYPE_CHECKING:
+    from app.models.distributor_customer_mapping import DistributorCustomerMapping
     from app.models.report import Report
     from app.models.sales_record import SalesRecord
 
@@ -34,13 +35,24 @@ class Distributor(Base, TimestampMixin, SoftDeleteMixin):
             unique=True,
             postgresql_where="is_deleted = false AND email IS NOT NULL",
         ),
+        Index(
+            "uq_distributors_code_active",
+            "code",
+            unique=True,
+            postgresql_where=text(
+                "is_deleted = false AND code IS NOT NULL AND TRIM(code) <> ''"
+            ),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     company: Mapped[str] = mapped_column(String(255), nullable=False)
+    contact_person: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    cc_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     region: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
     state: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -58,6 +70,11 @@ class Distributor(Base, TimestampMixin, SoftDeleteMixin):
     sales_records: Mapped[List["SalesRecord"]] = relationship(
         "SalesRecord",
         back_populates="distributor",
+    )
+    customer_mappings: Mapped[List["DistributorCustomerMapping"]] = relationship(
+        "DistributorCustomerMapping",
+        back_populates="distributor",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

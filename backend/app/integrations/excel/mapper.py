@@ -22,8 +22,6 @@ class SalesRecordMapper:
             customer_name=row.customer_name,
             segment=row.segment,
             product=row.product,
-            opening_stock=row.opening_stock,
-            closing_stock=row.closing_stock,
             quantity=row.quantity,
             quantity_display=row.quantity_display,
             period=row.period,

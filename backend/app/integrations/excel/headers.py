@@ -19,12 +19,15 @@ from app.exceptions import ExcelProcessingError
 
 OFFICIAL_TEMPLATE_NAME = "Official APCOTEX Template"
 
-# Display labels as they appear on the official workbook (Distributor Details block)
+# Display labels as they appear on the official workbook (metadata block)
 OFFICIAL_DISTRIBUTOR_LABELS: Dict[str, Tuple[str, ...]] = {
     "name": (
+        "Name of Person",
         "Name of Distributor",
         "Distributor Name",
         "Distributor",
+        "Person Name",
+        "Representative Name",
     ),
     "company": (
         "Company Name",
@@ -41,7 +44,12 @@ OFFICIAL_DISTRIBUTOR_LABELS: Dict[str, Tuple[str, ...]] = {
         "Ph.",
         "Mobile",
     ),
+    # Stored in reports.reporting_month; accepts quarters (Q1 2026) and legacy months
     "reporting_month": (
+        "Reporting Quarter",
+        "Reporting quarter",
+        "REPORTING QUARTER",
+        "Quarter",
         "Reporting Month",
         "Reporting month",
         "REPORTING MONTH",
@@ -53,16 +61,28 @@ OFFICIAL_DISTRIBUTOR_LABELS: Dict[str, Tuple[str, ...]] = {
 }
 
 # Official sales table headers (exact display forms → canonical field)
-# Opening/Closing Stock optional; Period column removed from final template (legacy only).
 OFFICIAL_SALES_HEADERS: Dict[str, Tuple[str, ...]] = {
     "sr_no": ("Sr. No.", "Sr No", "Sr.No", "SR NO"),
-    "customer_name": ("Name of Customer",),
+    "customer_name": (
+        "Customer Name",
+        "Name of Customer",
+        "Customer",
+    ),
     "segment": ("Segment",),
-    "product": ("Product",),
-    "quantity": ("Quantity",),
+    "product": (
+        "Product",
+        "Product (FG Code)",
+        "Product FG Code",
+        "FG Code",
+    ),
+    "quantity": (
+        "Sales Quantity",
+        "Quantity",
+        "Qty",
+    ),
+    # Legacy optional columns (ignored if present; no longer generated)
     "opening_stock": ("Opening Stock", "Opening stock", "OPENING STOCK"),
     "closing_stock": ("Closing Stock", "Closing stock", "CLOSING STOCK"),
-    # Legacy column — accepted if present, not required
     "period": ("Period", "Reporting Period"),
 }
 
@@ -221,10 +241,10 @@ def resolve_sales_column_mapping(
     missing = [c for c in SALES_REPORT_TABLE_REQUIRED_COLUMNS if c not in mapping]
     if missing:
         display = {
-            "customer_name": "Name of Customer / Customer Name",
+            "customer_name": "Customer Name",
             "segment": "Segment",
             "product": "Product",
-            "quantity": "Quantity",
+            "quantity": "Sales Quantity",
         }
         missing_display = [display.get(m, m) for m in missing]
         raise ExcelProcessingError(

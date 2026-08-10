@@ -4,7 +4,7 @@ from app.integrations.excel.confidence import compute_confidence_breakdown
 
 
 def test_perfect_official_lands_in_95_99():
-    details = {"name": "A", "company": "B", "address": "C", "phone": "D"}
+    details = {"name": "A", "company": "B"}
     result = compute_confidence_breakdown(
         template_detected=True,
         sales_table_detected=True,

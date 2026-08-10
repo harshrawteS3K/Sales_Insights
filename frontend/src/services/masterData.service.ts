@@ -6,6 +6,7 @@
 import { apiRequest, apiUpload, getApiBaseUrl, ApiError } from '../api';
 import { getSession } from '../api/session';
 import { filenameFromContentDisposition, triggerBrowserDownload } from '../utils/download';
+import type { TemplateGeneratePayload } from '../types';
 
 export type CustomerMaster = {
   id: number;
@@ -63,6 +64,9 @@ export type TemplateGenerateResult = {
   customers_count: number;
   products_count: number;
   generated_at: string;
+  mode?: string;
+  warning?: string | null;
+  fallback_generic?: boolean;
 };
 
 export const MasterDataService = {
@@ -112,8 +116,13 @@ export const MasterDataService = {
     };
   },
 
-  generateTemplate: async (): Promise<TemplateGenerateResult> => {
-    return apiRequest<TemplateGenerateResult>('/template/generate', { method: 'POST' });
+  generateTemplate: async (
+    payload: TemplateGeneratePayload = { mode: 'generic' },
+  ): Promise<TemplateGenerateResult> => {
+    return apiRequest<TemplateGenerateResult>('/template/generate', {
+      method: 'POST',
+      body: payload,
+    });
   },
 
   downloadTemplate: async (_unused?: string, fileName?: string): Promise<void> => {

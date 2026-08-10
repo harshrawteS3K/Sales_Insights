@@ -1,4 +1,4 @@
-"""Distributor Excel template generator matching the official APCOTEX layout."""
+"""Distributor Excel template generator — quarterly APCOTEX layout."""
 
 import time
 from pathlib import Path
@@ -16,19 +16,23 @@ from app.utils.files import ensure_dir
 
 logger = get_logger(__name__)
 
+QUARTER_GUIDANCE = (
+    "Note: Q1 = April – June  |  Q2 = July – September  |  "
+    "Q3 = October – December  |  Q4 = January – March"
+)
+
+CUSTOMER_LIST_SHEET = "CustomerList"
+
 
 class ExcelTemplateGenerator:
-    """Generate distributor sales Excel templates with dropdown lists."""
+    """Generate quarterly distributor sales Excel templates with Segment→Product dropdowns."""
 
-    # Finalized APCOTEX sales table column order
     HEADERS = [
         "Sr. No.",
-        "Name of Customer",
+        "Customer Name",
         "Segment",
         "Product",
-        "Opening Stock",
-        "Closing Stock",
-        "Quantity",
+        "Sales Quantity",
     ]
 
     def __init__(self, dropdowns: Optional[ExcelDropdownService] = None) -> None:
@@ -37,50 +41,35 @@ class ExcelTemplateGenerator:
     def generate(
         self,
         *,
-        customers: Sequence[str],
+        customers: Optional[Sequence[str]] = None,
         products_by_segment: Optional[Dict[str, Sequence[str]]] = None,
         products: Optional[Sequence[str]] = None,
         segments: Optional[Sequence[str]] = None,
         distributors: Optional[Sequence[str]] = None,
         output_path: Optional[Path] = None,
         periods: Optional[Sequence[str]] = None,
+        mode: str = "generic",
+        contact_person: Optional[str] = None,
+        company_name: Optional[str] = None,
+        reporting_quarter: Optional[str] = None,
     ) -> Path:
         """
-        Create a blank distributor sales template workbook.
+        Create a quarterly distributor sales template.
 
-        Layout:
-          Rows 1–5  Distributor Details (blank values)
-          Row 6     Instruction strip (Segment → Product dependency)
-          Row 7     Sales table headers
-          Row 8+    Sales data entry rows
-
-        Dropdowns (hidden ``_lists``):
-          - Customer ← active customer names (A–Z), native Excel type-ahead
-          - Segment  ← unique Industry Type Description values (A–Z)
-          - Product  ← dependent on Segment via named ranges + INDIRECT/VLOOKUP
-          - Reporting Month
-
-        ``products_by_segment`` is preferred. Legacy ``products`` (flat list) still
-        works by placing all codes under a single synthetic segment when no map given.
+        Mode ``generic``: Customer Name free text.
+        Mode ``distributor``: Customer Name dropdown from prior-quarter customers.
         """
         started = time.perf_counter()
-        _ = distributors  # never prefill distributor header
-
-        customer_values = self._unique_sorted(customers) or ["Sample Customer"]
-        month_values = list(periods) if periods else [
-            "January 2026",
-            "February 2026",
-            "March 2026",
-            "April 2026",
-            "May 2026",
-            "June 2026",
-            "July 2026",
-            "August 2026",
-            "September 2026",
-            "October 2026",
-            "November 2026",
-            "December 2026",
-        ]
+        _ = distributors
+        _ = periods
+        mode_key = (mode or "generic").strip().lower()
+        distributor_mode = mode_key in {"distributor", "distributor_specific", "specific"}
+        # Preserve previous-quarter-first order from the service for distributor mode.
+        customer_values = (
+            self._unique_preserve_order(list(customers or []))
+            if distributor_mode
+            else self._unique_sorted(list(customers or []))
+        )
 
         by_segment = self._resolve_products_by_segment(
             products_by_segment=products_by_segment,
@@ -90,10 +79,9 @@ class ExcelTemplateGenerator:
 
         warn_at = settings.template_list_warn_threshold
         total_products = sum(len(v) for v in by_segment.values())
-        if len(customer_values) >= warn_at or total_products >= warn_at:
+        if total_products >= warn_at:
             logger.warning(
-                "Large template master lists | customers={} | products={} | segments={} | threshold={}",
-                len(customer_values),
+                "Large template product lists | products={} | segments={} | threshold={}",
                 total_products,
                 len(by_segment),
                 warn_at,
@@ -108,6 +96,8 @@ class ExcelTemplateGenerator:
         header_fill = PatternFill("solid", fgColor="1F5FA8")
         label_font = Font(bold=True, color="1F2937")
         note_font = Font(italic=True, color="6B7280", size=9)
+        guidance_font = Font(bold=False, color="1E3A5F", size=9)
+        guidance_fill = PatternFill("solid", fgColor="E8F1FB")
         thin = Border(
             left=Side(style="thin", color="D0D5DD"),
             right=Side(style="thin", color="D0D5DD"),
@@ -116,53 +106,67 @@ class ExcelTemplateGenerator:
         )
 
         detail_labels = [
-            (1, "Name of Distributor"),
+            (1, "Name of Person"),
             (2, "Company Name"),
-            (3, "Address"),
-            (4, "Phone No"),
-            (5, "Reporting Month"),
+            (3, "Reporting Quarter"),
         ]
         for row_idx, label in detail_labels:
             cell = sheet.cell(row=row_idx, column=1, value=label)
             cell.font = label_font
-            sheet.cell(row=row_idx, column=2, value=None)
 
-        note = sheet.cell(
-            row=6,
-            column=1,
-            value=(
-                "Instructions: Select Segment first, then Product "
-                "(Product list shows only codes for that Segment). "
+        sheet.cell(row=1, column=2, value=(contact_person or None))
+        sheet.cell(row=2, column=2, value=(company_name or None))
+        sheet.cell(row=3, column=2, value=(reporting_quarter or None))
+        sheet.cell(row=3, column=2).number_format = "@"
+
+        guidance = sheet.cell(row=4, column=1, value=QUARTER_GUIDANCE)
+        guidance.font = guidance_font
+        guidance.fill = guidance_fill
+        guidance.alignment = Alignment(wrap_text=True, vertical="center")
+        sheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=5)
+        sheet.row_dimensions[4].height = 28
+        for col in range(1, 6):
+            sheet.cell(row=4, column=col).fill = guidance_fill
+
+        if distributor_mode:
+            instruction = (
+                "Instructions: Select Customer Name from the dropdown "
+                "(all customers previously submitted by this distributor). "
+                "Enter Reporting Quarter as Q1/Q2/Q3/Q4 YYYY (see note above). "
+                "Select Segment first, then Product "
+                "(list shows only codes for that Segment). "
                 "After changing Segment, clear or re-select Product "
-                "(mismatched Product cells highlight in red). "
-                "Type in a dropdown cell to jump to matching values."
-            ),
-        )
+                "(mismatched Product cells highlight in red)."
+            )
+        else:
+            instruction = (
+                "Instructions: Enter Customer Name as free text. "
+                "Enter Reporting Quarter as Q1/Q2/Q3/Q4 YYYY (see note above). "
+                "Select Segment first, then Product "
+                "(list shows only codes for that Segment). "
+                "After changing Segment, clear or re-select Product "
+                "(mismatched Product cells highlight in red)."
+            )
+        note = sheet.cell(row=5, column=1, value=instruction)
         note.font = note_font
-        sheet.merge_cells(start_row=6, start_column=1, end_row=6, end_column=7)
+        sheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=5)
 
-        table_header_row = 7
+        table_header_row = 6
         for col_idx, header in enumerate(self.HEADERS, start=1):
             cell = sheet.cell(row=table_header_row, column=col_idx, value=header)
             cell.font = header_font
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.border = thin
-            sheet.column_dimensions[get_column_letter(col_idx)].width = 22
+            sheet.column_dimensions[get_column_letter(col_idx)].width = 24
 
         sheet.row_dimensions[table_header_row].height = 22
-        sheet.freeze_panes = "A8"
+        sheet.freeze_panes = "A7"
 
         segment_values = sorted(by_segment.keys(), key=lambda s: s.casefold())
 
-        cust_end = self.dropdowns.write_column_list(
-            lists_sheet, column="A", title="Customers", values=customer_values
-        )
         seg_end = self.dropdowns.write_column_list(
             lists_sheet, column="B", title="Segments", values=segment_values
-        )
-        month_end = self.dropdowns.write_column_list(
-            lists_sheet, column="C", title="Reporting Months", values=month_values
         )
 
         ordered_segments, name_map = self.dropdowns.write_segment_product_columns(
@@ -173,28 +177,55 @@ class ExcelTemplateGenerator:
         )
 
         self.dropdowns.register_named_range(
-            workbook, name="CustomerList", sheet_title=lists_sheet.title, column="A", end_row=cust_end
-        )
-        self.dropdowns.register_named_range(
             workbook, name="SegmentList", sheet_title=lists_sheet.title, column="B", end_row=seg_end
         )
-        self.dropdowns.register_named_range(
-            workbook, name="MonthList", sheet_title=lists_sheet.title, column="C", end_row=month_end
+
+        data_start = 7
+        self.dropdowns.add_list_validation(
+            sheet, named_range="SegmentList", cells=f"C{data_start}:C1000"
+        )
+        self.dropdowns.add_dependent_product_validation(
+            sheet,
+            cells=f"D{data_start}:D1000",
+            segment_cell_relative=f"$C{data_start}",
+        )
+        self.dropdowns.flag_invalid_segment_product(
+            sheet,
+            cells=f"D{data_start}:D1000",
+            segment_col="$C",
+            product_col="$D",
+            start_row=data_start,
         )
 
-        # Customer / Segment / Month: flat lists (Excel native incremental search)
-        self.dropdowns.add_list_validation(sheet, named_range="CustomerList", cells="B8:B1000")
-        self.dropdowns.add_list_validation(sheet, named_range="SegmentList", cells="C8:C1000")
-        # Product: dependent on Segment in column C
-        self.dropdowns.add_dependent_product_validation(sheet, cells="D8:D1000")
-        self.dropdowns.flag_invalid_segment_product(sheet, cells="D8:D1000")
-        self.dropdowns.add_list_validation(sheet, named_range="MonthList", cells="B5")
+        if distributor_mode:
+            customer_sheet = workbook.create_sheet(CUSTOMER_LIST_SHEET)
+            cust_end = self.dropdowns.write_column_list(
+                customer_sheet,
+                column="A",
+                title="Customers",
+                values=customer_values or ["(No mapped customers yet)"],
+            )
+            self.dropdowns.register_named_range(
+                workbook,
+                name="DistributorCustomers",
+                sheet_title=CUSTOMER_LIST_SHEET,
+                column="A",
+                end_row=cust_end,
+            )
+            if customer_values:
+                self.dropdowns.add_list_validation(
+                    sheet,
+                    named_range="DistributorCustomers",
+                    cells=f"B{data_start}:B1000",
+                )
+            customer_sheet.protection.sheet = True
+            customer_sheet.sheet_state = "hidden"
 
         lists_sheet.protection.sheet = True
         lists_sheet.sheet_state = "hidden"
 
-        for row_idx in range(8, 18):
-            sheet.cell(row=row_idx, column=1, value=row_idx - 7)
+        for row_idx in range(data_start, data_start + 10):
+            sheet.cell(row=row_idx, column=1, value=row_idx - (data_start - 1))
 
         target = output_path or (Path(settings.download_dir) / DISTRIBUTOR_TEMPLATE_FILENAME)
         ensure_dir(target.parent)
@@ -203,12 +234,13 @@ class ExcelTemplateGenerator:
         save_ms = round((time.perf_counter() - save_started) * 1000, 2)
         total_ms = round((time.perf_counter() - started) * 1000, 2)
         logger.info(
-            "Generated distributor template at {} | customers={} products={} segments={} "
-            "save_ms={} total_ms={}",
+            "Generated quarterly distributor template at {} | mode={} | products={} "
+            "segments={} customers={} save_ms={} total_ms={}",
             target,
-            len(customer_values),
+            "distributor" if distributor_mode else "generic",
             total_products,
             len(segment_values),
+            len(customer_values),
             save_ms,
             total_ms,
         )
@@ -230,6 +262,22 @@ class ExcelTemplateGenerator:
         out.sort(key=lambda s: s.casefold())
         return out
 
+    @staticmethod
+    def _unique_preserve_order(values: Sequence[str]) -> List[str]:
+        """De-dupe while keeping caller order (previous-quarter-first lists)."""
+        seen: set[str] = set()
+        out: List[str] = []
+        for raw in values:
+            name = (raw or "").strip()
+            if not name:
+                continue
+            key = name.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(name)
+        return out
+
     def _resolve_products_by_segment(
         self,
         *,
@@ -249,10 +297,8 @@ class ExcelTemplateGenerator:
             if result:
                 return result
 
-        # Legacy flat product list → single bucket (tests / fallback only)
         flat = self._unique_sorted(list(products or [])) or ["SAMPLE-PRODUCT"]
         if segments:
-            # Put all products under first provided segment for backward-compat tests
             primary = (list(segments)[0] or "GENERAL").strip() or "GENERAL"
             return {primary: flat}
         return {"GENERAL": flat}

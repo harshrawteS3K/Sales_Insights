@@ -88,7 +88,7 @@ class ReportService:
         reporting_month = normalize_reporting_month(payload.reporting_month or "")
         if not reporting_month:
             raise ValidationAppError(
-                "reporting_month is required — refusing to create a ghost report without a Reporting Month"
+                "reporting_month is required — refusing to create a ghost report without a Reporting Quarter"
             )
         distributor = self.distributors.get_or_raise(payload.distributor_id)
         company = distributor.company or distributor.name
@@ -254,12 +254,12 @@ class ReportService:
             )
         if not reporting_month:
             raise ValidationAppError(
-                "Reporting Month could not be extracted — refusing to create a report",
+                "Reporting Quarter could not be extracted — refusing to create a report",
                 details={"distributor_details": parse_result.distributor_details},
             )
         if len(distributors) > 1:
             raise ValidationAppError(
-                "Multiple Distributors found in one Excel — submit one report per Distributor + Reporting Month",
+                "Multiple Distributors found in one Excel — submit one report per Distributor + Reporting Quarter",
                 details={"distributors": sorted(distributors)},
             )
 
@@ -289,8 +289,6 @@ class ReportService:
         distributor = self.distributors.get_or_create_by_company(
             company_key,
             representative_name=representative,
-            address=details.get("address") or (parsed_rows[0].address if parsed_rows else None),
-            phone=details.get("phone") or (parsed_rows[0].phone if parsed_rows else None),
         )
         distributor_ids: dict[str, int] = {distributor_name: distributor.id}
         for name in distributors:
@@ -382,7 +380,7 @@ class ReportService:
             reason = (
                 "Report Replacement"
                 if same_key
-                else "Legacy Quarter Retired (Reporting Month workflow)"
+                else "Legacy Quarter Retired (Reporting Quarter workflow)"
             )
             logger.info(
                 "Report Replacement match | company={} | distributor_id={} | "
@@ -588,6 +586,40 @@ class ReportService:
                     "No sales records inserted — refusing to keep an empty report",
                     details={"report_id": report.id},
                 )
+            # Phase-2: learn distributor → customer mappings from imported rows
+            try:
+                from app.services.distributor_service import DistributorService
+
+                customer_names = [
+                    (row.customer_name or "").strip()
+                    for row in parsed_rows
+                    if (row.customer_name or "").strip()
+                ]
+                logger.info(
+                    "Learning customer mapping | distributor={} | customers={} | quarter={}",
+                    primary_distributor_id,
+                    customer_names,
+                    reporting_month,
+                )
+                learned = DistributorService(self.db).learn_customers_from_import(
+                    distributor_id=primary_distributor_id,
+                    customer_names=customer_names,
+                    source_report_id=report.id,
+                    reporting_quarter=reporting_month,
+                    actor=actor,
+                )
+                logger.info(
+                    "Customer mapping learned | distributor_id={} | newly_learned={}",
+                    primary_distributor_id,
+                    learned,
+                )
+            except Exception:  # noqa: BLE001 — never fail ingest on mapping learn
+                logger.exception(
+                    "Customer mapping learn failed | report_id={} | distributor_id={}",
+                    report.id,
+                    primary_distributor_id,
+                )
+
             self.reports.update(
                 report,
                 {
@@ -807,8 +839,6 @@ class ReportService:
                         customerName=line.customerName,
                         segment=line.segment,
                         product=line.product,
-                        openingStock=line.openingStock,
-                        closingStock=line.closingStock,
                         quantity=line.quantity,
                         reportingMonth=group.reportingMonth,
                         period=group.reportingMonth,

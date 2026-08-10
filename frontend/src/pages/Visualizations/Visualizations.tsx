@@ -50,7 +50,7 @@ export function Visualizations() {
   const [productBarData, setProductBarData] = useState<any[]>([]);
   const [topDist, setTopDist] = useState<any[]>([]);
   const [distContribution, setDistContribution] = useState<any[]>([]);
-  const [monthlyTrend, setMonthlyTrend] = useState<any[]>([]);
+  const [quarterlyTrend, setQuarterlyTrend] = useState<any[]>([]);
   const [heatmap, setHeatmap] = useState<{ months: string[]; distributors: string[]; cells: any[] }>({
     months: [],
     distributors: [],
@@ -104,8 +104,8 @@ export function Visualizations() {
       VisualizationsService.getProductBarData({ ...fp, top_n: topN }),
       VisualizationsService.getTop10Distributors({ ...fp, limit: 15 }),
       VisualizationsService.getDistributorContribution({ ...fp, top_n: 8 }),
-      VisualizationsService.getMonthlyTrend({ product: fp.product, distributor: fp.distributor }),
-      VisualizationsService.getDistributorMonthHeatmap({
+      VisualizationsService.getQuarterlyTrend({ product: fp.product, distributor: fp.distributor }),
+      VisualizationsService.getDistributorQuarterHeatmap({
         product: fp.product,
         distributor: fp.distributor,
         distributor_limit: 15,
@@ -118,7 +118,7 @@ export function Visualizations() {
     setProductBarData(barData);
     setTopDist(top);
     setDistContribution(contrib);
-    setMonthlyTrend(trend);
+    setQuarterlyTrend(trend);
     setHeatmap(heat);
     setDistProductMix(distMix);
   }, [filterParams, topN]);
@@ -171,7 +171,7 @@ export function Visualizations() {
     setFilters(f => ({ ...f, [key]: value }));
   };
 
-  const periodLabel = filters.period && filters.period !== 'All' ? filters.period : 'All reporting months';
+  const periodLabel = filters.period && filters.period !== 'All' ? filters.period : 'All reporting quarters';
 
   return (
     <div style={{ padding: '28px 32px', fontFamily: "'Inter', system-ui, sans-serif", maxWidth: 1500 }}>
@@ -249,7 +249,7 @@ export function Visualizations() {
               kpis={productsKpis}
               productMix={productMix}
               productBarData={productBarData}
-              monthlyTrend={monthlyTrend}
+              quarterlyTrend={quarterlyTrend}
               topN={topN}
             />
           )}
@@ -260,7 +260,7 @@ export function Visualizations() {
               distContribution={distContribution}
               distProductMix={distProductMix}
               heatmap={heatmap}
-              monthlyTrend={monthlyTrend}
+              quarterlyTrend={quarterlyTrend}
             />
           )}
         </>
@@ -273,13 +273,13 @@ function ProductsTab({
   kpis,
   productMix,
   productBarData,
-  monthlyTrend,
+  quarterlyTrend,
   topN,
 }: {
   kpis: KpiItem[];
   productMix: any[];
   productBarData: any[];
-  monthlyTrend: any[];
+  quarterlyTrend: any[];
   topN: number;
 }) {
   const treemapData = productMix.map(d => ({
@@ -287,6 +287,7 @@ function ProductsTab({
     size: d.qty ?? d.value,
     fill: d.color,
   }));
+  const trendKey = quarterlyTrend.some(d => d.quarter) ? 'quarter' : 'month';
 
   return (
     <>
@@ -297,14 +298,14 @@ function ProductsTab({
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 20, marginBottom: 20 }}>
-        <ChartCard title="Monthly Sales Trend" subtitle="Total quantity (MT) by reporting month — line chart">
-          {monthlyTrend.length === 0 ? (
+        <ChartCard title="Quarterly Sales Trend" subtitle="Total quantity (MT) by reporting quarter — line chart">
+          {quarterlyTrend.length === 0 ? (
             <EmptyChart />
           ) : (
             <ResponsiveContainer width="100%" height={260}>
-              <LineChart data={monthlyTrend} margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
+              <LineChart data={quarterlyTrend} margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" />
-                <XAxis dataKey="month" tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
+                <XAxis dataKey={trendKey} tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
                 <Tooltip
                   contentStyle={{ fontSize: 12, borderRadius: 8, border: `1px solid ${BORDER}` }}
@@ -421,14 +422,14 @@ function DistributorsTab({
   distContribution,
   distProductMix,
   heatmap,
-  monthlyTrend,
+  quarterlyTrend,
 }: {
   kpis: KpiItem[];
   topDist: any[];
   distContribution: any[];
   distProductMix: any[];
   heatmap: { months: string[]; distributors: string[]; cells: any[] };
-  monthlyTrend: any[];
+  quarterlyTrend: any[];
 }) {
   const stackKeys = (() => {
     const keys = new Set<string>();
@@ -439,6 +440,7 @@ function DistributorsTab({
     }
     return Array.from(keys).slice(0, 8);
   })();
+  const trendKey = quarterlyTrend.some(d => d.quarter) ? 'quarter' : 'month';
 
   return (
     <>
@@ -449,14 +451,14 @@ function DistributorsTab({
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 20, marginBottom: 20 }}>
-        <ChartCard title="Monthly Sales Trend" subtitle="Quantity by month (filtered)">
-          {monthlyTrend.length === 0 ? (
+        <ChartCard title="Quarterly Sales Trend" subtitle="Quantity by quarter (filtered)">
+          {quarterlyTrend.length === 0 ? (
             <EmptyChart />
           ) : (
             <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={monthlyTrend} margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
+              <LineChart data={quarterlyTrend} margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" />
-                <XAxis dataKey="month" tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
+                <XAxis dataKey={trendKey} tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
                 <Tooltip
                   contentStyle={{ fontSize: 12, borderRadius: 8, border: `1px solid ${BORDER}` }}
@@ -545,7 +547,7 @@ function DistributorsTab({
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 20, marginBottom: 20 }}>
-        <ChartCard title="Distributor vs Month" subtitle="Heatmap — quantity intensity (Top Distributor Companies)">
+        <ChartCard title="Distributor vs Quarter" subtitle="Heatmap — quantity intensity (Top Distributor Companies)">
           <SalesHeatmap data={heatmap} height={360} />
         </ChartCard>
       </div>
@@ -659,7 +661,7 @@ function FilterBar({
 
       <div style={{ minWidth: 160 }}>
         <div style={{ fontSize: '0.65rem', color: '#6B7280', fontWeight: 600, marginBottom: 3 }}>
-          Reporting Month
+          Reporting Quarter
         </div>
         <select
           value={filters.period || 'All'}
@@ -676,7 +678,7 @@ function FilterBar({
             cursor: 'pointer',
           }}
         >
-          <option value="All">All Reporting Months</option>
+          <option value="All">All Reporting Quarters</option>
           {periodOpts.map(o => (
             <option key={o} value={o}>
               {o}

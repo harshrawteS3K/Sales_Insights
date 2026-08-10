@@ -75,9 +75,9 @@ def compute_confidence_breakdown(
       Validation           15
       Completeness         10
     """
-    detail_keys = ("name", "company", "address", "phone")
+    detail_keys = ("name", "company")
     present = sum(1 for key in detail_keys if (distributor_details.get(key) or "").strip())
-    detail_ratio = present / 4.0
+    detail_ratio = present / 2.0
 
     # --- Template Detection (0–25) ---
     if is_official_template:

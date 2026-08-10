@@ -191,11 +191,9 @@ def test_bug9_purge_disabled_when_days_zero(db: Session):
 
 @pytest.mark.parametrize("n", [500, 1000, 5000])
 def test_bug10_template_scales(tmp_path: Path, n: int):
-    customers = [f"Customer {i:05d}" for i in range(n)]
     products = [f"PROD-{i:05d}" for i in range(min(n, 5000))]
     out = tmp_path / f"template_{n}.xlsx"
     path = ExcelTemplateGenerator().generate(
-        customers=customers,
         products=products,
         output_path=out,
     )
@@ -203,11 +201,11 @@ def test_bug10_template_scales(tmp_path: Path, n: int):
     wb = load_workbook(path, read_only=True, data_only=False)
     assert "_lists" in wb.sheetnames
     lists = wb["_lists"]
-    # Title row + n customer values
-    assert lists["A1"].value == "Customers"
-    assert lists["A2"].value == customers[0]
-    assert lists.cell(row=n + 1, column=1).value == customers[-1]
-    assert "CustomerList" in wb.defined_names
+    # Segments in column B; products under GENERAL for flat list
+    assert lists["B1"].value == "Segments"
+    assert lists["B2"].value == "GENERAL"
+    assert "SegmentList" in wb.defined_names
+    assert "CustomerList" not in wb.defined_names
     wb.close()
 
 

@@ -1,21 +1,19 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router';
-import { Search, Bell, ChevronDown } from 'lucide-react';
-import { BLUE, TEAL, RED, BORDER } from '../../constants/theme';
+import { Search, ChevronDown } from 'lucide-react';
+import { BLUE, BORDER } from '../../constants/theme';
 
 const quickLinks = [
   { name: 'Distributor Email Extraction', path: '/emails',            category: 'Emails'         },
   { name: 'Consolidated Sales Data',      path: '/consolidated-data', category: 'Data'           },
   { name: 'Master Data Management',       path: '/master-data',       category: 'Data'           },
+  { name: 'Distributor Management',       path: '/distributors',      category: 'Data'           },
   { name: 'Sales Trend Analysis',         path: '/visualizations',   category: 'Visualizations' },
   { name: 'Distributor Performance',      path: '/visualizations',   category: 'Visualizations' },
-  { name: 'Monthly Revenue Dashboard',    path: '/visualizations',   category: 'Visualizations' },
+  { name: 'Quarterly Sales Dashboard',    path: '/visualizations',   category: 'Visualizations' },
   { name: 'Product-wise Sales',           path: '/visualizations',   category: 'Visualizations' },
   { name: 'Region-wise Analytics',        path: '/visualizations',   category: 'Visualizations' },
 ];
-
-const RED_TINT   = 'rgba(217,58,47,0.06)';
-const RED_BORDER = 'rgba(217,58,47,0.16)';
 
 export function TopBar({ userName = 'Debabrata C' }: { userName?: string }) {
   const navigate = useNavigate();
@@ -139,54 +137,6 @@ export function TopBar({ userName = 'Debabrata C' }: { userName?: string }) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginLeft: 'auto' }}>
-        {/* Quarter badge */}
-        <span style={{
-          fontSize: '0.75rem',
-          color: '#6B7280',
-          background: '#F9FAFB',
-          padding: '3px 10px',
-          borderRadius: 20,
-          border: `1px solid ${BORDER}`,
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 7,
-        }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: RED, flexShrink: 0 }} />
-          Q2 2026
-        </span>
-
-        {/* Notifications */}
-        <button
-          style={{
-            width: 34,
-            height: 34,
-            borderRadius: 6,
-            border: `1px solid ${RED_BORDER}`,
-            background: RED_TINT,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            position: 'relative',
-            transition: 'all 0.15s ease',
-          }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(217,58,47,0.10)'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(217,58,47,0.10)'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = RED_TINT; e.currentTarget.style.boxShadow = 'none'; }}
-        >
-          <Bell size={15} color={RED} />
-          <span style={{
-            position: 'absolute',
-            top: 6,
-            right: 6,
-            width: 8,
-            height: 8,
-            background: RED,
-            borderRadius: '50%',
-            border: '1.5px solid white',
-            boxShadow: '0 0 0 1px rgba(217,58,47,0.12)',
-          }} />
-        </button>
-
         {/* User */}
         <button
           style={{

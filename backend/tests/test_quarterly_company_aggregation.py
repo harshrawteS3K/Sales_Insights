@@ -33,28 +33,29 @@ def db():
 
 def test_period_calendar_q1_months():
     months = months_for_quarter(1, 2026)
-    assert months == ("January 2026", "February 2026", "March 2026")
+    assert months == ("April 2026", "May 2026", "June 2026")
     spec = parse_quarter_label("Q1 2026")
     assert spec is not None
-    assert spec.month_list == list(months)
+    assert spec.month_list == ["Q1 2026", "April 2026", "May 2026", "June 2026"]
 
 
 def test_available_quarters_from_months():
     labels = available_quarter_labels(
         ["January 2026", "March 2026", "April 2026", "July 2025"]
     )
+    # APCOTEX: Jan–Mar = Q4, Apr–Jun = Q1, Jul–Sep = Q2
+    assert "Q4 2026" in labels
     assert "Q1 2026" in labels
-    assert "Q2 2026" in labels
-    assert "Q3 2025" in labels
+    assert "Q2 2025" in labels
 
 
 def test_quarterly_totals_equal_sum_of_months(db: Session, tmp_path: Path):
     company = "Puneet Dyes & Chemicals QTest"
     rep = "Navneet Goel QTest Unique"
     for month, qty in [
-        ("January 2098", 10),
-        ("February 2098", 20),
-        ("March 2098", 30),
+        ("April 2098", 10),
+        ("May 2098", 20),
+        ("June 2098", 30),
     ]:
         path = build_official_workbook(
             tmp_path / f"{month.replace(' ', '_')}.xlsx",
@@ -72,9 +73,9 @@ def test_quarterly_totals_equal_sum_of_months(db: Session, tmp_path: Path):
     assert row["company"] == company
     assert row["totalQuantity"] == 60.0
     assert set(row["monthsSubmitted"]) == {
-        "January 2098",
-        "February 2098",
-        "March 2098",
+        "April 2098",
+        "May 2098",
+        "June 2098",
     }
     assert row["reportsIncluded"] == 3
 
@@ -110,7 +111,7 @@ def test_quarterly_customer_detail_pagination_search_sort(db: Session, tmp_path:
     engine = BusinessAggregationService(db)
     page1 = engine.quarterly_report(
         company=company,
-        quarter_label="Q3 2095",
+        quarter_label="Q2 2095",
         page=1,
         page_size=10,
         sort_by="quantity",
@@ -131,7 +132,7 @@ def test_quarterly_customer_detail_pagination_search_sort(db: Session, tmp_path:
 
     page2 = engine.quarterly_report(
         company=company,
-        quarter_label="Q3 2095",
+        quarter_label="Q2 2095",
         page=2,
         page_size=10,
         sort_by="quantity",
@@ -143,7 +144,7 @@ def test_quarterly_customer_detail_pagination_search_sort(db: Session, tmp_path:
 
     searched = engine.quarterly_report(
         company=company,
-        quarter_label="Q3 2095",
+        quarter_label="Q2 2095",
         search="Reliance",
         page=1,
         page_size=10,
@@ -157,7 +158,7 @@ def test_quarterly_customer_detail_pagination_search_sort(db: Session, tmp_path:
 
     by_customer = engine.quarterly_report(
         company=company,
-        quarter_label="Q3 2095",
+        quarter_label="Q2 2095",
         sort_by="customer",
         sort_order="asc",
         page=1,
@@ -170,7 +171,7 @@ def test_quarterly_customer_detail_pagination_search_sort(db: Session, tmp_path:
 def test_replaced_month_excluded_from_quarter(db: Session, tmp_path: Path):
     company = "Replace Co Q Unique"
     rep = "Rep Replace Unique"
-    for month, qty in [("January 2097", 100), ("February 2097", 50)]:
+    for month, qty in [("April 2097", 100), ("May 2097", 50)]:
         path = build_official_workbook(
             tmp_path / f"base_{month}.xlsx",
             distributor=rep,
@@ -180,12 +181,12 @@ def test_replaced_month_excluded_from_quarter(db: Session, tmp_path: Path):
         )
         ReportService(db).ingest_excel(path, actor="test")
 
-    # Replace January with new ACTIVE report (qty 5)
+    # Replace April with new ACTIVE report (qty 5)
     path2 = build_official_workbook(
-        tmp_path / "jan_replaced.xlsx",
+        tmp_path / "apr_replaced.xlsx",
         distributor=rep,
         company=company,
-        reporting_month="January 2097",
+        reporting_month="April 2097",
         rows=[(1, "C", "Paper", "P", 5, 1, 2)],
     )
     ReportService(db).ingest_excel(path2, actor="test")

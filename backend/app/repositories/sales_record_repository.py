@@ -153,8 +153,6 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
                 or_(
                     func.lower(Distributor.name).like(term),
                     func.lower(func.coalesce(Distributor.company, "")).like(term),
-                    func.lower(func.coalesce(Distributor.address, "")).like(term),
-                    func.lower(func.coalesce(Distributor.phone, "")).like(term),
                     func.lower(SalesRecord.customer_name).like(term),
                     func.lower(SalesRecord.segment).like(term),
                     func.lower(SalesRecord.product).like(term),
@@ -209,8 +207,6 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             "customerName": SalesRecord.customer_name,
             "segment": SalesRecord.segment,
             "product": SalesRecord.product,
-            "openingStock": SalesRecord.opening_stock,
-            "closingStock": SalesRecord.closing_stock,
             "quantity": SalesRecord.quantity,
             "period": SalesRecord.period,
             "reportingMonth": SalesRecord.period,
@@ -549,9 +545,10 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         distributor: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Quantity by reporting month from ACTIVE reports.
+        Quantity by reporting quarter from ACTIVE reports.
 
         Prefers Report.reporting_month, falls back to SalesRecord.period.
+        Response keys: ``month`` (legacy) and ``quarter`` (preferred) — same value.
         """
         month_expr = reporting_month_expr()
         query = (
@@ -571,7 +568,15 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         )
         query = self._apply_viz_filters(query, product=product, distributor=distributor)
         rows = self.db.execute(query).all()
-        results = [{"month": str(row.month), "qty": float(row.qty)} for row in rows if row.month]
+        results = [
+            {
+                "month": str(row.month),
+                "quarter": str(row.month),
+                "qty": float(row.qty),
+            }
+            for row in rows
+            if row.month
+        ]
         return _sort_reporting_months(results)
 
     def distributor_month_matrix(
@@ -979,15 +984,21 @@ _MONTH_ORDER = {
 
 
 def _sort_reporting_months(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Sort month labels like 'March 2024' chronologically when possible."""
+    """Sort period labels (``Q1 2026`` or ``March 2024``) chronologically when possible."""
     import re
 
+    from app.utils.period_calendar import quarter_of_month
+
     def key(item: Dict[str, Any]):
-        label = str(item.get("month") or "")
+        label = str(item.get("month") or item.get("quarter") or "")
+        qmatch = re.match(r"^\s*Q([1-4])\s+(\d{4})\s*$", label, flags=re.IGNORECASE)
+        if qmatch:
+            return (int(qmatch.group(2)), int(qmatch.group(1)), label.lower())
         match = re.match(r"^\s*([A-Za-z]+)\s+(\d{4})\s*$", label)
         if match:
             month_name, year = match.group(1).lower(), int(match.group(2))
-            return (year, _MONTH_ORDER.get(month_name, 99), label.lower())
+            month_num = _MONTH_ORDER.get(month_name, 99)
+            return (year, quarter_of_month(month_num) if month_num <= 12 else 99, label.lower())
         return (9999, 99, label.lower())
 
     return sorted(rows, key=key)

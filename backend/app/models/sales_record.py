@@ -36,11 +36,9 @@ class SalesRecord(Base, TimestampMixin, SoftDeleteMixin):
     customer_name: Mapped[str] = mapped_column(String(255), nullable=False)
     segment: Mapped[str] = mapped_column(String(150), nullable=False)
     product: Mapped[str] = mapped_column(String(150), nullable=False)
-    opening_stock: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 3), nullable=True)
-    closing_stock: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 3), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 3), nullable=False)
     quantity_display: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    # Legacy / denormalized copy of report.reporting_month (nullable for new template)
+    # Denormalized copy of report.reporting_month / Reporting Quarter
     period: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     unit: Mapped[str] = mapped_column(String(20), default="KG", server_default="KG", nullable=False)
     row_hash: Mapped[str] = mapped_column(String(128), nullable=False)

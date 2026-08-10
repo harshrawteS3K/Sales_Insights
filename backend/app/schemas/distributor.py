@@ -12,8 +12,11 @@ class DistributorBase(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=255)
     company: str = Field(..., min_length=1, max_length=255)
+    code: Optional[str] = Field(default=None, max_length=64)
+    contact_person: Optional[str] = Field(default=None, max_length=255)
     address: Optional[str] = None
     email: Optional[EmailStr] = None
+    cc_email: Optional[EmailStr] = None
     phone: Optional[str] = Field(default=None, max_length=50)
     region: Optional[str] = Field(default=None, max_length=150)
     state: Optional[str] = Field(default=None, max_length=100)
@@ -34,8 +37,11 @@ class DistributorUpdate(BaseModel):
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     company: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    code: Optional[str] = Field(default=None, max_length=64)
+    contact_person: Optional[str] = Field(default=None, max_length=255)
     address: Optional[str] = None
     email: Optional[EmailStr] = None
+    cc_email: Optional[EmailStr] = None
     phone: Optional[str] = Field(default=None, max_length=50)
     region: Optional[str] = Field(default=None, max_length=150)
     state: Optional[str] = Field(default=None, max_length=100)
@@ -50,6 +56,7 @@ class DistributorResponse(DistributorBase, TimestampSchema):
 
     id: int
     is_deleted: bool = False
+    customer_count: int = 0
 
 
 class DistributorInfo(BaseModel):
@@ -67,3 +74,20 @@ class DistributorListResponse(BaseModel):
     success: bool = True
     data: List[DistributorResponse]
     total: int
+
+
+class QuarterlyPackageRequest(BaseModel):
+    """Generate Outlook-ready ZIP for one distributor + quarter."""
+
+    reporting_quarter: str = Field(..., min_length=3, max_length=50)
+
+
+class TemplateGenerateRequest(BaseModel):
+    """Master Data template generation options."""
+
+    mode: str = Field(
+        default="generic",
+        description="generic | distributor",
+    )
+    distributor_id: Optional[int] = None
+    reporting_quarter: Optional[str] = None

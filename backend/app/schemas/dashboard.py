@@ -82,6 +82,9 @@ class TemplateGenerateResponse(BaseModel):
     customers_count: int = 0
     products_count: int = 0
     generated_at: str
+    mode: str = "generic"
+    warning: Optional[str] = None
+    fallback_generic: bool = False
 
 
 class CustomerMasterResponse(BaseModel):

@@ -1,6 +1,8 @@
 """Master data endpoints — Phase 2 paths + legacy /master-data routes."""
 
-from fastapi import APIRouter, File, UploadFile
+from typing import Optional
+
+from fastapi import APIRouter, Body, File, UploadFile
 from fastapi.responses import FileResponse
 
 from app.dependencies.rbac import RequireAdmin, RequireUser
@@ -13,6 +15,7 @@ from app.schemas.dashboard import (
     ProductMasterResponse,
     TemplateGenerateResponse,
 )
+from app.schemas.distributor import TemplateGenerateRequest
 
 router = APIRouter(tags=["Master Data"])
 
@@ -58,9 +61,10 @@ async def upload_product_master(
 def generate_template(
     service: MasterDataServiceDep,
     current: RequireAdmin,
+    payload: Optional[TemplateGenerateRequest] = Body(default=None),
 ) -> TemplateGenerateResponse:
-    """Generate template with Customer / Product dropdowns from master data."""
-    return service.generate_template(actor=current.name)
+    """Generate generic or distributor-specific (prior-quarter customers) template."""
+    return service.generate_template(actor=current.name, request=payload)
 
 
 @router.get(

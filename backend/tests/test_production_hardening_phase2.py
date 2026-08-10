@@ -135,18 +135,16 @@ def test_customer_master_extracts_name_only(tmp_path: Path):
 
 
 def test_template_blank_header_under_load(tmp_path: Path):
-    customers = [f"Cust {i:05d}" for i in range(200)]
     products = [f"PROD-{i:04d}" for i in range(100)]
     out = tmp_path / "scale.xlsx"
     ExcelTemplateGenerator().generate(
-        customers=customers,
         products=products,
         distributors=["ShouldNotAppear"],
-        periods=["January 2099"],
+        periods=["Q1 2099"],
         output_path=out,
     )
     sheet = load_workbook(out)["Sales Report"]
-    for row in range(1, 6):
+    for row in range(1, 4):
         assert sheet.cell(row, 2).value in (None, "")
 
 
@@ -164,7 +162,7 @@ def test_quarterly_matches_monthly_sum(db: Session, tmp_path: Path):
         ReportService(db).ingest_excel(path, actor="test")
 
     q = BusinessAggregationService(db).quarterly_summary(
-        quarter_label="Q3 2090", company=company
+        quarter_label="Q2 2090", company=company
     )
     assert q["data"][0]["totalQuantity"] == 66.0
     trend = DashboardService(db).monthly_sales_trend()

@@ -5,6 +5,7 @@ import {
   Table2,
   BarChart3,
   Database,
+  Building2,
   ScrollText,
   Users,
   Settings,
@@ -21,6 +22,7 @@ const mainNavItems = [
   { path: '/consolidated-data', label: 'Consolidated Data', icon: Table2           },
   { path: '/visualizations',    label: 'Visualizations',    icon: BarChart3        },
   { path: '/master-data',       label: 'Master Data',       icon: Database         },
+  { path: '/distributors',      label: 'Distributors',      icon: Building2, adminOnly: true },
   { path: '/audit-trail',       label: 'Audit Trail',       icon: ScrollText, adminOnly: true },
   { path: '/user-management',   label: 'User Management',   icon: Users, superAdminOnly: true },
 ];

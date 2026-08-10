@@ -214,8 +214,8 @@ class ExcelDropdownService:
         self,
         sheet: Worksheet,
         *,
-        cells: str = "D8:D1000",
-        segment_cell_relative: str = "$C8",
+        cells: str = "D5:D1000",
+        segment_cell_relative: str = "$C5",
     ) -> DataValidation:
         """
         Product dropdown filtered by Segment via INDIRECT(VLOOKUP(...)).
@@ -253,7 +253,10 @@ class ExcelDropdownService:
         self,
         sheet: Worksheet,
         *,
-        cells: str = "D8:D1000",
+        cells: str = "D5:D1000",
+        segment_col: str = "$C",
+        product_col: str = "$D",
+        start_row: int = 5,
     ) -> None:
         """
         Highlight Product cells that do not belong to the row's Segment.
@@ -265,12 +268,13 @@ class ExcelDropdownService:
         from openpyxl.styles import PatternFill
 
         fill = PatternFill(start_color="FECACA", end_color="FECACA", fill_type="solid")
-        # Stale / wrong-segment product, or product with no segment
+        seg = f"{segment_col}{start_row}"
+        prod = f"{product_col}{start_row}"
         formula = (
             'OR('
-            'AND($C8="",$D8<>""),'
-            'AND($C8<>"",$D8<>"",'
-            'ISERROR(MATCH($D8,INDIRECT(VLOOKUP($C8,SegmentMap,2,FALSE)),0)))'
+            f'AND({seg}="",{prod}<>""),'
+            f'AND({seg}<>"",{prod}<>"",'
+            f'ISERROR(MATCH({prod},INDIRECT(VLOOKUP({seg},SegmentMap,2,FALSE)),0)))'
             ')'
         )
         sheet.conditional_formatting.add(

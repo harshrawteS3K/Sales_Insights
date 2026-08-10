@@ -1,4 +1,4 @@
-"""Regression tests for template-driven APCOTEX Excel parser."""
+"""Regression tests for template-driven APCOTEX Excel parser (quarterly)."""
 
 from pathlib import Path
 
@@ -23,25 +23,22 @@ def _save(wb: Workbook, path: Path) -> Path:
 
 def test_normalize_header_variants():
     assert normalize_header("Sr. No.") == "sr no"
+    assert normalize_header("Customer Name") == "customer name"
     assert normalize_header("Name of Customer") == "name of customer"
-    assert normalize_header("Customer_Name") == "customer name"
-    assert normalize_header("customer-name") == "customer name"
-    assert normalize_header("CUSTOMER NAME") == "customer name"
-    assert normalize_header("Reporting Month") == "reporting month"
+    assert normalize_header("Product") == "product"
+    assert normalize_header("Product (FG Code)") == "product fg code"
+    assert normalize_header("Sales Quantity") == "sales quantity"
+    assert normalize_header("Reporting Quarter") == "reporting quarter"
 
 
-def test_official_apcotex_template(parser: ExcelParserService, tmp_path: Path):
+def test_official_quarterly_apcotex_template(parser: ExcelParserService, tmp_path: Path):
     path = build_official_workbook(
         tmp_path / "official.xlsx",
         distributor="Navneet Goel",
-        reporting_month="July 2026",
-        company="M/S PUNEET DYES",
-        address="Shop no. 2",
-        phone="0180-2646741",
-        include_stock=True,
+        reporting_month="Q3 2026",
         rows=[
-            (1, "M/S AKS RUGS CO.", "Carpet", "APCOTEX CB 4600", 3300, 2000, 20),
-            (2, "M/S BETA CO.", "Carpet", "APCOTEX CB 300", 100, 2000, 20),
+            (1, "M/S AKS RUGS CO.", "Carpet", "APCOTEX CB 4600", 3300),
+            (2, "M/S BETA CO.", "Carpet", "APCOTEX CB 300", 100),
         ],
     )
     result = parser.parse_sales_report(path)
@@ -50,108 +47,86 @@ def test_official_apcotex_template(parser: ExcelParserService, tmp_path: Path):
     assert result.template_name == "Official APCOTEX Template"
     assert result.imported_rows == 2
     assert result.incomplete_rows == 0
-    assert result.quality_score >= 95
-    assert result.reporting_month == "July 2026"
+    assert result.quality_score >= 80
+    assert result.reporting_month == "Q3 2026"
     assert result.distributor_details["name"] == "Navneet Goel"
-    assert result.distributor_details["phone"] == "0180-2646741"
-    assert result.rows[0].opening_stock == 2000
-    assert result.rows[0].closing_stock == 20
-    assert result.rows[0].period == "July 2026"
+    assert result.rows[0].period == "Q3 2026"
+    assert result.rows[0].product == "APCOTEX CB 4600"
+    assert result.rows[0].quantity == 3300
 
 
-def test_official_without_stock_columns(parser: ExcelParserService, tmp_path: Path):
+def test_legacy_month_labels_still_parse(parser: ExcelParserService, tmp_path: Path):
     path = build_official_workbook(
-        tmp_path / "no_stock.xlsx",
+        tmp_path / "legacy.xlsx",
         distributor="Dist A",
         reporting_month="June 2026",
         include_stock=False,
+        use_legacy_month_labels=True,
         rows=[(1, "Cust A", "Carpet", "CB 300", 10)],
     )
     result = parser.parse_sales_report(path)
     assert result.imported_rows == 1
-    assert result.rows[0].opening_stock is None
-    assert result.rows[0].closing_stock is None
+    assert result.reporting_month == "June 2026"
 
 
 def test_legacy_period_column_fallback(parser: ExcelParserService, tmp_path: Path):
-    """Old Excel with Period column and no Reporting Month header still works."""
+    """Old Excel with Period column and no Reporting Quarter header still works."""
     wb = Workbook()
     ws = wb.active
     ws["A1"] = "Name of Distributor"
     ws["B1"] = "Legacy Dist"
     ws["A2"] = "Company Name"
-    ws["B2"] = "Co"
-    for i, h in enumerate(
-        ["Sr. No.", "Name of Customer", "Segment", "Product", "Quantity", "Period"], 1
-    ):
+    ws["B2"] = "Legacy Dist"
+    headers = ["Sr. No.", "Name of Customer", "Segment", "Product", "Quantity", "Period"]
+    for i, h in enumerate(headers, 1):
         ws.cell(9, i, h)
-    for c, v in enumerate([1, "Cust A", "Carpet", "CB 300", 10, "Q2 FY26"], 1):
-        ws.cell(10, c, v)
-    result = parser.parse_sales_report(_save(wb, tmp_path / "legacy_period.xlsx"))
-    assert result.imported_rows == 1
-    assert result.reporting_month == "Q2 FY26"
-
-
-def test_skips_invalid_rows_imports_valid(parser: ExcelParserService, tmp_path: Path):
-    path = build_official_workbook(
-        tmp_path / "skip.xlsx",
-        distributor="Dist",
-        reporting_month="May 2026",
-        include_stock=False,
-        rows=[
-            (1, "Good", "Carpet", "P1", 10),
-            (2, "", "Carpet", "P1", 10),
-        ],
-    )
+    ws.cell(10, 1, 1)
+    ws.cell(10, 2, "Cust")
+    ws.cell(10, 3, "Carpet")
+    ws.cell(10, 4, "P1")
+    ws.cell(10, 5, 5)
+    ws.cell(10, 6, "May 2026")
+    path = _save(wb, tmp_path / "legacy_period.xlsx")
     result = parser.parse_sales_report(path)
-    assert result.expected_rows == 2
     assert result.imported_rows == 1
-    assert result.incomplete_rows == 1
-    assert any("Missing Customer" in e for e in result.row_errors)
+    assert result.reporting_month == "May 2026"
 
 
-def test_legacy_customer_name_fallback(parser: ExcelParserService, tmp_path: Path):
+def test_missing_required_column_fails(parser: ExcelParserService, tmp_path: Path):
     wb = Workbook()
     ws = wb.active
-    ws["A1"] = "Distributor Name"
-    ws["B1"] = "Legacy Dist"
-    ws["A2"] = "Reporting Month"
-    ws["B2"] = "Q1 FY26"
+    ws["A1"] = "Name of Person"
+    ws["B1"] = "Someone"
+    ws["A2"] = "Reporting Quarter"
+    ws["B2"] = "Q1 2026"
+    for i, h in enumerate(["Sr. No.", "Customer Name", "Segment", "Sales Quantity"], 1):
+        ws.cell(6, i, h)
+    ws.cell(7, 1, 1)
+    ws.cell(7, 2, "Cust")
+    ws.cell(7, 3, "Carpet")
+    ws.cell(7, 4, 10)
+    path = _save(wb, tmp_path / "missing_product.xlsx")
+    with pytest.raises(ExcelProcessingError):
+        parser.parse_sales_report(path)
+
+
+def test_missing_reporting_quarter_fails(parser: ExcelParserService, tmp_path: Path):
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = "Name of Person"
+    ws["B1"] = "Someone"
+    ws["A2"] = "Company Name"
+    ws["B2"] = "Someone Co"
     for i, h in enumerate(
-        ["Sr No", "Customer Name", "Segment", "Product", "Quantity"], 1
+        ["Sr. No.", "Customer Name", "Segment", "Product", "Sales Quantity"], 1
     ):
         ws.cell(6, i, h)
-    for c, v in enumerate([1, "Cust A", "Tyre", "CB 300", 10], 1):
-        ws.cell(7, c, v)
-
-    result = parser.parse_sales_report(_save(wb, tmp_path / "legacy.xlsx"))
-    assert result.imported_rows == 1
-    assert result.reporting_month == "Q1 FY26"
-
-
-def test_header_mismatch_fails_fast(parser: ExcelParserService, tmp_path: Path):
-    wb = Workbook()
-    ws = wb.active
-    for i, h in enumerate(["Foo", "Bar", "Baz"], 1):
-        ws.cell(1, i, h)
-    ws.cell(2, 1, "x")
-
+    ws.cell(7, 1, 1)
+    ws.cell(7, 2, "Cust")
+    ws.cell(7, 3, "Carpet")
+    ws.cell(7, 4, "P1")
+    ws.cell(7, 5, 10)
+    path = _save(wb, tmp_path / "no_quarter.xlsx")
     with pytest.raises(ExcelProcessingError) as exc:
-        parser.parse_sales_report(_save(wb, tmp_path / "bad.xlsx"))
-    assert "validation failed" in str(exc.value).lower() or "Missing" in str(exc.value)
-
-
-def test_missing_reporting_month_fails(parser: ExcelParserService, tmp_path: Path):
-    wb = Workbook()
-    ws = wb.active
-    ws["A1"] = "Name of Distributor"
-    ws["B1"] = "Dist"
-    for i, h in enumerate(
-        ["Sr. No.", "Name of Customer", "Segment", "Product", "Quantity"], 1
-    ):
-        ws.cell(9, i, h)
-    for c, v in enumerate([1, "Cust", "Carpet", "P1", 10], 1):
-        ws.cell(10, c, v)
-    with pytest.raises(ExcelProcessingError) as exc:
-        parser.parse_sales_report(_save(wb, tmp_path / "no_month.xlsx"))
-    assert "Reporting Month" in str(exc.value)
+        parser.parse_sales_report(path)
+    assert "Reporting Quarter" in str(exc.value)

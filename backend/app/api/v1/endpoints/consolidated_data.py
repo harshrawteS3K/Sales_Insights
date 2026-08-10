@@ -51,7 +51,7 @@ def get_quarterly_summary(
         None, description="Distributor Company (optional; All when omitted)"
     ),
 ) -> QuarterlySummaryResponse:
-    """Virtual quarterly summary over ACTIVE monthly reports (not persisted)."""
+    """Virtual quarterly summary over ACTIVE quarterly reports (not persisted)."""
     engine = BusinessAggregationService(db)
     payload = engine.quarterly_summary(quarter_label=quarter, company=company)
     return QuarterlySummaryResponse(**payload)
@@ -78,7 +78,7 @@ def get_quarterly_report(
     ),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> QuarterlyReportResponse:
-    """Aggregate ACTIVE monthly reports for company + quarter (SQL only)."""
+    """Aggregate ACTIVE quarterly reports for company + quarter (SQL only)."""
     engine = BusinessAggregationService(db)
     payload = engine.quarterly_report(
         company=company,
@@ -135,10 +135,13 @@ def get_sales_records(
     product: Optional[str] = Query(None),
     company: Optional[str] = Query(None),
     period: Optional[str] = Query(
-        None, description="Reporting Month (legacy query name)"
+        None, description="Reporting Quarter (legacy query name)"
     ),
     reporting_month: Optional[str] = Query(
-        None, description="Reporting Month", alias="reportingMonth"
+        None, description="Reporting Quarter", alias="reportingMonth"
+    ),
+    reporting_quarter: Optional[str] = Query(
+        None, description="Reporting Quarter", alias="reportingQuarter"
     ),
     quarter: Optional[str] = Query(
         None, description="Quarter label e.g. Q1 2026 (or legacy Q2 token)"
@@ -162,7 +165,7 @@ def get_sales_records(
         product=product,
         company=company,
         period=period,
-        reporting_month=reporting_month,
+        reporting_month=reporting_quarter or reporting_month,
         quarter=quarter,
         quantity_min=quantity_min,
         quantity_max=quantity_max,
@@ -191,24 +194,25 @@ def get_distributor_details(
 @router.get(
     "/report/preview",
     response_model=DeleteReportPreview,
-    summary="Preview rows that would be deleted for distributor + reporting month",
+    summary="Preview rows that would be deleted for distributor + reporting quarter",
 )
 def preview_delete_report(
     service: ConsolidatedDataServiceDep,
     _: RequireAdmin,
     distributor: str = Query(...),
+    reportingQuarter: Optional[str] = Query(None),
     reportingMonth: Optional[str] = Query(None),
-    period: Optional[str] = Query(None, description="Legacy alias for reportingMonth"),
+    period: Optional[str] = Query(None, description="Legacy alias for reportingQuarter"),
 ) -> DeleteReportPreview:
     """Preview delete-report impact before confirmation."""
-    month = (reportingMonth or period or "").strip()
+    month = (reportingQuarter or reportingMonth or period or "").strip()
     return service.preview_delete_report(distributor, month)
 
 
 @router.delete(
     "/report",
     response_model=DeleteResult,
-    summary="Delete imported report (distributor + reporting month)",
+    summary="Delete imported report (distributor + reporting quarter)",
 )
 def delete_report(
     payload: DeleteReportRequest,
@@ -218,7 +222,7 @@ def delete_report(
     """
     DELETE /api/consolidated-data/report
 
-    Removes all sales rows for the given Distributor + Reporting Month.
+    Removes all sales rows for the given Distributor + Reporting Quarter.
     """
     return service.delete_report(
         payload.distributor, payload.resolved_month(), actor=current.name

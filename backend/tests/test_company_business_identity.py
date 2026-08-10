@@ -98,9 +98,9 @@ def test_different_reps_same_company_same_month_replace(db: Session, tmp_path: P
 def test_quarterly_reflects_company_replacement(db: Session, tmp_path: Path):
     company = _uid("Q Company Identity")
     for month, qty, rep in [
-        ("January 2094", 10, "Rep One"),
-        ("February 2094", 20, "Rep One"),
-        ("March 2094", 30, "Rep One"),
+        ("April 2094", 10, "Rep One"),
+        ("May 2094", 20, "Rep One"),
+        ("June 2094", 30, "Rep One"),
     ]:
         path = build_official_workbook(
             tmp_path / f"{month}.xlsx",
@@ -111,12 +111,12 @@ def test_quarterly_reflects_company_replacement(db: Session, tmp_path: Path):
         )
         ReportService(db).ingest_excel(path, actor="test")
 
-    # Replace January with different representative
+    # Replace April with different representative
     path2 = build_official_workbook(
-        tmp_path / "jan2.xlsx",
+        tmp_path / "apr2.xlsx",
         distributor="Rep Two",
         company=company,
-        reporting_month="January 2094",
+        reporting_month="April 2094",
         rows=[(1, "C", "Paper", "P", 7, 1, 2)],
     )
     ReportService(db).ingest_excel(path2, actor="test")

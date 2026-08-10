@@ -31,6 +31,35 @@ from app.middleware.request_logging import RequestLoggingMiddleware
 logger = get_logger(__name__)
 
 
+def _maybe_backfill_customer_mappings_once() -> None:
+    """If mappings table is empty but sales exist, backfill once (idempotent)."""
+    try:
+        from sqlalchemy import func, select
+
+        from app.database.session import SessionLocal
+        from app.models.distributor_customer_mapping import DistributorCustomerMapping
+        from app.services.distributor_service import DistributorService
+
+        db = SessionLocal()
+        try:
+            mapping_count = int(
+                db.scalar(select(func.count()).select_from(DistributorCustomerMapping)) or 0
+            )
+            if mapping_count > 0:
+                return
+            result = DistributorService(db).backfill_customer_mappings(actor="startup")
+            db.commit()
+            if result.get("newly_learned") or result.get("mappings_touched"):
+                logger.info(
+                    "Startup customer-mapping backfill | {}",
+                    result,
+                )
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001 — never block app boot
+        logger.exception("Startup customer-mapping backfill skipped due to error")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Application startup / shutdown lifecycle."""
@@ -46,6 +75,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     )
     if check_database_connection():
         logger.info("Database connectivity verified")
+        _maybe_backfill_customer_mappings_once()
     else:
         logger.error("Database is unreachable at startup")
 
