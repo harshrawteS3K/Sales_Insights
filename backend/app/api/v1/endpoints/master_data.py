@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Body, File, UploadFile
+from fastapi import APIRouter, Body, File, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from app.dependencies.rbac import RequireAdmin, RequireUser
@@ -75,9 +75,13 @@ def generate_template(
 def download_template(
     service: MasterDataServiceDep,
     current: RequireAdmin,
+    file_name: Optional[str] = Query(
+        None,
+        description="Exact file name returned by POST /template/generate",
+    ),
 ) -> FileResponse:
-    """Download the latest generated official distributor Excel template."""
-    path, filename = service.resolve_template_download()
+    """Download the generated Excel template (prefer the file from last generate)."""
+    path, filename = service.resolve_template_download(preferred_name=file_name)
     return FileResponse(
         path=str(path),
         filename=filename,

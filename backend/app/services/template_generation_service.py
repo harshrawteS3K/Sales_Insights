@@ -214,12 +214,19 @@ class TemplateGenerationService:
         """Return (path, download_filename) for the latest generated template."""
         download_dir = Path(settings.download_dir)
         if preferred_name:
-            candidate = download_dir / preferred_name
-            if candidate.is_file():
-                return candidate, preferred_name
+            # Prevent path traversal — only a bare filename under download_dir
+            safe_name = Path(str(preferred_name)).name
+            candidate = (download_dir / safe_name).resolve()
+            if candidate.is_file() and candidate.parent == download_dir.resolve():
+                return candidate, safe_name
 
+        # Prefer newest distributor-specific or generic template under downloads/
         matches = sorted(
-            download_dir.glob("Apcotex_Distributor_Template_*.xlsx"),
+            [
+                p
+                for p in download_dir.glob("Apcotex_*.xlsx")
+                if p.is_file() and not p.name.startswith("~$")
+            ],
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )

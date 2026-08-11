@@ -198,6 +198,11 @@ class ExcelTemplateGenerator:
         )
 
         if distributor_mode:
+            logger.info(
+                "Distributor template customers | count={} | values={}",
+                len(customer_values),
+                customer_values[:20],
+            )
             customer_sheet = workbook.create_sheet(CUSTOMER_LIST_SHEET)
             cust_end = self.dropdowns.write_column_list(
                 customer_sheet,
@@ -217,6 +222,10 @@ class ExcelTemplateGenerator:
                     sheet,
                     named_range="DistributorCustomers",
                     cells=f"B{data_start}:B1000",
+                )
+                logger.info(
+                    "Customer Name data validation attached | range=B{}:B1000 | named_range=DistributorCustomers",
+                    data_start,
                 )
             customer_sheet.protection.sheet = True
             customer_sheet.sheet_state = "hidden"

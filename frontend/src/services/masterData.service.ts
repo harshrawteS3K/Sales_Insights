@@ -132,10 +132,16 @@ export const MasterDataService = {
       headers.set('X-User-Role', session.role);
       headers.set('X-User-Name', session.name);
     }
-    const res = await fetch(`${getApiBaseUrl()}/template/download`, {
-      method: 'GET',
-      headers,
-    });
+    const params = new URLSearchParams();
+    if (fileName) params.set('file_name', fileName);
+    const qs = params.toString();
+    const res = await fetch(
+      `${getApiBaseUrl()}/template/download${qs ? `?${qs}` : ''}`,
+      {
+        method: 'GET',
+        headers,
+      },
+    );
     if (!res.ok) {
       let message = `Template download failed (${res.status})`;
       try {
