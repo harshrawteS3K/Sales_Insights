@@ -82,8 +82,22 @@ class MasterDataService:
         distributor_id: int,
         reporting_quarter: str,
         actor: str = "system",
-    ) -> tuple[Path, str]:
-        return self.template_service.generate_quarterly_package(
+    ):
+        """Create Microsoft Graph Outlook draft with distributor-specific Excel."""
+        return self.template_service.create_email_draft(
+            distributor_id=distributor_id,
+            reporting_quarter=reporting_quarter,
+            actor=actor,
+        )
+
+    def create_email_draft(
+        self,
+        *,
+        distributor_id: int,
+        reporting_quarter: str,
+        actor: str = "system",
+    ):
+        return self.template_service.create_email_draft(
             distributor_id=distributor_id,
             reporting_quarter=reporting_quarter,
             actor=actor,

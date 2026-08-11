@@ -12,8 +12,9 @@ from app.constants import DISTRIBUTOR_TEMPLATE_FILENAME
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.enums import AuditAction
-from app.exceptions import ValidationAppError
+from app.exceptions import GraphAPIError, ValidationAppError
 from app.integrations.excel.template_generator import ExcelTemplateGenerator
+from app.integrations.graph.client import GraphClient
 from app.repositories.distributor_customer_mapping_repository import (
     DistributorCustomerMappingRepository,
 )
@@ -22,8 +23,9 @@ from app.repositories.master_repository import ProductMasterRepository
 from app.repositories.sales_record_repository import SalesRecordRepository
 from app.schemas.audit import AuditTrailCreate
 from app.schemas.dashboard import TemplateGenerateResponse
+from app.schemas.distributor import EmailDraftResponse
 from app.services.audit_service import AuditService
-from app.services.email_package_service import EmailPackageService, sanitize_filename_part
+from app.services.email_package_service import sanitize_filename_part
 from app.utils.files import ensure_dir
 from app.utils.reporting_month import normalize_reporting_month
 
@@ -40,7 +42,7 @@ class TemplateGenerationService:
         self.distributors = DistributorRepository(db)
         self.customer_maps = DistributorCustomerMappingRepository(db)
         self.templates = ExcelTemplateGenerator()
-        self.packages = EmailPackageService()
+        self.graph = GraphClient()
         self.audit = AuditService(db)
 
     def _template_path(self) -> Path:
@@ -247,61 +249,218 @@ class TemplateGenerationService:
         distributor_id: int,
         reporting_quarter: str,
         actor: str = "system",
-    ) -> tuple[Path, str]:
-        """Build distributor template + Outlook .eml ZIP package."""
+    ) -> EmailDraftResponse:
+        """Backward-compatible alias → create Microsoft Graph Outlook draft."""
+        return self.create_email_draft(
+            distributor_id=distributor_id,
+            reporting_quarter=reporting_quarter,
+            actor=actor,
+        )
+
+    def create_email_draft(
+        self,
+        *,
+        distributor_id: int,
+        reporting_quarter: str,
+        actor: str = "system",
+    ) -> EmailDraftResponse:
+        """
+        Generate distributor-specific Excel (same TemplateGenerationService path)
+        and create a Microsoft Graph **draft** in GRAPH_MAILBOX (not sent).
+        """
         dist = self.distributors.get_or_raise(distributor_id)
         if not dist.is_active or dist.is_deleted:
             raise ValidationAppError("Distributor is inactive or deleted")
-        if not (dist.email or "").strip():
+
+        to_email = (dist.email or "").strip()
+        if not to_email:
             raise ValidationAppError(
-                "Distributor email is required to generate an Outlook draft package"
+                "Distributor email address is not configured. "
+                "Please update the distributor details before creating the email draft."
             )
 
         quarter = normalize_reporting_month(reporting_quarter) or reporting_quarter.strip()
         if not quarter:
             raise ValidationAppError("reporting_quarter is required (e.g. Q2 2026)")
 
-        label = sanitize_filename_part(dist.company or dist.name)
+        company_label = (dist.company or dist.name or "Distributor").strip()
+        label = sanitize_filename_part(company_label)
         q_part = sanitize_filename_part(quarter)
-        excel_name = f"Apcotex_{label}_{q_part}.xlsx"
-        excel_path = Path(settings.download_dir) / "packages" / excel_name
+        excel_name = f"Apcotex_{label}_{q_part}_Template.xlsx"
+        packages_dir = Path(settings.download_dir) / "packages"
+        ensure_dir(packages_dir)
+        excel_path = packages_dir / excel_name
 
-        self.generate(
-            actor=actor,
-            mode="distributor",
-            distributor_id=distributor_id,
-            reporting_quarter=quarter,
-            output_path=excel_path,
-            update_canonical=False,
+        if excel_path.exists():
+            excel_path.unlink()
+
+        try:
+            result = self.generate(
+                actor=actor,
+                mode="distributor",
+                distributor_id=distributor_id,
+                reporting_quarter=quarter,
+                output_path=excel_path,
+                update_canonical=False,
+            )
+        except ValidationAppError as exc:
+            msg = str(exc.message if hasattr(exc, "message") else exc)
+            if "Product Master" in msg or "empty" in msg.lower():
+                raise ValidationAppError(
+                    "Product Master is not available. Please upload the Product Master "
+                    "before creating the distributor email draft."
+                ) from exc
+            raise
+
+        mapped_count = self.customer_maps.count_active(distributor_id)
+        if mapped_count > 0 and (result.fallback_generic or result.customers_count <= 0):
+            raise ValidationAppError(
+                "Distributor has mapped customers but the email draft template was generated "
+                "without a Customer Name dropdown. Re-check customer mappings / sales history.",
+                details={
+                    "distributor_id": distributor_id,
+                    "mapped_count": mapped_count,
+                    "customers_count": result.customers_count,
+                    "mode": result.mode,
+                },
+            )
+
+        if not excel_path.is_file():
+            raise ValidationAppError(f"Draft Excel was not written to {excel_path.name}")
+
+        self._assert_customer_dropdown(
+            excel_path, expect_dropdown=result.customers_count > 0
         )
 
-        zip_path, zip_name = self.packages.write_package(
-            output_dir=Path(settings.download_dir) / "packages",
-            company_or_name=dist.company or dist.name,
-            reporting_quarter=quarter,
-            to_email=str(dist.email).strip(),
-            cc_email=(dist.cc_email or None),
-            contact_person=(dist.contact_person or dist.name or "Partner"),
-            excel_path=excel_path,
+        contact = (dist.contact_person or "").strip()
+        greeting = contact if contact else "Team"
+        subject = f"Distributor Sales Template – {quarter} – {company_label}"
+        body = (
+            f"Dear {greeting},\n\n"
+            f"Please find attached the Distributor Sales Template for {quarter}.\n\n"
+            "Kindly complete the required sales information and share the completed "
+            "template with the APCOTEX team as per the agreed process.\n\n"
+            "Please ensure that all required fields are completed before submitting "
+            "the template.\n\n"
+            "Regards,\n"
+            "APCOTEX Team\n"
         )
+        cc_email = (dist.cc_email or "").strip() or None
+        excel_bytes = excel_path.read_bytes()
+
+        try:
+            mailbox = self.graph.resolve_mailbox()
+            draft = self.graph.create_draft_message(
+                subject=subject,
+                body_text=body,
+                to_email=to_email,
+                cc_email=cc_email,
+                mailbox=mailbox,
+            )
+            draft_id = str(draft.get("id") or "")
+            self.graph.add_file_attachment(
+                draft_id,
+                filename=excel_name,
+                content=excel_bytes,
+                mailbox=mailbox,
+            )
+        except ValidationAppError:
+            raise
+        except GraphAPIError as exc:
+            logger.exception(
+                "Graph draft creation failed | distributor_id={} | quarter={}",
+                distributor_id,
+                quarter,
+            )
+            details = getattr(exc, "details", None)
+            detail_text = str(details or "")
+            if "403" in detail_text or "Authorization_RequestDenied" in detail_text:
+                logger.error(
+                    "Microsoft Graph Mail.ReadWrite permission/admin consent is required "
+                    "to create drafts in {}",
+                    settings.graph_mailbox or "(GRAPH_MAILBOX)",
+                )
+            raise GraphAPIError(
+                "Unable to create the Outlook draft. Please contact the administrator. "
+                "Microsoft Graph Mail.ReadWrite permission/admin consent may be required.",
+                details={"safe": True},
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Unexpected failure creating Outlook draft")
+            raise GraphAPIError(
+                "Unable to create the Outlook draft. Please contact the administrator."
+            ) from exc
 
         self.audit.log(
             AuditTrailCreate(
                 user_name=actor,
                 action=AuditAction.GENERATED,
                 details=(
-                    f"Generated Outlook draft package {zip_name} for "
-                    f"{dist.company or dist.name} · {quarter}"
+                    f"Created Distributor Email Draft | distributor={company_label} | "
+                    f"quarter={quarter} | recipient={to_email} | "
+                    f"attachment={excel_name} | draft_id={draft_id}"
                 ),
                 entity_type="distributor",
                 entity_id=str(distributor_id),
-                module="Distributors",
+                module="Distributor Communication",
                 status="Success",
                 extra_metadata={
-                    "zip": zip_name,
+                    "draft_id": draft_id,
+                    "mailbox": mailbox,
+                    "recipient": to_email,
+                    "cc": cc_email,
+                    "attachment_name": excel_name,
                     "reporting_quarter": quarter,
-                    "distributor_id": distributor_id,
+                    "customers_count": result.customers_count,
+                    "mode": result.mode,
                 },
             )
         )
-        return zip_path, zip_name
+        logger.info(
+            "Email draft created | mailbox={} | draft_id={} | distributor_id={} | attachment={}",
+            mailbox,
+            draft_id,
+            distributor_id,
+            excel_name,
+        )
+        return EmailDraftResponse(
+            success=True,
+            message=(
+                f"Email draft created successfully in {mailbox}. "
+                "Please open Outlook → Drafts to review and send."
+            ),
+            mailbox=mailbox,
+            distributor_id=distributor_id,
+            distributor_name=company_label,
+            reporting_quarter=quarter,
+            draft_id=draft_id,
+            attachment_name=excel_name,
+            recipient=to_email,
+            cc=cc_email,
+        )
+
+    @staticmethod
+    def _assert_customer_dropdown(excel_path: Path, *, expect_dropdown: bool) -> None:
+        """Fail fast if the packaged workbook is missing Customer Name validation."""
+        from openpyxl import load_workbook
+
+        wb = load_workbook(excel_path, read_only=False, data_only=False)
+        try:
+            has_name = "DistributorCustomers" in wb.defined_names
+            sheet = wb[wb.sheetnames[0]]
+            formulas = [
+                str(dv.formula1 or "") for dv in sheet.data_validations.dataValidation
+            ]
+            has_dv = any("DistributorCustomers" in f for f in formulas)
+            if expect_dropdown and not (has_name and has_dv):
+                raise ValidationAppError(
+                    "Generated package Excel is missing Customer Name dropdown "
+                    "(DistributorCustomers). Refusing to create Outlook draft.",
+                    details={
+                        "excel": excel_path.name,
+                        "defined_names": list(wb.defined_names.keys()),
+                        "formulas": formulas,
+                    },
+                )
+        finally:
+            wb.close()

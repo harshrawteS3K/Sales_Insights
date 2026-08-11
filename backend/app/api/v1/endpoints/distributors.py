@@ -3,19 +3,24 @@
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Query, status
-from fastapi.responses import FileResponse
 
-from app.dependencies.rbac import CurrentUser, RequireAdmin, RequireUser
+from app.dependencies.rbac import RequireAdmin, RequireUser
 from app.dependencies.services import DistributorServiceDep, MasterDataServiceDep
+from app.exceptions import NotFoundError
 from app.schemas.common import DataResponse, MessageResponse
 from app.schemas.distributor import (
+    BulkEmailDraftJobStartResponse,
+    BulkEmailDraftJobStatusResponse,
+    BulkEmailDraftRequest,
     DistributorCreate,
     DistributorInfo,
     DistributorListResponse,
     DistributorResponse,
     DistributorUpdate,
+    EmailDraftResponse,
     QuarterlyPackageRequest,
 )
+from app.services import bulk_email_draft_service
 
 router = APIRouter(prefix="/distributors", tags=["Distributors"])
 
@@ -78,6 +83,54 @@ def backfill_customer_mappings(
     )
 
 
+@router.post(
+    "/create-email-drafts-bulk",
+    response_model=DataResponse[BulkEmailDraftJobStartResponse],
+    summary="Start bulk Outlook draft creation (sequential)",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_email_drafts_bulk(
+    payload: BulkEmailDraftRequest,
+    current: RequireAdmin,
+) -> DataResponse[BulkEmailDraftJobStartResponse]:
+    """
+    Start a background job that creates one Outlook draft per distributor.
+
+    Processing is **sequential** (Excel → Graph draft → attach) to avoid Graph
+    thundering herds. Poll ``GET .../create-email-drafts-bulk/{job_id}``.
+    """
+    job = bulk_email_draft_service.start_bulk_email_drafts(
+        distributor_ids=payload.distributor_ids,
+        reporting_quarter=payload.reporting_quarter,
+        actor=current.name,
+    )
+    return DataResponse(
+        data=BulkEmailDraftJobStartResponse(
+            job_id=job.job_id,
+            status=job.status,
+            total=job.total,
+            reporting_quarter=job.reporting_quarter,
+        ),
+        message="Bulk draft creation started. Poll the job status endpoint for progress.",
+    )
+
+
+@router.get(
+    "/create-email-drafts-bulk/{job_id}",
+    response_model=DataResponse[BulkEmailDraftJobStatusResponse],
+    summary="Poll bulk Outlook draft job status",
+)
+def get_email_drafts_bulk_status(
+    job_id: str,
+    _: RequireAdmin,
+) -> DataResponse[BulkEmailDraftJobStatusResponse]:
+    """Return live progress / final results for a bulk draft job."""
+    job = bulk_email_draft_service.get_job(job_id)
+    if job is None:
+        raise NotFoundError("Bulk draft job not found")
+    return DataResponse(data=BulkEmailDraftJobStatusResponse.model_validate(job.to_dict()))
+
+
 @router.get(
     "/{distributor_id}/customers",
     response_model=DataResponse[List[str]],
@@ -93,27 +146,32 @@ def list_distributor_customers(
 
 
 @router.post(
-    "/{distributor_id}/generate-quarterly-package",
-    summary="Generate Outlook-ready ZIP (xlsx + eml)",
-    response_class=FileResponse,
+    "/{distributor_id}/create-email-draft",
+    response_model=DataResponse[EmailDraftResponse],
+    summary="Create Outlook draft with distributor-specific Excel",
 )
-def generate_quarterly_package(
+@router.post(
+    "/{distributor_id}/generate-quarterly-package",
+    response_model=DataResponse[EmailDraftResponse],
+    summary="Create Outlook draft (legacy path alias)",
+    include_in_schema=False,
+)
+def create_email_draft(
     distributor_id: int,
     payload: QuarterlyPackageRequest,
     master: MasterDataServiceDep,
     current: RequireAdmin,
-) -> FileResponse:
-    """Build distributor-specific template + Outlook draft and return ZIP."""
-    zip_path, zip_name = master.generate_quarterly_package(
+) -> DataResponse[EmailDraftResponse]:
+    """
+    Generate the same distributor-specific Excel as Master Data, then create a
+    Microsoft Graph **draft** in GRAPH_MAILBOX (not sent).
+    """
+    result = master.create_email_draft(
         distributor_id=distributor_id,
         reporting_quarter=payload.reporting_quarter,
         actor=current.name,
     )
-    return FileResponse(
-        path=str(zip_path),
-        filename=zip_name,
-        media_type="application/zip",
-    )
+    return DataResponse(data=result, message=result.message)
 
 
 @router.get(

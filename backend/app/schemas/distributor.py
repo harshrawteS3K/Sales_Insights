@@ -77,9 +77,66 @@ class DistributorListResponse(BaseModel):
 
 
 class QuarterlyPackageRequest(BaseModel):
-    """Generate Outlook-ready ZIP for one distributor + quarter."""
+    """Create Outlook draft for one distributor + quarter."""
 
     reporting_quarter: str = Field(..., min_length=3, max_length=50)
+
+
+class BulkEmailDraftRequest(BaseModel):
+    """Create Outlook drafts for many distributors (one shared quarter)."""
+
+    distributor_ids: List[int] = Field(..., min_length=1, max_length=100)
+    reporting_quarter: str = Field(..., min_length=3, max_length=50)
+
+
+class BulkEmailDraftItemResult(BaseModel):
+    """Per-distributor outcome inside a bulk job."""
+
+    distributor_id: int
+    distributor_name: str
+    success: bool
+    reason: Optional[str] = None
+    draft_id: Optional[str] = None
+    attachment_name: Optional[str] = None
+    recipient: Optional[str] = None
+
+
+class BulkEmailDraftJobStartResponse(BaseModel):
+    """Returned immediately when a bulk job is accepted."""
+
+    job_id: str
+    status: str
+    total: int
+    reporting_quarter: str
+
+
+class BulkEmailDraftJobStatusResponse(BaseModel):
+    """Polled progress / final result for a bulk draft job."""
+
+    job_id: str
+    status: str
+    reporting_quarter: str
+    total: int
+    processed: int
+    successful: int
+    failed: int
+    results: List[BulkEmailDraftItemResult] = Field(default_factory=list)
+    error: Optional[str] = None
+
+
+class EmailDraftResponse(BaseModel):
+    """Result of creating a Microsoft Graph Outlook draft."""
+
+    success: bool = True
+    message: str
+    mailbox: str
+    distributor_id: int
+    distributor_name: str
+    reporting_quarter: str
+    draft_id: str
+    attachment_name: str
+    recipient: str
+    cc: Optional[str] = None
 
 
 class TemplateGenerateRequest(BaseModel):

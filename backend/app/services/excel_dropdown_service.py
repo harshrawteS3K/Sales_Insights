@@ -194,6 +194,7 @@ class ExcelDropdownService:
         *,
         named_range: str,
         cells: str,
+        require_list_value: bool = False,
     ) -> DataValidation:
         """Attach a list data-validation to ``cells`` using a named range."""
         dv = DataValidation(
@@ -201,6 +202,9 @@ class ExcelDropdownService:
             formula1=f"={named_range}",
             allow_blank=True,
             showDropDown=False,  # False = show dropdown arrow in Excel
+            showErrorMessage=require_list_value,
+            showInputMessage=True,
+            errorStyle="stop" if require_list_value else "warning",
         )
         dv.error = "Please select a value from the list"
         dv.errorTitle = "Invalid selection"

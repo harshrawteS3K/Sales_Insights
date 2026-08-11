@@ -203,9 +203,10 @@ class ExcelTemplateGenerator:
                 len(customer_values),
                 customer_values[:20],
             )
-            customer_sheet = workbook.create_sheet(CUSTOMER_LIST_SHEET)
+            # Primary source for Excel DV: same hidden `_lists` sheet as SegmentList
+            # (column A is reserved for customers). This matches Segment reliability.
             cust_end = self.dropdowns.write_column_list(
-                customer_sheet,
+                lists_sheet,
                 column="A",
                 title="Customers",
                 values=customer_values or ["(No mapped customers yet)"],
@@ -213,22 +214,34 @@ class ExcelTemplateGenerator:
             self.dropdowns.register_named_range(
                 workbook,
                 name="DistributorCustomers",
-                sheet_title=CUSTOMER_LIST_SHEET,
+                sheet_title=lists_sheet.title,
                 column="A",
                 end_row=cust_end,
             )
+            # Keep a dedicated CustomerList sheet for inspection / support
+            customer_sheet = workbook.create_sheet(CUSTOMER_LIST_SHEET)
+            self.dropdowns.write_column_list(
+                customer_sheet,
+                column="A",
+                title="Customers",
+                values=customer_values or ["(No mapped customers yet)"],
+            )
+            customer_sheet.protection.sheet = True
+            customer_sheet.sheet_state = "hidden"
+
             if customer_values:
                 self.dropdowns.add_list_validation(
                     sheet,
                     named_range="DistributorCustomers",
                     cells=f"B{data_start}:B1000",
+                    require_list_value=True,
                 )
                 logger.info(
-                    "Customer Name data validation attached | range=B{}:B1000 | named_range=DistributorCustomers",
+                    "Customer Name data validation attached | range=B{}:B1000 | "
+                    "named_range=DistributorCustomers | lists_end_row={}",
                     data_start,
+                    cust_end,
                 )
-            customer_sheet.protection.sheet = True
-            customer_sheet.sheet_state = "hidden"
 
         lists_sheet.protection.sheet = True
         lists_sheet.sheet_state = "hidden"

@@ -1,5 +1,6 @@
 """Reusable Microsoft Graph API client using MSAL client-credentials flow."""
 
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -167,6 +168,31 @@ class GraphClient:
         if response.status_code == 401:
             logger.warning("Graph token expired/unauthorized – refreshing and retrying")
             self.acquire_token(force_refresh=True)
+            response = requests.request(
+                method=method.upper(),
+                url=url,
+                headers=self._headers(),
+                params=params,
+                json=json_body,
+                timeout=timeout,
+            )
+
+        # Bounded retries for Graph throttling (HTTP 429)
+        attempts = 0
+        while response.status_code == 429 and attempts < 3:
+            attempts += 1
+            retry_after = response.headers.get("Retry-After")
+            try:
+                wait_s = min(int(retry_after), 60) if retry_after else min(2**attempts, 30)
+            except (TypeError, ValueError):
+                wait_s = min(2**attempts, 30)
+            logger.warning(
+                "Graph throttled (429) | attempt={}/3 | sleep_s={} | url={}",
+                attempts,
+                wait_s,
+                url,
+            )
+            time.sleep(wait_s)
             response = requests.request(
                 method=method.upper(),
                 url=url,
@@ -374,6 +400,95 @@ class GraphClient:
             "PATCH",
             f"{user_path}/messages/{quote(message_id)}",
             json_body={"isRead": True},
+        )
+
+    def create_draft_message(
+        self,
+        *,
+        subject: str,
+        body_text: str,
+        to_email: str,
+        cc_email: Optional[str] = None,
+        mailbox: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create an Outlook **draft** (not sent) in the configured mailbox.
+
+        Uses ``POST /users/{mailbox}/messages`` — does **not** call ``/sendMail``.
+        Requires application permission ``Mail.ReadWrite`` with admin consent.
+        """
+        user_path = self._user_path(mailbox)
+        to_addr = (to_email or "").strip()
+        if not to_addr:
+            raise ValidationAppError(
+                "Distributor email address is not configured. "
+                "Please update the distributor details before creating the email draft."
+            )
+
+        payload: Dict[str, Any] = {
+            "subject": subject,
+            "body": {"contentType": "Text", "content": body_text},
+            "toRecipients": [
+                {"emailAddress": {"address": to_addr}},
+            ],
+        }
+        cc = (cc_email or "").strip()
+        if cc:
+            payload["ccRecipients"] = [{"emailAddress": {"address": cc}}]
+
+        logger.info(
+            "Creating Graph draft message | mailbox={} | to={} | cc={} | subject={}",
+            self.resolve_mailbox(mailbox),
+            to_addr,
+            cc or None,
+            subject,
+        )
+        created = self._request("POST", f"{user_path}/messages", json_body=payload)
+        if not created or not created.get("id"):
+            raise GraphAPIError(
+                "Microsoft Graph did not return a draft message id. "
+                "Confirm Mail.ReadWrite application permission and admin consent."
+            )
+        logger.info(
+            "Graph draft created | draft_id={} | mailbox={}",
+            created.get("id"),
+            self.resolve_mailbox(mailbox),
+        )
+        return created
+
+    def add_file_attachment(
+        self,
+        message_id: str,
+        *,
+        filename: str,
+        content: bytes,
+        content_type: str = (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        mailbox: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Attach a file to an existing draft message (fileAttachment)."""
+        import base64
+
+        if not content:
+            raise ValidationAppError("Cannot attach an empty Excel file to the Outlook draft")
+        user_path = self._user_path(mailbox)
+        body = {
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": filename,
+            "contentType": content_type,
+            "contentBytes": base64.b64encode(content).decode("ascii"),
+        }
+        logger.info(
+            "Attaching file to Graph draft | draft_id={} | filename={} | bytes={}",
+            message_id,
+            filename,
+            len(content),
+        )
+        return self._request(
+            "POST",
+            f"{user_path}/messages/{quote(message_id)}/attachments",
+            json_body=body,
         )
 
     @staticmethod

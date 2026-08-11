@@ -1,6 +1,4 @@
-import { apiRequest, getApiBaseUrl, ApiError } from '../api';
-import { getSession } from '../api/session';
-import { filenameFromContentDisposition, triggerBrowserDownload } from '../utils/download';
+import { apiRequest, ApiError } from '../api';
 import type {
   Distributor,
   DistributorCreatePayload,
@@ -13,6 +11,48 @@ export type DistributorListQuery = {
   limit?: number;
   search?: string;
   active_only?: boolean;
+};
+
+export type EmailDraftResult = {
+  success: boolean;
+  message: string;
+  mailbox: string;
+  distributor_id: number;
+  distributor_name: string;
+  reporting_quarter: string;
+  draft_id: string;
+  attachment_name: string;
+  recipient: string;
+  cc?: string | null;
+};
+
+export type BulkEmailDraftItemResult = {
+  distributor_id: number;
+  distributor_name: string;
+  success: boolean;
+  reason?: string | null;
+  draft_id?: string | null;
+  attachment_name?: string | null;
+  recipient?: string | null;
+};
+
+export type BulkEmailDraftJobStart = {
+  job_id: string;
+  status: string;
+  total: number;
+  reporting_quarter: string;
+};
+
+export type BulkEmailDraftJobStatus = {
+  job_id: string;
+  status: string;
+  reporting_quarter: string;
+  total: number;
+  processed: number;
+  successful: number;
+  failed: number;
+  results: BulkEmailDraftItemResult[];
+  error?: string | null;
 };
 
 export const DistributorService = {
@@ -55,43 +95,53 @@ export const DistributorService = {
     return res.data;
   },
 
-  async generateQuarterlyPackage(id: number, reporting_quarter: string): Promise<void> {
-    const session = getSession();
-    const headers = new Headers({ 'Content-Type': 'application/json' });
-    if (session) {
-      headers.set('X-User-Role', session.role);
-      headers.set('X-User-Name', session.name);
+  /** Create Microsoft Graph Outlook draft with distributor-specific Excel (not sent). */
+  async createEmailDraft(id: number, reporting_quarter: string): Promise<EmailDraftResult> {
+    try {
+      const res = await apiRequest<{ success: boolean; data: EmailDraftResult; message?: string }>(
+        `/distributors/${id}/create-email-draft`,
+        {
+          method: 'POST',
+          body: { reporting_quarter },
+        },
+      );
+      return res.data;
+    } catch (err) {
+      if (err instanceof ApiError) {
+        const lower = err.message.toLowerCase();
+        if (lower.includes('email') && (lower.includes('not configured') || lower.includes('missing'))) {
+          throw new ApiError('Distributor email address is not configured.', err.status);
+        }
+        if (lower.includes('graph') || lower.includes('outlook') || err.status >= 500) {
+          throw new ApiError(
+            'Unable to create the Outlook draft. Please contact the administrator.',
+            err.status,
+          );
+        }
+      }
+      throw err;
     }
-    const res = await fetch(
-      `${getApiBaseUrl()}/distributors/${id}/generate-quarterly-package`,
+  },
+
+  /** Start sequential bulk Outlook draft job (poll getBulkEmailDraftJob). */
+  async startBulkEmailDrafts(
+    distributorIds: number[],
+    reporting_quarter: string,
+  ): Promise<BulkEmailDraftJobStart> {
+    const res = await apiRequest<{ success: boolean; data: BulkEmailDraftJobStart }>(
+      '/distributors/create-email-drafts-bulk',
       {
         method: 'POST',
-        headers,
-        body: JSON.stringify({ reporting_quarter }),
+        body: { distributor_ids: distributorIds, reporting_quarter },
       },
     );
-    if (!res.ok) {
-      let message = `Package generation failed (${res.status})`;
-      try {
-        const body = await res.json();
-        message = body?.error?.message || body?.message || body?.detail || message;
-        if (typeof message !== 'string') {
-          message = `Package generation failed (${res.status})`;
-        }
-      } catch {
-        // ignore
-      }
-      throw new ApiError(message, res.status);
-    }
-    const blob = await res.blob();
-    const name = filenameFromContentDisposition(
-      res.headers.get('Content-Disposition'),
-      `distributor_${id}_quarterly_package.zip`,
+    return res.data;
+  },
+
+  async getBulkEmailDraftJob(jobId: string): Promise<BulkEmailDraftJobStatus> {
+    const res = await apiRequest<{ success: boolean; data: BulkEmailDraftJobStatus }>(
+      `/distributors/create-email-drafts-bulk/${jobId}`,
     );
-    const zipBlob =
-      blob.type && blob.type !== 'application/octet-stream' && blob.type !== ''
-        ? blob
-        : new Blob([blob], { type: 'application/zip' });
-    triggerBrowserDownload(zipBlob, name);
+    return res.data;
   },
 };
