@@ -21,7 +21,7 @@ from app.utils.quantity import format_quantity
 
 logger = get_logger(__name__)
 
-# Display unit for all business reporting (values stored as Excel quantities; label = MT)
+# Display + storage unit for all business reporting (ERP converted KG→MT on ingest)
 QUANTITY_UNIT = "MT"
 
 

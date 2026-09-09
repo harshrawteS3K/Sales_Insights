@@ -55,6 +55,8 @@ export type QuarterBucket<T> = {
   reports: T[];
   distributorCount: number;
   totalQuantity: number;
+  /** Full filtered report count for this period (when known from API). */
+  reportCountFull?: number;
 };
 
 export type YearBucket<T> = {
@@ -142,11 +144,75 @@ export function buildYearQuarterTimeline<T extends TimelineReport>(
   });
 }
 
-/** Flat overview rows newest-first for the summary strip. */
-export function flattenQuarterOverview<T extends TimelineReport>(
-  timeline: YearBucket<T>[]
-): QuarterBucket<T>[] {
-  return timeline.flatMap(y => y.quarters);
+export type PeriodSummary = {
+  label: string;
+  distributorCount: number;
+  reportCount: number;
+  totalQuantity: number;
+};
+
+/**
+ * Overlay accurate full-filter period stats onto a page-local timeline.
+ * Keeps page reports for listing, but never under-counts distributors/qty.
+ */
+export function applyPeriodSummaries<T extends TimelineReport>(
+  timeline: YearBucket<T>[],
+  summaries: PeriodSummary[]
+): YearBucket<T>[] {
+  if (!summaries.length) return timeline;
+  const byLabel = new Map(
+    summaries.map(s => [s.label.trim().toLowerCase(), s] as const)
+  );
+
+  return timeline.map(year => {
+    const quarters = year.quarters.map(q => {
+      const hit = byLabel.get(q.label.trim().toLowerCase());
+      if (!hit) return q;
+      return {
+        ...q,
+        distributorCount: hit.distributorCount || q.distributorCount,
+        totalQuantity: hit.totalQuantity,
+        reportCountFull: hit.reportCount,
+      };
+    });
+    const yearFromSummaries = summaries
+      .filter(s => {
+        const parsed = parseQuarter(s.label);
+        return (parsed?.year ?? 0) === year;
+      })
+      .reduce((sum, s) => sum + (s.reportCount || 0), 0);
+    return {
+      ...year,
+      quarters,
+      reportCount:
+        yearFromSummaries ||
+        quarters.reduce((sum, q) => sum + (q.reportCountFull ?? q.reports.length), 0),
+    };
+  });
+}
+
+/** Flat overview from server period summaries (accurate; not page-local). */
+export function overviewFromPeriodSummaries(
+  summaries: PeriodSummary[]
+): Array<Pick<QuarterBucket<TimelineReport>, 'label' | 'range' | 'distributorCount' | 'totalQuantity' | 'year' | 'quarter'>> {
+  const items = summaries.map(s => {
+    const parsed = parseQuarter(s.label);
+    return {
+      label: parsed?.label ?? s.label,
+      year: parsed?.year ?? 0,
+      quarter: parsed?.quarter ?? 0,
+      range: getQuarterRange(parsed?.quarter || s.label),
+      distributorCount: s.distributorCount,
+      totalQuantity: s.totalQuantity,
+      reports: [] as TimelineReport[],
+    };
+  });
+  items.sort((a, b) => {
+    if (a.year !== b.year) return b.year - a.year;
+    if (a.quarter !== b.quarter) return b.quarter - a.quarter;
+    return b.label.localeCompare(a.label);
+  });
+  return items;
 }
 
 export function formatMt(qty: number): string {

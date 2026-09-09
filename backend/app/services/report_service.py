@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 from app.core.logging import get_logger
 from app.enums import AuditAction, ReportSource, ReportStatus
 from app.exceptions import ConflictError, ExcelProcessingError, ValidationAppError
+from app.erp_parser import ERPParserService, ERPParseResult
 from app.integrations.excel.mapper import SalesRecordMapper
-from app.integrations.excel.parser import ExcelParserService, SalesParseResult
 from app.models.report import Report
 from app.repositories.distributor_repository import DistributorRepository
 from app.repositories.email_repository import EmailMessageRepository
@@ -24,7 +24,7 @@ from app.services.audit_service import AuditService
 from app.utils.datetime_utils import format_report_date, utc_now
 from app.utils.db_locks import acquire_report_replace_lock
 from app.utils.files import get_upload_subdir, save_upload_file
-from app.utils.hashing import sha256_file
+from app.utils.hashing import sha256_file, sha256_bytes, build_sales_row_hash
 from app.utils.reporting_month import months_equivalent, normalize_reporting_month
 from app.utils.validation_summary import build_validation_summary
 
@@ -40,7 +40,7 @@ class ReportService:
         self.sales = SalesRecordRepository(db)
         self.distributors = DistributorRepository(db)
         self.emails = EmailMessageRepository(db)
-        self.parser = ExcelParserService()
+        self.parser = ERPParserService()
         self.audit = AuditService(db)
 
     def list_reports(
@@ -214,14 +214,17 @@ class ReportService:
     def _resolve_business_identity(
         self,
         parsed_rows: List[ParsedSalesRow],
-        parse_result: SalesParseResult,
+        parse_result: ERPParseResult,
+        *,
+        reporting_quarter: Optional[str] = None,
+        distributor_company: Optional[str] = None,
+        distributor_id: Optional[int] = None,
+        email_message_id: Optional[int] = None,
     ) -> Tuple[str, str, str, int, dict[str, int]]:
         """
-        Resolve Distributor Company (business entity) + Reporting Month.
+        Resolve Distributor Company + Reporting Quarter.
 
-        Raises ValidationAppError when identity cannot be established (ghost prevention).
-        Returns
-        ``(company, representative_name, reporting_month, distributor_id, distributor_ids_map)``.
+        Distributor and quarter come from the email/UI flow — never from Excel.
         """
         if not parsed_rows or parse_result.imported_rows <= 0:
             raise ValidationAppError(
@@ -230,76 +233,96 @@ class ReportService:
                     "expected_rows": parse_result.expected_rows,
                     "imported_rows": parse_result.imported_rows,
                     "quality_score": parse_result.quality_score,
-                    "template": parse_result.template_name,
-                    "strategy": parse_result.mapping_strategy,
+                    "sheet": parse_result.sheet_name,
                     "errors": parse_result.row_errors,
                 },
             )
 
-        header_name = ((parse_result.distributor_details or {}).get("name") or "").strip()
-        distributors = {
-            (r.distributor or "").strip()
-            for r in parsed_rows
-            if (r.distributor or "").strip()
-        }
         reporting_month = normalize_reporting_month(
-            (parse_result.reporting_month or "").strip()
-            or ((parse_result.distributor_details or {}).get("reporting_month") or "").strip()
+            (reporting_quarter or "").strip()
+            or (parse_result.reporting_month or "").strip()
         )
-
-        if not distributors and not header_name:
-            raise ValidationAppError(
-                "Distributor could not be extracted — refusing to create a report",
-                details={"distributor_details": parse_result.distributor_details},
-            )
         if not reporting_month:
             raise ValidationAppError(
-                "Reporting Quarter could not be extracted — refusing to create a report",
-                details={"distributor_details": parse_result.distributor_details},
-            )
-        if len(distributors) > 1:
-            raise ValidationAppError(
-                "Multiple Distributors found in one Excel — submit one report per Distributor + Reporting Quarter",
-                details={"distributors": sorted(distributors)},
+                "Reporting Quarter is required for ERP import "
+                "(provide it from the Email Extraction flow — it is not read from Excel)."
             )
 
-        distributor_name = header_name or next(iter(distributors))
-        if distributors and header_name and distributor_name not in distributors:
-            row_name = next(iter(distributors))
-            if row_name.lower() != distributor_name.lower():
-                raise ValidationAppError(
-                    "Distributor header does not match sales rows",
-                    details={"header": distributor_name, "rows": sorted(distributors)},
+        company_key = (distributor_company or "").strip()
+        representative = ""
+
+        if distributor_id is not None:
+            dist = self.distributors.get_or_raise(distributor_id)
+            company_key = (dist.company or dist.name or company_key).strip()
+            representative = (dist.contact_person or dist.name or "").strip()
+        elif company_key:
+            dist = self.distributors.get_or_create_by_company(
+                company_key,
+                representative_name=company_key,
+            )
+            representative = (dist.contact_person or dist.name or company_key).strip()
+        elif email_message_id:
+            email_msg = self.emails.get_by_id(email_message_id)
+            if email_msg is None:
+                raise ValidationAppError("Email message not found for distributor resolution")
+            sender_email = (email_msg.sender_email or "").strip()
+            sender_name = (email_msg.sender_name or "").strip()
+            dist = None
+            if sender_email:
+                dist = self.distributors.get_by_email(sender_email)
+            if dist is None:
+                # Fall back: treat sender display name / local-part as company key
+                fallback = sender_name or (sender_email.split("@")[0] if sender_email else "")
+                if not fallback:
+                    raise ValidationAppError(
+                        "Distributor could not be resolved from email sender. "
+                        "Map the sender email to a distributor or select a distributor."
+                    )
+                dist = self.distributors.get_or_create_by_company(
+                    fallback,
+                    representative_name=sender_name or fallback,
                 )
-            distributor_name = header_name
+                if sender_email and not (dist.email or "").strip():
+                    dist.email = sender_email
+                    self.db.flush()
+            company_key = (dist.company or dist.name or "").strip()
+            representative = (dist.contact_person or dist.name or sender_name or "").strip()
+        else:
+            raise ValidationAppError(
+                "Distributor is required for ERP import "
+                "(resolve from sender email or selected distributor — not from Excel)."
+            )
 
         if parse_result.quality_score is None:
             raise ValidationAppError(
                 "Confidence score was not calculated — refusing to create a report",
             )
 
-        details = parse_result.distributor_details or {}
-        company_raw = (details.get("company") or "").strip()
-        if not company_raw and parsed_rows:
-            company_raw = (parsed_rows[0].company or "").strip()
-        # Company is the business entity; representative is metadata
-        representative = distributor_name
-        company_key = company_raw or representative
-
         distributor = self.distributors.get_or_create_by_company(
             company_key,
-            representative_name=representative,
+            representative_name=representative or company_key,
         )
-        distributor_ids: dict[str, int] = {distributor_name: distributor.id}
-        for name in distributors:
-            distributor_ids[name] = distributor.id
+        label = representative or company_key
+        distributor_ids: dict[str, int] = {label: distributor.id, company_key: distributor.id}
+        from app.utils.hashing import build_sales_row_hash
+
         for row in parsed_rows:
-            key = (row.distributor or "").strip() or distributor_name
-            distributor_ids[key] = distributor.id
+            row.distributor = label
+            row.company = distributor.company or company_key
+            row.period = reporting_month
+            row.segment = row.segment or ""
+            row.row_hash = build_sales_row_hash(
+                label,
+                row.customer_name,
+                row.segment,
+                row.product,
+                row.quantity,
+                reporting_month,
+            )
 
         return (
             distributor.company or company_key,
-            representative,
+            representative or company_key,
             reporting_month,
             distributor.id,
             distributor_ids,
@@ -425,11 +448,15 @@ class ReportService:
         uploaded_by: Optional[int] = None,
         actor: str = "system",
         mark_duplicate_as_error: bool = True,
+        reporting_quarter: Optional[str] = None,
+        distributor_company: Optional[str] = None,
+        distributor_id: Optional[int] = None,
     ) -> Tuple[Report, int, bool, int]:
         """
-        Parse Excel and insert sales records with business-aware replacement.
+        Parse ERP Excel and insert sales records with business-aware replacement.
 
         Business identity: Distributor + Reporting Period (one active report).
+        Distributor/quarter come from email/UI — not from the workbook.
         content_hash: exact file duplicate detection only.
 
         Returns ``(report, records_inserted, was_file_duplicate, quality_score)``.
@@ -459,12 +486,23 @@ class ReportService:
                     prior_score = int(extraction["quality_score"])
             return existing_file, 0, True, prior_score
 
-        parse_result = self.parser.parse_sales_report(file_path)
-        parsed_rows = parse_result.rows
+        parse_result = self.parser.parse_workbook(
+            file_path,
+            reporting_quarter=reporting_quarter,
+            distributor_label=(distributor_company or ""),
+        )
+        parsed_rows = parse_result.parsed_rows
         quality_score = parse_result.quality_score
 
         company, representative, reporting_month, primary_distributor_id, distributor_ids = (
-            self._resolve_business_identity(parsed_rows, parse_result)
+            self._resolve_business_identity(
+                parsed_rows,
+                parse_result,
+                reporting_quarter=reporting_quarter,
+                distributor_company=distributor_company,
+                distributor_id=distributor_id,
+                email_message_id=email_message_id,
+            )
         )
 
         logger.info(
@@ -544,18 +582,27 @@ class ReportService:
             confidence_score=quality_score,
             categories={
                 "products": sorted({r.product for r in parsed_rows}),
-                "applications": sorted({r.segment for r in parsed_rows}),
+                "applications": [],
                 "extraction": {
-                    "template_detected": parse_result.template_detected,
+                    "parser": "erp",
+                    "sheet_name": parse_result.sheet_name,
+                    "sheet_score": parse_result.sheet_score,
+                    "header_row": parse_result.header_row,
+                    "mapping": parse_result.mapping,
+                    "template_detected": False,
                     "sales_table_detected": parse_result.sales_table_detected,
-                    "template_name": parse_result.template_name,
+                    "template_name": "erp",
                     "mapping_strategy": parse_result.mapping_strategy,
                     "expected_rows": parse_result.expected_rows,
                     "imported_rows": parse_result.imported_rows,
                     "incomplete_rows": parse_result.incomplete_rows,
                     "quality_score": quality_score,
                     "confidence_breakdown": parse_result.confidence_breakdown,
-                    "distributor_details": parse_result.distributor_details,
+                    "distributor_details": {
+                        "company": company,
+                        "representative": representative,
+                        "source": "sender_or_selection",
+                    },
                     "replaced_report_id": previous_report_id,
                     "validation_summary": build_validation_summary(
                         expected_rows=parse_result.expected_rows,
@@ -688,8 +735,11 @@ class ReportService:
         *,
         actor: str = "system",
         uploaded_by: Optional[int] = None,
+        reporting_quarter: Optional[str] = None,
+        distributor_company: Optional[str] = None,
+        distributor_id: Optional[int] = None,
     ) -> Tuple[Report, int, bool, int]:
-        """Save an uploaded Excel and ingest it."""
+        """Save an uploaded Excel and ingest it via the ERP parser."""
         path = await save_upload_file(upload, get_upload_subdir("reports"))
         self.audit.log(
             AuditTrailCreate(
@@ -706,7 +756,185 @@ class ReportService:
             report_name=upload.filename,
             uploaded_by=uploaded_by,
             actor=actor,
+            reporting_quarter=reporting_quarter,
+            distributor_company=distributor_company,
+            distributor_id=distributor_id,
         )
+
+    def persist_approved_rows(
+        self,
+        file_path: Path,
+        parsed_rows: List[ParsedSalesRow],
+        *,
+        quality_score: int,
+        source: ReportSource = ReportSource.OUTLOOK,
+        report_name: Optional[str] = None,
+        email_message_id: Optional[int] = None,
+        actor: str = "system",
+        reporting_quarter: str,
+        distributor_id: int,
+        mark_duplicate_as_error: bool = False,
+        confidence_breakdown: Optional[dict] = None,
+        workbook_meta: Optional[dict] = None,
+    ) -> Tuple[Report, int, bool, int]:
+        """
+        Persist already-approved ERP rows (preview → approve flow).
+
+        Uses file content_hash for exact-file dedupe. Does not re-parse Excel.
+        """
+        if not parsed_rows:
+            raise ValidationAppError("No sales records to import")
+
+        content_hash = sha256_file(str(file_path))
+        # One workbook can feed multiple FY quarters — scope file dedupe per quarter.
+        quarter_scoped_hash = sha256_bytes(f"{content_hash}|{reporting_quarter.strip()}".encode("utf-8"))
+        existing_file = self.reports.get_by_content_hash(quarter_scoped_hash)
+        if existing_file:
+            if mark_duplicate_as_error:
+                raise ConflictError(
+                    "Duplicate report: this Excel file has already been processed",
+                    details={"existing_report_id": existing_file.id},
+                )
+            return existing_file, 0, True, existing_file.confidence_score or quality_score
+
+        dist = self.distributors.get_or_raise(distributor_id)
+        company = (dist.company or dist.name or "").strip()
+        representative = (dist.contact_person or dist.name or company).strip()
+        reporting_month = normalize_reporting_month(reporting_quarter)
+        if not reporting_month:
+            raise ValidationAppError("reporting_quarter is required (e.g. Q3 2026)")
+
+        for row in parsed_rows:
+            row.distributor = company
+            row.company = company
+            row.period = reporting_month
+            row.segment = ""
+            row.row_hash = build_sales_row_hash(
+                company, row.customer_name, "", row.product, row.quantity, reporting_month
+            )
+
+        acquire_report_replace_lock(
+            self.db, distributor_id, reporting_month, company=company
+        )
+        previous_ids = self._retire_matching_active_reports(
+            distributor_id=distributor_id,
+            reporting_month=reporting_month,
+            distributor_name=company,
+            actor=actor,
+            company=company,
+        )
+        previous_report_id = previous_ids[0] if previous_ids else None
+
+        sender_meta = {
+            "sender_name": None,
+            "sender_email": None,
+            "email_received_at": None,
+            "graph_message_id": None,
+            "internet_message_id": None,
+            "mailbox": None,
+        }
+        if email_message_id:
+            email_msg = self.emails.get_by_id(email_message_id)
+            if email_msg:
+                sender_meta = {
+                    "sender_name": email_msg.sender_name,
+                    "sender_email": email_msg.sender_email,
+                    "email_received_at": email_msg.received_at,
+                    "graph_message_id": email_msg.graph_message_id,
+                    "internet_message_id": email_msg.internet_message_id,
+                    "mailbox": email_msg.mailbox,
+                }
+
+        meta = workbook_meta or {}
+        report = Report(
+            name=report_name or file_path.name,
+            description=f"ERP sales report approved from {source.value}",
+            report_type="Sales Report",
+            status=ReportStatus.PROCESSING.value,
+            source=source.value,
+            reporting_month=reporting_month,
+            report_date=utc_now(),
+            file_name=file_path.name,
+            file_path=str(file_path),
+            file_size=file_path.stat().st_size if file_path.exists() else 0,
+            content_hash=quarter_scoped_hash,
+            confidence_score=quality_score,
+            categories={
+                "products": sorted({r.product for r in parsed_rows}),
+                "applications": [],
+                "extraction": {
+                    "parser": "erp",
+                    "approved_import": True,
+                    "sheet_name": meta.get("sheet_name"),
+                    "expected_rows": len(parsed_rows),
+                    "imported_rows": len(parsed_rows),
+                    "incomplete_rows": 0,
+                    "quality_score": quality_score,
+                    "confidence_breakdown": confidence_breakdown or {},
+                    "replaced_report_id": previous_report_id,
+                    "validation_summary": build_validation_summary(
+                        expected_rows=len(parsed_rows),
+                        imported_rows=len(parsed_rows),
+                        incomplete_rows=0,
+                        row_errors=[],
+                        confidence_score=quality_score,
+                    ),
+                },
+            },
+            distributor_id=distributor_id,
+            email_message_id=email_message_id,
+            **sender_meta,
+        )
+        report = self.reports.create(report)
+        try:
+            entities = SalesRecordMapper.to_orm_many(
+                parsed_rows,
+                report_id=report.id,
+                distributor_id_by_name={company: distributor_id},
+            )
+            inserted = self.sales.bulk_insert(entities)
+            if inserted <= 0:
+                self.reports.soft_delete(report)
+                raise ValidationAppError("No sales records inserted")
+            try:
+                from app.services.distributor_service import DistributorService
+
+                DistributorService(self.db).learn_customers_from_import(
+                    distributor_id=distributor_id,
+                    customer_names=[r.customer_name for r in parsed_rows],
+                    source_report_id=report.id,
+                    reporting_quarter=reporting_month,
+                    actor=actor,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("Customer mapping learn failed during approved import")
+
+            self.reports.update(
+                report,
+                {
+                    "status": ReportStatus.PROCESSED.value,
+                    "record_count": inserted,
+                    "confidence_score": quality_score,
+                    "error_message": None,
+                },
+            )
+            self.audit.log(
+                AuditTrailCreate(
+                    user_name=actor,
+                    action=AuditAction.PROCESSED,
+                    details=(
+                        f"ERP approved import | report_id={report.id} | "
+                        f"company={company} | quarter={reporting_month} | records={inserted}"
+                    ),
+                    report_name=report.name,
+                    entity_type="report",
+                    entity_id=str(report.id),
+                )
+            )
+            return report, inserted, False, quality_score
+        except Exception:
+            self.reports.soft_delete(report)
+            raise
 
     def to_frontend_reports(self, reports: List[Report]) -> List[FrontendReport]:
         """Map reports to frontend ExistingReports shape."""

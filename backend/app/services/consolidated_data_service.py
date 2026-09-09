@@ -17,6 +17,7 @@ from app.schemas.sales_record import (
     ConsolidatedRecordsPage,
     DeleteReportPreview,
     DeleteResult,
+    PeriodSummaryItem,
     ReportSalesGroup,
     SalesLineItem,
 )
@@ -80,15 +81,20 @@ class ConsolidatedDataService:
         sort_dir: str = "asc",
         actor: Optional[str] = None,
         audit_search: bool = False,
+        page_by: str = "reports",
     ) -> ConsolidatedRecordsPage:
         """
         Server-side filtered sales, returned as report groups.
 
-        Pagination applies to matching sales rows; groups are built from the
-        current page so report metadata is never repeated per row.
+        ``page_by=reports`` (default for UI): paginate complete distributor reports
+        so quarter headers are not built from a mid-report sales-row slice.
+
+        ``page_by=rows``: legacy sales-row pagination.
+
+        ``periodSummaries`` always reflects the full filtered set (accurate counts).
         """
         month = (reporting_month or period or None)
-        total = self.sales.count_filtered(
+        filter_kwargs = dict(
             search=search,
             distributor=distributor,
             customer=customer,
@@ -102,25 +108,39 @@ class ConsolidatedDataService:
             imported_from=imported_from,
             imported_to=imported_to,
         )
-        records = self.sales.list_with_distributor(
-            skip=skip,
-            limit=limit,
-            search=search,
-            distributor=distributor,
-            customer=customer,
-            segment=segment,
-            product=product,
-            company=company,
-            period=month,
-            quarter=quarter,
-            quantity_min=quantity_min,
-            quantity_max=quantity_max,
-            imported_from=imported_from,
-            imported_to=imported_to,
-            sort_by=sort_by,
-            sort_dir=sort_dir,
-        )
-        groups = self._group_by_report(records, base_idx=skip)
+        total = self.sales.count_filtered(**filter_kwargs)
+        total_reports = self.sales.count_matching_reports(**filter_kwargs)
+        summaries_raw = self.sales.period_summaries(**filter_kwargs)
+        period_summaries = [PeriodSummaryItem(**row) for row in summaries_raw]
+
+        mode = (page_by or "reports").strip().lower()
+        if mode not in {"reports", "rows"}:
+            mode = "reports"
+
+        if mode == "reports":
+            report_ids = self.sales.list_matching_report_ids(
+                skip=skip,
+                limit=limit,
+                **filter_kwargs,
+            )
+            records = self.sales.list_for_report_ids(
+                report_ids,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+            )
+            groups = self._group_by_report(records, base_idx=0)
+            # Keep report order from pagination query
+            order = {rid: i for i, rid in enumerate(report_ids)}
+            groups.sort(key=lambda g: order.get(g.reportId, 10**9))
+        else:
+            records = self.sales.list_with_distributor(
+                skip=skip,
+                limit=limit,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                **filter_kwargs,
+            )
+            groups = self._group_by_report(records, base_idx=skip)
 
         if actor and audit_search and (
             search or distributor or customer or segment or product or company or month or quarter
@@ -151,9 +171,11 @@ class ConsolidatedDataService:
         return ConsolidatedRecordsPage(
             data=groups,
             total=total,
-            totalReports=len(groups),
+            totalReports=total_reports,
             skip=skip,
             limit=limit,
+            pageBy=mode,
+            periodSummaries=period_summaries,
         )
 
     def delete_record(self, record_id: int, *, actor: str) -> DeleteResult:
@@ -306,6 +328,7 @@ class ConsolidatedDataService:
                     reportId=report_id,
                     distributor=dist.name if dist else "",
                     company=(dist.company if dist else None) or None,
+                    distributorId=dist.id if dist else (getattr(report, "distributor_id", None) if report else None),
                     reportingQuarter=reporting_month,
                     reportingMonth=reporting_month,
                     senderName=getattr(report, "sender_name", None) if report else None,

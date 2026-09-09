@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 
-from fastapi import APIRouter, File, Query, UploadFile, status
+from fastapi import APIRouter, File, Form, Query, UploadFile, status
 
 from app.dependencies.rbac import RequireAdmin, RequireUser
 from app.dependencies.services import ReportServiceDep
@@ -119,12 +119,22 @@ async def upload_report(
         ...,
         description="multipart/form-data field 'file'; Excel only (.xlsx or .xlsm). .xls and .csv are rejected.",
     ),
+    reporting_quarter: Optional[str] = Form(
+        default=None,
+        description="Reporting quarter e.g. Q3 2026 (required for ERP ingest; not read from Excel)",
+    ),
+    distributor_company: Optional[str] = Form(
+        default=None,
+        description="Distributor company (optional if resolvable later from sender)",
+    ),
 ) -> ReportUploadResponse:
-    """Upload a distributor sales Excel via multipart field `file` (.xlsx/.xlsm only; Admin)."""
+    """Upload a distributor ERP Excel via multipart field `file` (.xlsx/.xlsm only; Admin)."""
     report, inserted, duplicate, _quality = await service.upload_and_ingest(
         file,
         actor=current.name,
         uploaded_by=current.user_id,
+        reporting_quarter=reporting_quarter,
+        distributor_company=distributor_company,
     )
     return ReportUploadResponse(
         message="Report uploaded and processed" if not duplicate else "Duplicate report",

@@ -58,23 +58,114 @@ class OutlookSyncService:
         """Map ORM emails to frontend EmailRecord shape."""
         from app.utils.outlook_links import resolve_outlook_open_url
 
-        return [
-            FrontendEmailRecord(
-                id=msg.id,
-                senderName=msg.sender_name or msg.sender_email,
-                senderEmail=msg.sender_email,
-                subject=msg.subject,
-                dateReceived=format_frontend_datetime(msg.received_at),
-                confidenceScore=msg.confidence_score if msg.confidence_score is not None else 0,
-                outlookWebLink=resolve_outlook_open_url(
-                    web_link=getattr(msg, "outlook_web_link", None),
-                    graph_message_id=msg.graph_message_id,
-                ),
-                graphMessageId=msg.graph_message_id,
-                mailbox=msg.mailbox,
+        status_label_map = {
+            EmailProcessStatus.UNREAD.value: "New",
+            EmailProcessStatus.DOWNLOADED.value: "New",
+            EmailProcessStatus.PARSED.value: "Parsed",
+            EmailProcessStatus.INSERTED.value: "Imported",
+            EmailProcessStatus.MARKED_READ.value: "Imported",
+            EmailProcessStatus.FAILED.value: "Failed",
+            EmailProcessStatus.SKIPPED.value: "Failed",
+        }
+
+        result: List[FrontendEmailRecord] = []
+        for msg in messages:
+            excel_name = None
+            has_excel = False
+            excel_path: Optional[str] = None
+            for att in msg.attachments or []:
+                if getattr(att, "is_deleted", False):
+                    continue
+                if att.is_excel or (att.file_name or "").lower().endswith((".xlsx", ".xlsm")):
+                    excel_name = att.file_name
+                    has_excel = True
+                    excel_path = att.file_path
+                    break
+
+            # Always refresh Accuracy from the Excel for non-imported emails so the
+            # list never shows a stale score (e.g. 76% from an older parser pass).
+            if (
+                has_excel
+                and excel_path
+                and msg.process_status
+                not in {
+                    EmailProcessStatus.INSERTED.value,
+                    EmailProcessStatus.MARKED_READ.value,
+                    EmailProcessStatus.FAILED.value,
+                    EmailProcessStatus.SKIPPED.value,
+                }
+            ):
+                try:
+                    from app.erp_parser import ERPParserService
+
+                    path = Path(excel_path)
+                    if path.is_file():
+                        # Python-only scoring on list refresh — never call OpenAI here.
+                        # Skip re-parse when a score already exists to avoid Accuracy flicker.
+                        if msg.confidence_score is not None and int(msg.confidence_score) > 0:
+                            if msg.process_status in {
+                                EmailProcessStatus.UNREAD.value,
+                                EmailProcessStatus.DOWNLOADED.value,
+                            }:
+                                msg.process_status = EmailProcessStatus.PARSED.value
+                                self.db.flush()
+                        else:
+                            preview = ERPParserService().preview(
+                                path, allow_llm_fallback=False
+                            )
+                            overall = float(
+                                (preview.get("confidence") or {}).get("overall") or 0
+                            )
+                            score = int(round(overall))
+                            if msg.confidence_score != score:
+                                msg.confidence_score = score
+                            if msg.process_status in {
+                                EmailProcessStatus.UNREAD.value,
+                                EmailProcessStatus.DOWNLOADED.value,
+                            }:
+                                msg.process_status = EmailProcessStatus.PARSED.value
+                            self.db.flush()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "ERP accuracy refresh failed | email_id={} | err={}",
+                        msg.id,
+                        exc,
+                    )
+
+            dist_name = None
+            try:
+                from app.repositories.distributor_repository import DistributorRepository
+
+                dist = DistributorRepository(self.db).get_by_email(msg.sender_email)
+                if dist is not None:
+                    dist_name = dist.company or dist.name
+            except Exception:  # noqa: BLE001
+                dist_name = None
+
+            status = msg.process_status or EmailProcessStatus.UNREAD.value
+            result.append(
+                FrontendEmailRecord(
+                    id=msg.id,
+                    senderName=msg.sender_name or msg.sender_email,
+                    senderEmail=msg.sender_email,
+                    subject=msg.subject,
+                    dateReceived=format_frontend_datetime(msg.received_at),
+                    confidenceScore=msg.confidence_score if msg.confidence_score is not None else 0,
+                    outlookWebLink=resolve_outlook_open_url(
+                        web_link=getattr(msg, "outlook_web_link", None),
+                        graph_message_id=msg.graph_message_id,
+                    ),
+                    graphMessageId=msg.graph_message_id,
+                    mailbox=msg.mailbox,
+                    processStatus=status,
+                    statusLabel=status_label_map.get(status, "New"),
+                    attachmentName=excel_name,
+                    distributorName=dist_name,
+                    hasExcel=has_excel,
+                    errorMessage=msg.error_message,
+                )
             )
-            for msg in messages
-        ]
+        return result
 
     def resolve_outlook_open_link(self, email_id: int) -> Dict[str, Any]:
         """
@@ -209,6 +300,7 @@ class OutlookSyncService:
         )
 
         details: Dict[str, Any] = {"processed": [], "failures": [], "warnings": []}
+        reporting_quarter = (request.reporting_quarter or "").strip() or None
         try:
             messages = self.graph.list_unread_messages(
                 mailbox=mailbox,
@@ -218,6 +310,7 @@ class OutlookSyncService:
             job.emails_found = len(messages)
             details["emails_found"] = len(messages)
             details["max_messages"] = request.max_messages
+            details["reporting_quarter"] = reporting_quarter
             self.db.flush()
             logger.info(
                 "Outlook sync listed unread | job={} | mailbox={} | found={} | max_messages={}",
@@ -237,6 +330,7 @@ class OutlookSyncService:
                             mailbox=mailbox,
                             mark_as_read=False,
                             actor=actor,
+                            reporting_quarter=reporting_quarter,
                         )
                     # Ingest savepoint released successfully — business data is durable here.
                     if request.mark_as_read:
@@ -460,6 +554,7 @@ class OutlookSyncService:
         mailbox: str,
         mark_as_read: bool,
         actor: str,
+        reporting_quarter: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process a single Graph message end-to-end (idempotent)."""
         graph_id = message["id"]
@@ -634,54 +729,65 @@ class OutlookSyncService:
 
             email.process_status = EmailProcessStatus.DOWNLOADED.value
 
+            # Score extraction quality without importing (Accuracy column in UI).
+            # Python-only — LLM runs only on explicit Preview / Approve Import.
             try:
-                report, inserted, was_duplicate, quality_score = self.reports.ingest_excel(
-                    path,
-                    source=ReportSource.OUTLOOK,
-                    report_name=f"{email.subject} - {file_name}",
-                    email_message_id=email.id,
-                    actor=actor,
-                    mark_duplicate_as_error=False,
-                )
-                quality_scores.append(quality_score)
-                if was_duplicate:
-                    duplicates_skipped += 1
-                else:
-                    reports_created += 1
-                    records_inserted += inserted
-                    any_success = True
-                logger.info(
-                    "Attachment ingested | message_id={} | file={} | quality={} | duplicate={}",
-                    graph_id,
-                    file_name,
-                    quality_score,
-                    was_duplicate,
-                )
-            except Exception as exc:
-                email.process_status = EmailProcessStatus.FAILED.value
-                email.error_message = str(exc)
-                logger.exception(
-                    "Failed ingesting attachment | message={} attachment={} | rolling back message",
-                    graph_id,
-                    file_name,
-                )
-                raise
+                from app.erp_parser import ERPParserService
 
-        if quality_scores:
-            email.confidence_score = min(quality_scores)
+                preview = ERPParserService().preview(Path(path), allow_llm_fallback=False)
+                overall = float((preview.get("confidence") or {}).get("overall") or 0)
+                email.confidence_score = int(round(overall))
+                email.process_status = EmailProcessStatus.PARSED.value
+                email.error_message = None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "ERP accuracy score failed after download | file={} | err={}",
+                    file_name,
+                    exc,
+                )
+                email.confidence_score = 0
+                email.error_message = f"Extraction accuracy check failed: {exc}"
+
+            # Download + score only — import happens after admin Preview / Approve.
+            any_success = True
+            logger.info(
+                "Attachment downloaded (awaiting preview/import) | message_id={} | file={} | confidence={}",
+                graph_id,
+                file_name,
+                email.confidence_score,
+            )
+
+        self.audit.log(
+            AuditTrailCreate(
+                user_name=actor,
+                action=AuditAction.SYNCED,
+                details=(
+                    f"ERP Email Synced | email_id={email.id} | "
+                    f"subject={email.subject} | attachments={attachments_downloaded}"
+                ),
+                entity_type="email",
+                entity_id=str(email.id),
+                module="Email Extraction",
+                status="Success",
+                extra_metadata={
+                    "attachments_downloaded": attachments_downloaded,
+                    "sender_email": email.sender_email,
+                },
+            )
+        )
 
         mark_ok = None
+        # Keep status as downloaded until preview/import; do not mark Graph read yet
+        # (mark-as-read still available after successful import via sync option if desired)
         if any_success or duplicates_skipped:
-            email.process_status = EmailProcessStatus.INSERTED.value
             email.error_message = None
             self.db.flush()
-            # Mark-as-read is optional here (direct callers). Sync() marks after savepoint.
             if mark_as_read:
                 mark_ok = self._ensure_marked_read(
                     email,
                     graph_id=graph_id,
                     mailbox=mailbox,
-                    reason="ingest_success",
+                    reason="download_success",
                 )
 
         return {

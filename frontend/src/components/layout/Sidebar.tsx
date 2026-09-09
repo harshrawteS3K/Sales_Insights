@@ -4,12 +4,12 @@ import {
   Mail,
   Table2,
   BarChart3,
-  Database,
   Building2,
   ScrollText,
   Users,
   Settings,
   LogOut,
+  BookMarked,
 } from 'lucide-react';
 import APCOTEX_LOGO from '../../assets/images/apcotexindustrieslogo.png';
 import { BLUE, TEAL, RED, BORDER } from '../../constants/theme';
@@ -21,10 +21,18 @@ const mainNavItems = [
   { path: '/emails',            label: 'Emails',            icon: Mail             },
   { path: '/consolidated-data', label: 'Consolidated Data', icon: Table2           },
   { path: '/visualizations',    label: 'Visualizations',    icon: BarChart3        },
-  { path: '/master-data',       label: 'Master Data',       icon: Database         },
   { path: '/distributors',      label: 'Distributors',      icon: Building2, adminOnly: true },
   { path: '/audit-trail',       label: 'Audit Trail',       icon: ScrollText, adminOnly: true },
   { path: '/user-management',   label: 'User Management',   icon: Users, superAdminOnly: true },
+];
+
+const adminNavItems = [
+  {
+    path: '/admin/header-dictionary',
+    label: 'Header Dictionary',
+    icon: BookMarked,
+    adminOnly: true,
+  },
 ];
 
 export function Sidebar({
@@ -47,9 +55,61 @@ export function Sidebar({
     return true;
   });
 
+  const filteredAdminItems = adminNavItems.filter(item => {
+    if (item.adminOnly && !isAdminRole(userRole)) return false;
+    return true;
+  });
+
   const isActive = (item: { path: string; exact?: boolean }) => {
     if (item.exact) return location.pathname === item.path;
     return location.pathname === item.path || location.pathname.startsWith(item.path + '/');
+  };
+
+  const renderNavButton = (item: {
+    path: string;
+    label: string;
+    icon: typeof LayoutDashboard;
+    exact?: boolean;
+  }) => {
+    const active = isActive(item);
+    const Icon = item.icon;
+    return (
+      <button
+        key={item.path}
+        onClick={() => navigate(item.path)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          width: '100%',
+          padding: '8px 20px',
+          background: active ? 'rgba(31,95,168,0.06)' : 'transparent',
+          border: 'none',
+          borderLeft: active ? `2px solid ${TEAL}` : '2px solid transparent',
+          color: active ? BLUE : '#6B7280',
+          cursor: 'pointer',
+          textAlign: 'left',
+          fontSize: '0.875rem',
+          fontWeight: active ? 600 : 400,
+          transition: 'background 0.12s, color 0.12s',
+        }}
+        onMouseEnter={e => {
+          if (!active) {
+            e.currentTarget.style.background = '#F9FAFB';
+            e.currentTarget.style.color = '#374151';
+          }
+        }}
+        onMouseLeave={e => {
+          if (!active) {
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.color = '#6B7280';
+          }
+        }}
+      >
+        <Icon size={17} strokeWidth={active ? 2 : 1.5} style={{ flexShrink: 0 }} />
+        <span>{item.label}</span>
+      </button>
+    );
   };
 
   return (
@@ -86,47 +146,24 @@ export function Sidebar({
       </div>
 
       <nav style={{ flex: 1, overflowY: 'auto' }}>
-        {filteredNavItems.map(item => {
-          const active = isActive(item);
-          const Icon = item.icon;
-          return (
-            <button
-              key={item.path}
-              onClick={() => navigate(item.path)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                width: '100%',
-                padding: '8px 20px',
-                background: active ? 'rgba(31,95,168,0.06)' : 'transparent',
-                border: 'none',
-                borderLeft: active ? `2px solid ${TEAL}` : '2px solid transparent',
-                color: active ? BLUE : '#6B7280',
-                cursor: 'pointer',
-                textAlign: 'left',
-                fontSize: '0.875rem',
-                fontWeight: active ? 600 : 400,
-                transition: 'background 0.12s, color 0.12s',
-              }}
-              onMouseEnter={e => {
-                if (!active) {
-                  e.currentTarget.style.background = '#F9FAFB';
-                  e.currentTarget.style.color = '#374151';
-                }
-              }}
-              onMouseLeave={e => {
-                if (!active) {
-                  e.currentTarget.style.background = 'transparent';
-                  e.currentTarget.style.color = '#6B7280';
-                }
-              }}
-            >
-              <Icon size={17} strokeWidth={active ? 2 : 1.5} style={{ flexShrink: 0 }} />
-              <span>{item.label}</span>
-            </button>
-          );
-        })}
+        {filteredNavItems.map(renderNavButton)}
+
+        {filteredAdminItems.length > 0 && (
+          <>
+            <div style={{ padding: '16px 20px 6px' }}>
+              <span style={{
+                fontSize: '0.6875rem',
+                color: '#9CA3AF',
+                letterSpacing: '0.07em',
+                textTransform: 'uppercase',
+                fontWeight: 600,
+              }}>
+                Admin
+              </span>
+            </div>
+            {filteredAdminItems.map(renderNavButton)}
+          </>
+        )}
       </nav>
 
       <div style={{ borderTop: `1px solid ${BORDER}`, flexShrink: 0 }}>

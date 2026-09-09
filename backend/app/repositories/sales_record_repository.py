@@ -218,6 +218,19 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         query = query.offset(skip).limit(limit)
         return list(self.db.scalars(query).unique().all())
 
+    def _filtered_from_clause(self):
+        """Sales + ACTIVE report + optional distributor join (shared list/aggregate base)."""
+        return (
+            select(SalesRecord.id)
+            .select_from(SalesRecord)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .where(
+                *self._active_report_sales_where(),
+                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
+            )
+        )
+
     def count_filtered(
         self,
         *,
@@ -263,6 +276,222 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             distributor_id=distributor_id,
         )
         return int(self.db.scalar(query) or 0)
+
+    def count_matching_reports(
+        self,
+        *,
+        search: Optional[str] = None,
+        distributor: Optional[str] = None,
+        customer: Optional[str] = None,
+        segment: Optional[str] = None,
+        product: Optional[str] = None,
+        company: Optional[str] = None,
+        period: Optional[str] = None,
+        quarter: Optional[str] = None,
+        quantity_min: Optional[float] = None,
+        quantity_max: Optional[float] = None,
+        imported_from: Optional[date] = None,
+        imported_to: Optional[date] = None,
+        distributor_id: Optional[int] = None,
+    ) -> int:
+        """Count distinct ACTIVE reports matching the same filters as list."""
+        query = (
+            select(func.count(distinct(SalesRecord.report_id)))
+            .select_from(SalesRecord)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .where(
+                *self._active_report_sales_where(),
+                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
+            )
+        )
+        query = self._apply_filters(
+            query,
+            search=search,
+            distributor=distributor,
+            customer=customer,
+            segment=segment,
+            product=product,
+            company=company,
+            period=period,
+            quarter=quarter,
+            quantity_min=quantity_min,
+            quantity_max=quantity_max,
+            imported_from=imported_from,
+            imported_to=imported_to,
+            distributor_id=distributor_id,
+        )
+        return int(self.db.scalar(query) or 0)
+
+    def list_matching_report_ids(
+        self,
+        *,
+        skip: int = 0,
+        limit: int = 50,
+        search: Optional[str] = None,
+        distributor: Optional[str] = None,
+        customer: Optional[str] = None,
+        segment: Optional[str] = None,
+        product: Optional[str] = None,
+        company: Optional[str] = None,
+        period: Optional[str] = None,
+        quarter: Optional[str] = None,
+        quantity_min: Optional[float] = None,
+        quantity_max: Optional[float] = None,
+        imported_from: Optional[date] = None,
+        imported_to: Optional[date] = None,
+        distributor_id: Optional[int] = None,
+    ) -> List[int]:
+        """
+        Paginate by complete reports (newest reporting period first).
+
+        Avoids mid-report row cuts that hide distributors under a quarter.
+        """
+        period_col = reporting_month_expr()
+        query = (
+            select(
+                SalesRecord.report_id.label("report_id"),
+                func.max(period_col).label("period_label"),
+                func.max(func.coalesce(Report.created_at, SalesRecord.created_at)).label("imported_at"),
+            )
+            .select_from(SalesRecord)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .where(
+                *self._active_report_sales_where(),
+                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
+            )
+            .group_by(SalesRecord.report_id)
+        )
+        query = self._apply_filters(
+            query,
+            search=search,
+            distributor=distributor,
+            customer=customer,
+            segment=segment,
+            product=product,
+            company=company,
+            period=period,
+            quarter=quarter,
+            quantity_min=quantity_min,
+            quantity_max=quantity_max,
+            imported_from=imported_from,
+            imported_to=imported_to,
+            distributor_id=distributor_id,
+        )
+        query = query.order_by(
+            func.max(period_col).desc().nulls_last(),
+            func.max(func.coalesce(Report.created_at, SalesRecord.created_at)).desc().nulls_last(),
+            SalesRecord.report_id.desc(),
+        )
+        query = query.offset(max(0, skip)).limit(max(1, limit))
+        return [int(row.report_id) for row in self.db.execute(query).all() if row.report_id is not None]
+
+    def list_for_report_ids(
+        self,
+        report_ids: Sequence[int],
+        *,
+        sort_by: str = "id",
+        sort_dir: str = "asc",
+    ) -> List[SalesRecord]:
+        """Load all active sales rows for the given report ids (complete reports)."""
+        ids = [int(r) for r in report_ids if r is not None]
+        if not ids:
+            return []
+        query = self._base_query().where(SalesRecord.report_id.in_(ids))
+        sort_map = {
+            "id": SalesRecord.id,
+            "srNo": SalesRecord.sr_no,
+            "customerName": SalesRecord.customer_name,
+            "segment": SalesRecord.segment,
+            "product": SalesRecord.product,
+            "quantity": SalesRecord.quantity,
+            "period": SalesRecord.period,
+            "reportingMonth": SalesRecord.period,
+            "distributor": Distributor.name,
+            "importedAt": SalesRecord.created_at,
+        }
+        col = sort_map.get(sort_by, SalesRecord.id)
+        query = query.order_by(col.desc() if sort_dir.lower() == "desc" else col.asc())
+        rows = list(self.db.scalars(query).unique().all())
+        # Preserve report pagination order
+        order = {rid: idx for idx, rid in enumerate(ids)}
+        rows.sort(key=lambda r: (order.get(r.report_id, 10**9), r.id or 0))
+        return rows
+
+    def period_summaries(
+        self,
+        *,
+        search: Optional[str] = None,
+        distributor: Optional[str] = None,
+        customer: Optional[str] = None,
+        segment: Optional[str] = None,
+        product: Optional[str] = None,
+        company: Optional[str] = None,
+        period: Optional[str] = None,
+        quarter: Optional[str] = None,
+        quantity_min: Optional[float] = None,
+        quantity_max: Optional[float] = None,
+        imported_from: Optional[date] = None,
+        imported_to: Optional[date] = None,
+        distributor_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Accurate per-period rollups for the full filtered set (not the current page).
+
+        Used so quarter headers never under-count distributors due to pagination.
+        """
+        period_col = reporting_month_expr()
+        company_col = company_expr()
+        query = (
+            select(
+                period_col.label("period"),
+                func.count(distinct(SalesRecord.report_id)).label("report_count"),
+                func.count(distinct(func.lower(company_col))).label("distributor_count"),
+                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+            )
+            .select_from(SalesRecord)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .outerjoin(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .where(
+                *self._active_report_sales_where(),
+                or_(Distributor.id.is_(None), Distributor.is_deleted.is_(False)),
+                period_col.is_not(None),
+                period_col != "",
+            )
+            .group_by(period_col)
+            .order_by(period_col.desc())
+        )
+        query = self._apply_filters(
+            query,
+            search=search,
+            distributor=distributor,
+            customer=customer,
+            segment=segment,
+            product=product,
+            company=company,
+            period=period,
+            quarter=quarter,
+            quantity_min=quantity_min,
+            quantity_max=quantity_max,
+            imported_from=imported_from,
+            imported_to=imported_to,
+            distributor_id=distributor_id,
+        )
+        out: List[Dict[str, Any]] = []
+        for row in self.db.execute(query).all():
+            label = str(row.period or "").strip()
+            if not label:
+                continue
+            out.append(
+                {
+                    "label": label,
+                    "reportCount": int(row.report_count or 0),
+                    "distributorCount": int(row.distributor_count or 0),
+                    "totalQuantity": float(row.qty or 0),
+                }
+            )
+        return out
 
     def count_by_distributor_period(self, distributor_name: str, period: str) -> int:
         """Count active sales for distributor company/name + reporting month."""

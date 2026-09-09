@@ -15,8 +15,10 @@ import {
   ArrowRight,
   CalendarDays,
   Building2,
+  Pencil,
+  Check,
 } from 'lucide-react';
-import { BLUE, BORDER } from '../../constants/theme';
+import { BLUE, BORDER, TEAL } from '../../constants/theme';
 import type {
   ReportSalesGroup,
   SalesLineItem,
@@ -25,21 +27,23 @@ import type {
   ConsolidatedRecordQuery,
 } from '../../types';
 import { ConsolidatedDataService } from '../../services/consolidatedData.service';
+import { DistributorService } from '../../services/distributor.service';
 import { ApiError, getSession } from '../../api';
 import { isAdminRole } from '../../utils/rbac';
 import { StatusBanner } from '../../components/common/StatusBanner';
 import { DataQualityWarning } from '../../components/ui/DataQualityWarning';
 import { SearchAutocomplete } from '../../components/ui/SearchAutocomplete';
 import {
+  applyPeriodSummaries,
   buildYearQuarterTimeline,
-  flattenQuarterOverview,
   formatMt,
+  overviewFromPeriodSummaries,
 } from '../../utils/quarter';
+import type { PeriodSummaryItem } from '../../types';
 
 type FilterState = {
   distributor: string;
   customer: string;
-  segment: string;
   product: string;
   company: string;
   reportingQuarter: string;
@@ -53,7 +57,6 @@ type FilterState = {
 const EMPTY_FILTERS: FilterState = {
   distributor: '',
   customer: '',
-  segment: '',
   product: '',
   company: '',
   reportingQuarter: '',
@@ -64,7 +67,8 @@ const EMPTY_FILTERS: FilterState = {
   importedTo: '',
 };
 
-const PAGE_SIZE = 200;
+/** Reports per page — complete distributor reports (not mid-cut sales rows). */
+const PAGE_SIZE = 20;
 const EXPAND_ALL_THRESHOLD = 3;
 
 type ViewTarget = { report: ReportSalesGroup; line: SalesLineItem };
@@ -110,6 +114,7 @@ export function ConsolidatedData() {
   const [reportGroups, setReportGroups] = useState<ReportSalesGroup[]>([]);
   const [total, setTotal] = useState(0);
   const [totalReports, setTotalReports] = useState(0);
+  const [periodSummaries, setPeriodSummaries] = useState<PeriodSummaryItem[]>([]);
   const [filterOptions, setFilterOptions] = useState<ConsolidatedFilterOptions>({
     distributors: [],
     customers: [],
@@ -130,6 +135,9 @@ export function ConsolidatedData() {
   const [deleteReportCount, setDeleteReportCount] = useState<number | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [editingDistributorId, setEditingDistributorId] = useState<number | null>(null);
+  const [editDistributorName, setEditDistributorName] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingAudit = useRef(false);
@@ -158,7 +166,6 @@ export function ConsolidatedData() {
         search: search || undefined,
         distributor: f.distributor || undefined,
         customer: f.customer || undefined,
-        segment: f.segment || undefined,
         product: f.product || undefined,
         company: f.company || undefined,
         reportingQuarter: quarter,
@@ -172,6 +179,7 @@ export function ConsolidatedData() {
         sort_by: sortKey,
         sort_dir: sortDir,
         audit: opts?.audit,
+        pageBy: 'reports',
       };
     },
     [appliedFilters, page, search, sortKey, sortDir]
@@ -193,8 +201,15 @@ export function ConsolidatedData() {
     setExpandedIds(new Set());
   }, []);
 
-  const timeline = useMemo(() => buildYearQuarterTimeline(reportGroups), [reportGroups]);
-  const quarterOverview = useMemo(() => flattenQuarterOverview(timeline), [timeline]);
+  const timeline = useMemo(() => {
+    const built = buildYearQuarterTimeline(reportGroups);
+    return applyPeriodSummaries(built, periodSummaries);
+  }, [reportGroups, periodSummaries]);
+
+  const quarterOverview = useMemo(() => {
+    if (periodSummaries.length) return overviewFromPeriodSummaries(periodSummaries);
+    return timeline.flatMap(y => y.quarters);
+  }, [periodSummaries, timeline]);
 
   const toggleQuarter = (label: string) => {
     setExpandedQuarters(prev => {
@@ -219,6 +234,7 @@ export function ConsolidatedData() {
       setReportGroups(pageResult.data);
       setTotal(pageResult.total);
       setTotalReports(pageResult.totalReports ?? pageResult.data.length);
+      setPeriodSummaries(pageResult.periodSummaries || []);
       setFilterOptions(options);
       syncExpanded(pageResult.data);
       setLoaded(true);
@@ -278,10 +294,48 @@ export function ConsolidatedData() {
     });
   };
 
+  const startRenameDistributor = (report: ReportSalesGroup, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!report.distributorId || !isAdmin) return;
+    setEditingDistributorId(report.distributorId);
+    setEditDistributorName(companyOf(report));
+  };
+
+  const saveDistributorName = async (report: ReportSalesGroup) => {
+    if (!report.distributorId || !editDistributorName.trim()) {
+      setEditingDistributorId(null);
+      return;
+    }
+    setRenameBusy(true);
+    setActionError(null);
+    try {
+      const updated = await DistributorService.update(report.distributorId, {
+        company: editDistributorName.trim(),
+        name: editDistributorName.trim(),
+      });
+      const label = updated.company || updated.name;
+      setReportGroups(prev =>
+        prev.map(g =>
+          g.distributorId === report.distributorId
+            ? { ...g, company: label, distributor: updated.name || label }
+            : g,
+        ),
+      );
+      setEditingDistributorId(null);
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : 'Failed to rename distributor');
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
   const exportExcel = async () => {
     try {
       const all = await ConsolidatedDataService.getSalesRecords({
-        ...buildQuery({ skip: 0, limit: Math.min(Math.max(total, 1), 5000) }),
+        ...buildQuery({
+          skip: 0,
+          limit: Math.min(Math.max(totalReports || total, 1), 5000),
+        }),
       });
       const csvRows: string[] = [];
       let exportedLines = 0;
@@ -296,13 +350,13 @@ export function ConsolidatedData() {
 
         csvRows.push(csvEscape(detailLines.join('\n')));
         csvRows.push(
-          ['Sr No', 'Customer', 'Segment', 'Product', 'Quantity (MT)'].map(csvEscape).join(',')
+          ['Sr No', 'Customer', 'Product', 'Quantity (MT)'].map(csvEscape).join(',')
         );
 
         report.sales.forEach(line => {
           exportedLines += 1;
           csvRows.push(
-            [line.srNo, line.customerName, line.segment, line.product, line.quantity]
+            [line.srNo, line.customerName, line.product, line.quantity]
               .map(csvEscape)
               .join(',')
           );
@@ -397,7 +451,7 @@ export function ConsolidatedData() {
     return sortDir === 'asc' ? <ChevronUp size={11} color={BLUE} /> : <ChevronDown size={11} color={BLUE} />;
   };
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil((totalReports || 0) / PAGE_SIZE));
   const pageSalesCount = useMemo(
     () => reportGroups.reduce((sum, g) => sum + (g.sales?.length || 0), 0),
     [reportGroups]
@@ -455,7 +509,7 @@ export function ConsolidatedData() {
               <input
                 value={searchInput}
                 onChange={e => setSearchInput(e.target.value)}
-                placeholder="Search distributor, company, customer, product, segment, reporting quarter…"
+                placeholder="Search distributor, company, customer, product, reporting quarter…"
                 style={{
                   width: '100%',
                   height: 36,
@@ -722,6 +776,14 @@ export function ConsolidatedData() {
                                 {qBucket.distributorCount === 1 ? '' : 's'}
                                 {' · '}
                                 {formatMt(qBucket.totalQuantity)} MT
+                                {typeof qBucket.reportCountFull === 'number' &&
+                                  qBucket.reports.length < qBucket.reportCountFull && (
+                                    <span style={{ color: '#9CA3AF' }}>
+                                      {' '}
+                                      · showing {qBucket.reports.length} of {qBucket.reportCountFull} on
+                                      this page
+                                    </span>
+                                  )}
                               </div>
                             </div>
                           </button>
@@ -806,9 +868,88 @@ export function ConsolidatedData() {
                             fontWeight: 700,
                             color: '#111827',
                             lineHeight: 1.35,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
                           }}
                         >
-                          {companyOf(report)}
+                          {isAdmin &&
+                          report.distributorId &&
+                          editingDistributorId === report.distributorId ? (
+                            <>
+                              <input
+                                value={editDistributorName}
+                                onClick={e => e.stopPropagation()}
+                                onChange={e => setEditDistributorName(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    void saveDistributorName(report);
+                                  }
+                                  if (e.key === 'Escape') setEditingDistributorId(null);
+                                }}
+                                style={{
+                                  flex: 1,
+                                  minWidth: 160,
+                                  padding: '6px 10px',
+                                  border: `1px solid ${BORDER}`,
+                                  borderRadius: 8,
+                                  fontSize: '0.875rem',
+                                  fontWeight: 600,
+                                }}
+                                autoFocus
+                              />
+                              <button
+                                type="button"
+                                title="Save"
+                                disabled={renameBusy}
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  void saveDistributorName(report);
+                                }}
+                                style={{
+                                  ...actionBtn,
+                                  background: TEAL,
+                                  color: 'white',
+                                  border: 'none',
+                                }}
+                              >
+                                <Check size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                title="Cancel"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  setEditingDistributorId(null);
+                                }}
+                                style={actionBtn}
+                              >
+                                <X size={13} />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <span>{companyOf(report)}</span>
+                              {isAdmin && report.distributorId ? (
+                                <button
+                                  type="button"
+                                  title="Edit distributor name"
+                                  onClick={e => startRenameDistributor(report, e)}
+                                  style={{
+                                    border: 'none',
+                                    background: 'transparent',
+                                    color: '#6B7280',
+                                    cursor: 'pointer',
+                                    padding: 2,
+                                    display: 'inline-flex',
+                                  }}
+                                >
+                                  <Pencil size={14} />
+                                </button>
+                              ) : null}
+                            </>
+                          )}
                         </div>
                         <div
                           style={{
@@ -932,11 +1073,6 @@ export function ConsolidatedData() {
                                     Customer <SortIcon col="customerName" />
                                   </div>
                                 </th>
-                                <th onClick={() => handleSort('segment')} style={thStyle('left')}>
-                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                    Segment <SortIcon col="segment" />
-                                  </div>
-                                </th>
                                 <th onClick={() => handleSort('product')} style={thStyle('left')}>
                                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                                     Product <SortIcon col="product" />
@@ -971,9 +1107,6 @@ export function ConsolidatedData() {
                                     }}
                                   >
                                     {line.customerName}
-                                  </td>
-                                  <td style={{ padding: '12px 16px', fontSize: '0.875rem', color: '#374151' }}>
-                                    {line.segment}
                                   </td>
                                   <td style={{ padding: '12px 16px' }}>
                                     <span style={chipBlue}>{line.product}</span>
@@ -1070,14 +1203,16 @@ export function ConsolidatedData() {
             }}
           >
             <span>
-              Showing {pageSalesCount === 0 ? 0 : page * PAGE_SIZE + 1}–
-              {page * PAGE_SIZE + pageSalesCount} of {total} sales rows
-              {totalReports > 0 && (
-                <span style={{ color: '#9CA3AF' }}>
-                  {' '}
-                  · {reportGroups.length} report{reportGroups.length === 1 ? '' : 's'} on this page
-                </span>
-              )}
+              Showing{' '}
+              {reportGroups.length === 0
+                ? 0
+                : `${page * PAGE_SIZE + 1}–${page * PAGE_SIZE + reportGroups.length}`}{' '}
+              of {totalReports} distributor report{totalReports === 1 ? '' : 's'}
+              <span style={{ color: '#9CA3AF' }}>
+                {' '}
+                · {pageSalesCount.toLocaleString()} sales rows on this page · {total.toLocaleString()}{' '}
+                total
+              </span>
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <button
@@ -1207,14 +1342,6 @@ export function ConsolidatedData() {
                 value={filters.customer}
                 options={filterOptions.customers}
                 onChange={v => setFilters(f => ({ ...f, customer: v }))}
-                selectStyle={selectStyle}
-                labelStyle={labelStyle}
-              />
-              <FilterSelect
-                label="Segment"
-                value={filters.segment}
-                options={filterOptions.segments}
-                onChange={v => setFilters(f => ({ ...f, segment: v }))}
                 selectStyle={selectStyle}
                 labelStyle={labelStyle}
               />
@@ -1382,7 +1509,6 @@ export function ConsolidatedData() {
           </div>
           <DetailRow label="Sr No" value={String(viewTarget.line.srNo)} />
           <DetailRow label="Customer" value={viewTarget.line.customerName} />
-          <DetailRow label="Segment" value={viewTarget.line.segment} />
           <DetailRow label="Product" value={viewTarget.line.product} />
           <DetailRow label="Quantity (MT)" value={viewTarget.line.quantity} />
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>

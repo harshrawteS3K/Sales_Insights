@@ -3,11 +3,13 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    admin_header_dictionary,
     audit,
     auth,
     consolidated_data,
     dashboard,
     distributors,
+    erp,
     health,
     master_data,
     outlook,
@@ -25,7 +27,9 @@ api_router.include_router(distributors.router)
 api_router.include_router(reports.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(outlook.router)
-api_router.include_router(master_data.router)
+api_router.include_router(master_data.router)  # deprecated — kept for compatibility
+api_router.include_router(erp.router)
+api_router.include_router(admin_header_dictionary.router)
 api_router.include_router(audit.router)
 api_router.include_router(consolidated_data.router)
 api_router.include_router(visualizations.router)

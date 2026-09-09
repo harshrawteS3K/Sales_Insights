@@ -1,4 +1,9 @@
-"""Distributor endpoints."""
+"""Distributor endpoints.
+
+Template / Outlook draft package endpoints below are DEPRECATED for UI —
+ERP email ingest (Preview → Approve Import) is the production path.
+Endpoints remain mounted for API compatibility only.
+"""
 
 from typing import Dict, List, Optional
 
@@ -86,8 +91,9 @@ def backfill_customer_mappings(
 @router.post(
     "/create-email-drafts-bulk",
     response_model=DataResponse[BulkEmailDraftJobStartResponse],
-    summary="Start bulk Outlook draft creation (sequential)",
+    summary="[DEPRECATED] Start bulk Outlook draft creation (sequential)",
     status_code=status.HTTP_202_ACCEPTED,
+    deprecated=True,
 )
 def create_email_drafts_bulk(
     payload: BulkEmailDraftRequest,
@@ -118,7 +124,8 @@ def create_email_drafts_bulk(
 @router.get(
     "/create-email-drafts-bulk/{job_id}",
     response_model=DataResponse[BulkEmailDraftJobStatusResponse],
-    summary="Poll bulk Outlook draft job status",
+    summary="[DEPRECATED] Poll bulk Outlook draft job status",
+    deprecated=True,
 )
 def get_email_drafts_bulk_status(
     job_id: str,
@@ -148,13 +155,15 @@ def list_distributor_customers(
 @router.post(
     "/{distributor_id}/create-email-draft",
     response_model=DataResponse[EmailDraftResponse],
-    summary="Create Outlook draft with distributor-specific Excel",
+    summary="[DEPRECATED] Create Outlook draft with distributor-specific Excel",
+    deprecated=True,
 )
 @router.post(
     "/{distributor_id}/generate-quarterly-package",
     response_model=DataResponse[EmailDraftResponse],
-    summary="Create Outlook draft (legacy path alias)",
+    summary="[DEPRECATED] Create Outlook draft (legacy path alias)",
     include_in_schema=False,
+    deprecated=True,
 )
 def create_email_draft(
     distributor_id: int,
@@ -228,18 +237,18 @@ def update_distributor(
 @router.delete(
     "/{distributor_id}",
     response_model=MessageResponse,
-    summary="Deactivate distributor",
+    summary="Delete distributor",
 )
 def delete_distributor(
     distributor_id: int,
     service: DistributorServiceDep,
     current: RequireAdmin,
     hard: bool = Query(
-        False,
+        True,
         description="If true, soft-delete distributor and cascade reports/sales",
     ),
 ) -> MessageResponse:
-    """Deactivate distributor (default) or hard soft-delete with cascade."""
+    """Delete distributor (default hard/cascade). Pass hard=false to only deactivate."""
     if hard:
         service.delete_distributor(distributor_id, actor=current.name)
         return MessageResponse(message=f"Distributor {distributor_id} deleted")

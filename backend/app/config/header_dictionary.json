@@ -1,0 +1,53 @@
+{
+  "customer": [
+    "customer",
+    "customer name",
+    "party",
+    "party name",
+    "buyer",
+    "buyer name",
+    "client",
+    "client name",
+    "account",
+    "account name",
+    "consignee",
+    "consignee name",
+    "name of customer",
+    "particulars",
+    "particular"
+  ],
+  "product": [
+    "product",
+    "product name",
+    "item",
+    "item code",
+    "item name",
+    "item description",
+    "material",
+    "material description",
+    "material code",
+    "fg",
+    "fg code",
+    "fg name",
+    "description",
+    "grade",
+    "sku",
+    "product fg code"
+  ],
+  "quantity": [
+    "qty",
+    "quantity",
+    "sales qty",
+    "sales quantity",
+    "dispatch qty",
+    "dispatch quantity",
+    "invoice qty",
+    "invoice quantity",
+    "net qty",
+    "net quantity",
+    "billed qty",
+    "billed quantity",
+    "qty kg",
+    "quantity kg"
+  ]
+}

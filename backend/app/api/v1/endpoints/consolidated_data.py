@@ -153,6 +153,12 @@ def get_sales_records(
     sort_by: str = Query("id"),
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     audit: bool = Query(False, description="Write audit log for this filter/search"),
+    page_by: str = Query(
+        "reports",
+        alias="pageBy",
+        pattern="^(reports|rows)$",
+        description="Paginate by complete reports (default) or sales rows",
+    ),
 ) -> ConsolidatedRecordsPage:
     """GET /api/consolidated-data/records — filtered, paginated, report-grouped."""
     return service.list_records(
@@ -175,6 +181,7 @@ def get_sales_records(
         sort_dir=sort_dir,
         actor=current.name,
         audit_search=audit,
+        page_by=page_by,
     )
 
 

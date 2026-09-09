@@ -18,7 +18,7 @@ class SalesRecordBase(BaseModel):
     quantity: Decimal
     quantity_display: Optional[str] = None
     period: Optional[str] = None  # denormalized reporting quarter / month
-    unit: str = "KG"
+    unit: str = "MT"
 
 
 class SalesRecordCreate(SalesRecordBase):
@@ -56,6 +56,7 @@ class ReportSalesGroup(BaseModel):
     reportId: int
     distributor: str
     company: Optional[str] = None
+    distributorId: Optional[int] = None
     # DB column remains reporting_month; API exposes reporting_quarter as primary.
     reportingQuarter: Optional[str] = None
     reportingMonth: Optional[str] = None  # backward-compat alias of reportingQuarter
@@ -225,15 +226,26 @@ class QuarterlyReportResponse(BaseModel):
     products: List[QuarterlyProductRow] = Field(default_factory=list)
 
 
+class PeriodSummaryItem(BaseModel):
+    """Accurate period rollup across the full filtered set (not just one page)."""
+
+    label: str
+    distributorCount: int = 0
+    reportCount: int = 0
+    totalQuantity: float = 0
+
+
 class ConsolidatedRecordsPage(BaseModel):
     """Paginated consolidated sales — report-grouped."""
 
     success: bool = True
     data: List[ReportSalesGroup]
-    total: int  # total matching sales rows (for pagination of flat filter hits)
+    total: int  # total matching sales rows
     totalReports: int = 0
     skip: int = 0
     limit: int = 50
+    pageBy: str = "rows"  # rows | reports
+    periodSummaries: List[PeriodSummaryItem] = Field(default_factory=list)
 
 
 class DeleteReportRequest(BaseModel):
@@ -301,7 +313,7 @@ class ParsedSalesRow(BaseModel):
     quantity: Decimal
     quantity_display: str
     period: Optional[str] = None  # denormalized reporting quarter
-    unit: str = "KG"
+    unit: str = "MT"
     company: Optional[str] = None
     row_hash: str = ""
     errors: List[str] = Field(default_factory=list)

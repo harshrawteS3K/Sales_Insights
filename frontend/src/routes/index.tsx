@@ -10,8 +10,8 @@ import { UserManagement } from '../pages/UserManagement/UserManagement';
 import { ExistingReports } from '../pages/Reports/ExistingReports';
 import { MarketResearchDashboard } from '../pages/MarketResearch/MarketResearchDashboard';
 import { MarketResearchCompanion } from '../pages/MarketResearch/MarketResearchCompanion';
-import { MasterData } from '../pages/MasterData/MasterData';
 import { DistributorManagement } from '../pages/DistributorManagement/DistributorManagement';
+import { HeaderDictionaryPage } from '../pages/Admin/HeaderDictionaryPage';
 import { PlaceholderPage } from '../pages/Settings/PlaceholderPage';
 import type { UserRole } from '../types';
 
@@ -41,10 +41,10 @@ export const createAppRouter = (
         { path: 'emails', Component: EmailsModule },
         { path: 'consolidated-data', Component: ConsolidatedData },
         { path: 'visualizations', Component: Visualizations },
-        { path: 'master-data', Component: MasterData },
         { path: 'distributors', Component: DistributorManagement },
         { path: 'audit-trail', Component: AuditTrail },
         { path: 'user-management', Component: UserManagement },
+        { path: 'admin/header-dictionary', Component: HeaderDictionaryPage },
         { path: 'existing-reports', Component: ExistingReports },
         { path: 'market-research-dashboard', Component: MarketResearchDashboard },
         { path: 'market-research-companion', Component: MarketResearchCompanion },

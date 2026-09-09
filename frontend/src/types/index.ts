@@ -76,6 +76,12 @@ export interface EmailRecord {
   outlookWebLink?: string | null;
   graphMessageId?: string | null;
   mailbox?: string | null;
+  processStatus?: string;
+  statusLabel?: string;
+  attachmentName?: string | null;
+  distributorName?: string | null;
+  hasExcel?: boolean;
+  errorMessage?: string | null;
 }
 
 // ─── Distributors (admin CRUD) ────────────────────────────────────────────────
@@ -147,7 +153,7 @@ export interface SalesLineItem {
   id: number;
   srNo: number;
   customerName: string;
-  segment: string;
+  segment?: string;
   product: string;
   quantity: string;
 }
@@ -157,6 +163,7 @@ export interface ReportSalesGroup {
   reportId: number;
   distributor: string;
   company?: string | null;
+  distributorId?: number | null;
   reportingQuarter?: string | null;
   reportingMonth?: string | null; // backward-compat alias
   senderName?: string | null;
@@ -285,6 +292,13 @@ export interface QuarterlyReportResponse {
   products?: QuarterlyProductRow[];
 }
 
+export interface PeriodSummaryItem {
+  label: string;
+  distributorCount: number;
+  reportCount: number;
+  totalQuantity: number;
+}
+
 export interface ConsolidatedRecordsPage {
   success: boolean;
   data: ReportSalesGroup[];
@@ -292,6 +306,8 @@ export interface ConsolidatedRecordsPage {
   totalReports?: number;
   skip: number;
   limit: number;
+  pageBy?: 'reports' | 'rows' | string;
+  periodSummaries?: PeriodSummaryItem[];
 }
 
 export interface ConsolidatedRecordQuery {
@@ -314,6 +330,8 @@ export interface ConsolidatedRecordQuery {
   sort_by?: string;
   sort_dir?: 'asc' | 'desc';
   audit?: boolean;
+  /** Paginate complete reports (preferred) or sales rows */
+  pageBy?: 'reports' | 'rows';
 }
 
 export type SortKey =

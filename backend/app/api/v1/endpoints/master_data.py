@@ -1,4 +1,8 @@
-"""Master data endpoints — Phase 2 paths + legacy /master-data routes."""
+"""Master data endpoints — DEPRECATED for UI (ERP ingest replaces templates).
+
+Kept for backward compatibility / isolation so existing imports do not break.
+Frontend Master Data module has been removed.
+"""
 
 from typing import Optional
 
@@ -28,7 +32,8 @@ router = APIRouter(tags=["Master Data"])
 @router.post(
     "/customer-master/upload",
     response_model=MasterDataUploadResponse,
-    summary="Upload Customer Master Excel (replace)",
+    summary="[DEPRECATED] Upload Customer Master Excel (replace)",
+    deprecated=True,
 )
 async def upload_customer_master(
     service: MasterDataServiceDep,
@@ -42,7 +47,8 @@ async def upload_customer_master(
 @router.post(
     "/product-master/upload",
     response_model=MasterDataUploadResponse,
-    summary="Upload Product Master Excel (replace)",
+    summary="[DEPRECATED] Upload Product Master Excel (replace)",
+    deprecated=True,
 )
 async def upload_product_master(
     service: MasterDataServiceDep,
@@ -56,7 +62,8 @@ async def upload_product_master(
 @router.post(
     "/template/generate",
     response_model=TemplateGenerateResponse,
-    summary="Generate official distributor template",
+    summary="[DEPRECATED] Generate official distributor template",
+    deprecated=True,
 )
 def generate_template(
     service: MasterDataServiceDep,
@@ -69,8 +76,9 @@ def generate_template(
 
 @router.get(
     "/template/download",
-    summary="Download generated distributor template",
+    summary="[DEPRECATED] Download generated distributor template",
     response_class=FileResponse,
+    deprecated=True,
 )
 def download_template(
     service: MasterDataServiceDep,

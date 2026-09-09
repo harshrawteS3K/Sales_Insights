@@ -53,6 +53,12 @@ class FrontendEmailRecord(BaseModel):
     outlookWebLink: Optional[str] = None
     graphMessageId: Optional[str] = None
     mailbox: Optional[str] = None
+    processStatus: str = "unread"
+    statusLabel: str = "New"
+    attachmentName: Optional[str] = None
+    distributorName: Optional[str] = None
+    hasExcel: bool = False
+    errorMessage: Optional[str] = None
 
 
 class OutlookOpenLinkResponse(BaseModel):
@@ -91,6 +97,8 @@ class OutlookSyncRequest(BaseModel):
     mark_as_read: bool = True
     # Cap per sync run; Graph pages via @odata.nextLink until this limit.
     max_messages: int = Field(default=50, ge=1, le=5000)
+    # Reporting quarter for ERP ingest (not read from Excel). Example: "Q3 2026".
+    reporting_quarter: Optional[str] = None
 
 
 class OutlookSyncResponse(BaseModel):

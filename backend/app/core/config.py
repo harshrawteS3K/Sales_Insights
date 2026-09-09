@@ -143,6 +143,15 @@ class Settings(BaseSettings):
     super_admin_password: str = Field(default="", alias="SUPER_ADMIN_PASSWORD")
     password_min_length: int = Field(default=8, alias="PASSWORD_MIN_LENGTH", ge=6)
 
+    # OpenAI — ERP LLM header resolver fallback (mapping only; never extracts rows)
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    openai_model: str = Field(default="gpt-5.4-mini", alias="OPENAI_MODEL")
+    openai_timeout_seconds: float = Field(default=30.0, alias="OPENAI_TIMEOUT_SECONDS", gt=0)
+
+    # ERP Excel quantity unit in the workbook (converted to MT on parse/import)
+    # Typical distributor ERP exports are KG. Set ERP_EXCEL_QUANTITY_UNIT=MT if already tonnes.
+    erp_excel_quantity_unit: str = Field(default="KG", alias="ERP_EXCEL_QUANTITY_UNIT")
+
     @property
     def cors_origins(self) -> List[str]:
         """Browser origins allowed by CORS (from CORS_ORIGINS env)."""
