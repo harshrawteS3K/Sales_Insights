@@ -350,7 +350,7 @@ export function ConsolidatedData() {
 
         csvRows.push(csvEscape(detailLines.join('\n')));
         csvRows.push(
-          ['Sr No', 'Customer', 'Product', 'Quantity (MT)'].map(csvEscape).join(',')
+          ['Sr No', 'Customer', 'Product', 'Quantity'].map(csvEscape).join(',')
         );
 
         report.sales.forEach(line => {
@@ -486,7 +486,7 @@ export function ConsolidatedData() {
           Consolidated Sales Data
         </h1>
         <p style={{ fontSize: '0.875rem', color: '#6B7280', margin: 0 }}>
-          Master repository of distributor company sales — ACTIVE quarterly reports (quantity in MT)
+          Master repository of distributor company sales — ACTIVE quarterly reports
         </p>
       </div>
 
@@ -674,7 +674,7 @@ export function ConsolidatedData() {
                           {q.distributorCount} distributor{q.distributorCount === 1 ? '' : 's'}
                         </span>
                         <span style={{ marginLeft: 'auto', fontWeight: 700, color: BLUE }}>
-                          {formatMt(q.totalQuantity)} MT
+                          {formatMt(q.totalQuantity)}
                         </span>
                       </div>
                     ))}
@@ -775,7 +775,7 @@ export function ConsolidatedData() {
                                 {qBucket.distributorCount} distributor
                                 {qBucket.distributorCount === 1 ? '' : 's'}
                                 {' · '}
-                                {formatMt(qBucket.totalQuantity)} MT
+                                {formatMt(qBucket.totalQuantity)}
                                 {typeof qBucket.reportCountFull === 'number' &&
                                   qBucket.reports.length < qBucket.reportCountFull && (
                                     <span style={{ color: '#9CA3AF' }}>
@@ -1080,7 +1080,7 @@ export function ConsolidatedData() {
                                 </th>
                                 <th onClick={() => handleSort('quantity')} style={thStyle('right')}>
                                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                    Quantity (MT) <SortIcon col="quantity" />
+                                    Quantity <SortIcon col="quantity" />
                                   </div>
                                 </th>
                                 <th style={{ ...thStyle('left'), cursor: 'default' }}>Actions</th>
@@ -1510,7 +1510,7 @@ export function ConsolidatedData() {
           <DetailRow label="Sr No" value={String(viewTarget.line.srNo)} />
           <DetailRow label="Customer" value={viewTarget.line.customerName} />
           <DetailRow label="Product" value={viewTarget.line.product} />
-          <DetailRow label="Quantity (MT)" value={viewTarget.line.quantity} />
+          <DetailRow label="Quantity" value={viewTarget.line.quantity} />
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
             <button type="button" onClick={() => setViewTarget(null)} style={modalSecondaryBtn}>
               Close

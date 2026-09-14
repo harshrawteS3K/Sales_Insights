@@ -1,7 +1,10 @@
 """Quantity parsing, formatting, and unit conversion helpers.
 
-Canonical business unit for Sales Insights is **MT** (metric tonne).
-Distributor ERP Excel is typically in **KG** — convert on ingest via ``to_mt``.
+Canonical business unit for Sales Insights is **MT**.
+
+Default ERP ingest treats Excel numbers as already-MT (no ÷1000).
+``kg_to_mt`` / ``to_mt(..., source_unit=\"KG\")`` remain available only when a
+workbook is explicitly known to be kilograms.
 """
 
 import re
@@ -10,10 +13,10 @@ from typing import Optional, Tuple, Union
 
 _QTY_PATTERN = re.compile(r"[^0-9.\-]")
 
-# 1 MT = 1000 KG
+# 1 MT = 1000 KG (optional conversion only)
 KG_PER_MT = Decimal("1000")
 CANONICAL_UNIT = "MT"
-DEFAULT_SOURCE_UNIT = "KG"
+DEFAULT_SOURCE_UNIT = "MT"
 
 
 def normalize_unit(unit: Optional[str]) -> str:
@@ -48,16 +51,14 @@ def to_mt(
     """
     Convert a quantity into canonical MT.
 
-    - KG → ÷ 1000
-    - MT → unchanged
-    - Unknown → treat as KG (safe default for ERP exports)
+    - MT / unknown → unchanged (Excel values used as-is)
+    - KG → ÷ 1000 (only when explicitly configured)
     """
     amount = Decimal(str(value))
     unit = normalize_unit(source_unit)
-    if unit == "MT":
-        return amount
-    # KG or unknown ERP cells → MT
-    return kg_to_mt(amount)
+    if unit == "KG":
+        return kg_to_mt(amount)
+    return amount
 
 
 def parse_quantity(raw: object) -> Tuple[Decimal, str]:

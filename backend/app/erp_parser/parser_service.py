@@ -10,6 +10,10 @@ from pydantic import BaseModel, Field
 
 from app.core.logging import get_logger
 from app.erp_parser.confidence import compute_erp_confidence
+from app.erp_parser.cross_tab import (
+    detect_product_month_matrix,
+    extract_product_month_matrix_rows,
+)
 from app.erp_parser.header_detector import detect_header_row
 from app.erp_parser.header_mapper import FIELD_DISPLAY, is_month_header, normalize_header_text
 from app.erp_parser.llm_header_resolver import (
@@ -254,12 +258,76 @@ class ERPParserService:
         header_idx = header_info["header_row_index"]
         header_row = list(matrix[header_idx]) if matrix else []
 
+        # Product×month cross-tab (EAST ARIEN-style) — prefer when standard triad is incomplete
+        matrix_layout = detect_product_month_matrix(matrix)
         python_complete = _mapping_complete(positions_0, quantity_columns)
         python_extracted: Optional[Dict[str, Any]] = None
         python_confidence: Optional[Dict[str, Any]] = None
         python_overall = 0.0
+        mapping_source = "python"
+        active_mapped = mapped
+        active_extracted: Optional[Dict[str, Any]] = None
+        active_confidence: Optional[Dict[str, Any]] = None
 
-        if python_complete:
+        if matrix_layout and (not python_complete or float(matrix_layout.get("score") or 0) >= 70):
+            matrix_extracted = extract_product_month_matrix_rows(
+                matrix,
+                layout=matrix_layout,
+                fiscal_year_start=fiscal_year_start,
+                reporting_quarter=reporting_quarter,
+            )
+            if matrix_extracted.get("rows"):
+                field_conf = {"customer": 95.0, "product": 95.0, "quantity": 92.0}
+                matrix_confidence = compute_erp_confidence(
+                    field_confidences=field_conf,
+                    sheet_score=max(sheet_score, float(matrix_layout.get("score") or 0)),
+                    extracted_rows=len(matrix_extracted["rows"]),
+                    quantity_ok=matrix_extracted["quantity_ok"],
+                    quantity_fail=matrix_extracted["quantity_fail"],
+                    skipped_invalid=matrix_extracted["skipped_invalid"],
+                )
+                # Synthetic mapping for preview UI
+                active_mapped = {
+                    "positions": {
+                        "customer": int(matrix_layout["customer_col"]),
+                        "product": None,
+                        "quantity": None,
+                    },
+                    "originals": {
+                        "customer": "PARTICULARS / Customer",
+                        "product": "Product column groups",
+                        "quantity": "Monthly columns → quarterly totals",
+                    },
+                    "confidences": field_conf,
+                    "methods": {
+                        "customer": "cross_tab",
+                        "product": "cross_tab",
+                        "quantity": "monthly_sum",
+                    },
+                    "quantity_columns": [
+                        m["column"] for m in (matrix_layout.get("month_column_meta") or [])
+                    ],
+                    "month_column_meta": list(matrix_layout.get("month_column_meta") or []),
+                }
+                active_extracted = matrix_extracted
+                active_confidence = matrix_confidence
+                python_overall = float(matrix_confidence["overall_confidence"])
+                python_complete = True
+                mapping_source = "python"
+                header_idx = int(matrix_layout["header_row_index"])
+                header_info = {
+                    **header_info,
+                    "header_row": int(matrix_layout["header_row"]),
+                    "header_row_index": header_idx,
+                }
+                logger.info(
+                    "ERP cross-tab layout detected | products={} | rows={} | score={}",
+                    len(matrix_layout.get("groups") or []),
+                    len(matrix_extracted["rows"]),
+                    matrix_layout.get("score"),
+                )
+
+        if active_extracted is None and python_complete:
             python_extracted = extract_rows(
                 matrix,
                 header_row_index=header_idx,
@@ -279,18 +347,20 @@ class ERPParserService:
                     skipped_invalid=python_extracted["skipped_invalid"],
                 )
                 python_overall = float(python_confidence["overall_confidence"])
+                active_mapped = mapped
+                active_extracted = python_extracted
+                active_confidence = python_confidence
 
-        mapping_source = "python"
-        active_mapped = mapped
-        active_extracted = python_extracted
-        active_confidence = python_confidence
-
-        need_llm = allow_llm_fallback and (
-            not python_complete
-            or active_extracted is None
-            or not active_extracted.get("rows")
-            or python_overall < LLM_FALLBACK_THRESHOLD
-        )
+        need_llm = False
+        if allow_llm_fallback and not (
+            matrix_layout and active_extracted and active_extracted.get("rows")
+        ):
+            need_llm = (
+                active_extracted is None
+                or not active_extracted.get("rows")
+                or active_confidence is None
+                or python_overall < LLM_FALLBACK_THRESHOLD
+            )
 
         if need_llm:
             llm_applied = self._try_llm_header_fallback(
@@ -306,15 +376,20 @@ class ERPParserService:
             if llm_applied is not None:
                 active_mapped, active_extracted, active_confidence, mapping_source = llm_applied
 
-        if (
-            active_extracted is None
-            or not active_extracted.get("rows")
-            or active_confidence is None
-            or not _mapping_complete(
-                active_mapped["positions"],
-                active_mapped.get("quantity_columns") or [],
+        # Cross-tab results are complete even without classic triad positions
+        mapping_ok = bool(
+            active_extracted
+            and active_extracted.get("rows")
+            and active_confidence is not None
+            and (
+                active_extracted.get("layout") == "product_month_matrix"
+                or _mapping_complete(
+                    active_mapped["positions"],
+                    active_mapped.get("quantity_columns") or [],
+                )
             )
-        ):
+        )
+        if not mapping_ok:
             raise ExcelProcessingError(
                 "Could not map Customer, Product, and Sales Quantity columns. "
                 "Please verify the ERP export has recognizable headers."

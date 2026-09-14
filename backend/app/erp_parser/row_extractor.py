@@ -6,13 +6,12 @@ import re
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from app.core.config import get_settings
 from app.erp_parser.fiscal_quarters import (
     group_month_indexes_by_quarter,
     quarter_label,
     resolve_fy_start_year,
 )
-from app.utils.quantity import CANONICAL_UNIT, format_quantity, parse_quantity, to_mt
+from app.utils.quantity import format_quantity, parse_quantity
 
 _TOTAL_RE = re.compile(
     r"^\s*(grand\s*)?total\b|\bsub\s*total\b|\btotals?\b",
@@ -38,14 +37,8 @@ def _is_blank_row(row: Sequence[Any]) -> bool:
     return not any(_cell_str(c) for c in row)
 
 
-def _canonical_qty(raw_qty: Decimal, *, source_unit: str) -> Tuple[Decimal, str]:
-    """Convert Excel quantity to app canonical MT."""
-    mt = to_mt(raw_qty, source_unit=source_unit)
-    return mt, format_quantity(mt)
-
-
 def _sum_quantity_columns(row: Sequence[Any], columns: Sequence[int]) -> tuple[Decimal, str, bool]:
-    """Sum numeric values across month/qty columns (raw Excel unit)."""
+    """Sum numeric values across month/qty columns (Excel values as-is)."""
     total = Decimal("0")
     any_parsed = False
     for idx in columns:
@@ -71,7 +64,7 @@ def extract_rows(
     month_column_meta: Optional[Sequence[Dict[str, Any]]] = None,
     fiscal_year_start: Optional[int] = None,
     reporting_quarter: Optional[str] = None,
-    source_quantity_unit: Optional[str] = None,
+    source_quantity_unit: Optional[str] = None,  # API compat; ignored (no conversion)
 ) -> Dict[str, Any]:
     """
     Extract valid data rows after the header.
@@ -79,14 +72,9 @@ def extract_rows(
     Monthly-pivot workbooks (Apr…Mar columns) are expanded into **quarterly**
     sales rows (Q1–Q4 of the fiscal year), not a single annual total.
 
-    Quantities are converted to canonical **MT** using ``source_quantity_unit``
-    (default from ``ERP_EXCEL_QUANTITY_UNIT``, typically KG).
+    Quantities are stored exactly as written in Excel (no unit conversion).
     """
-    source_unit = (
-        source_quantity_unit
-        or get_settings().erp_excel_quantity_unit
-        or "KG"
-    )
+    _ = source_quantity_unit
     cust_i = positions.get("customer")
     prod_i = positions.get("product")
     qty_i = positions.get("quantity")
@@ -126,8 +114,6 @@ def extract_rows(
             "errors": ["Missing required column mapping (customer, product, quantity)"],
             "fiscal_year_start": fy_start,
             "monthly_pivot": False,
-            "quantity_unit": CANONICAL_UNIT,
-            "source_quantity_unit": source_unit,
         }
 
     errors: List[str] = []
@@ -157,14 +143,13 @@ def extract_rows(
         if monthly_mode:
             emitted = 0
             for q_num, cols in sorted(by_quarter.items()):
-                qty_raw, _disp, any_parsed = _sum_quantity_columns(row, cols)
-                if not any_parsed or qty_raw == 0:
+                qty_val, qty_display, any_parsed = _sum_quantity_columns(row, cols)
+                if not any_parsed or qty_val == 0:
                     continue
-                if qty_raw < 0:
+                if qty_val < 0:
                     skipped_invalid += 1
                     errors.append(f"Row {abs_idx}: negative quantity in Q{q_num}")
                     continue
-                qty_val, qty_display = _canonical_qty(qty_raw, source_unit=source_unit)
                 period = quarter_label(fy_start, q_num)
                 rows.append(
                     {
@@ -174,7 +159,6 @@ def extract_rows(
                         "sales_quantity_display": qty_display,
                         "period": period,
                         "reporting_quarter": period,
-                        "unit": CANONICAL_UNIT,
                     }
                 )
                 qty_ok += 1
@@ -184,15 +168,15 @@ def extract_rows(
             continue
 
         if qty_cols:
-            qty_raw, _disp, any_parsed = _sum_quantity_columns(row, qty_cols)
-            if not any_parsed or qty_raw == 0:
+            qty_val, qty_display, any_parsed = _sum_quantity_columns(row, qty_cols)
+            if not any_parsed or qty_val == 0:
                 skipped_blank += 1
                 continue
             qty_ok += 1
         else:
             qty_cell = _at(qty_i) if qty_i is not None else None
             try:
-                qty_raw, _ = parse_quantity(qty_cell)
+                qty_val, qty_display = parse_quantity(qty_cell)
                 qty_ok += 1
             except ValueError as exc:
                 qty_fail += 1
@@ -200,19 +184,17 @@ def extract_rows(
                 errors.append(f"Row {abs_idx}: {exc}")
                 continue
 
-        if qty_raw < 0:
+        if qty_val < 0:
             skipped_invalid += 1
             errors.append(f"Row {abs_idx}: negative quantity")
             continue
 
-        qty_val, qty_display = _canonical_qty(qty_raw, source_unit=source_unit)
         rows.append(
             {
                 "customer_name": customer,
                 "product": product,
                 "sales_quantity": qty_val,
                 "sales_quantity_display": qty_display,
-                "unit": CANONICAL_UNIT,
             }
         )
 
@@ -226,6 +208,4 @@ def extract_rows(
         "errors": errors[:50],
         "fiscal_year_start": fy_start,
         "monthly_pivot": monthly_mode,
-        "quantity_unit": CANONICAL_UNIT,
-        "source_quantity_unit": source_unit,
     }

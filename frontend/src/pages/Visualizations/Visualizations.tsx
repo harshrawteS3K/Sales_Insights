@@ -1,4 +1,4 @@
-ï»¿import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   BarChart,
   Bar,
@@ -180,7 +180,7 @@ export function Visualizations() {
           Visualizations & Analytics
         </h1>
         <p style={{ fontSize: '0.875rem', color: '#6B7280', margin: 0 }}>
-          Active reports only â€” {periodLabel}
+          Active reports only — {periodLabel}
         </p>
       </div>
 
@@ -188,7 +188,7 @@ export function Visualizations() {
         loading={loading && !loaded}
         error={error}
         onRetry={loadData}
-        loadingText="Loading visualizationsâ€¦"
+        loadingText="Loading visualizations…"
       />
 
       {loaded && (
@@ -298,7 +298,7 @@ function ProductsTab({
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 20, marginBottom: 20 }}>
-        <ChartCard title="Quarterly Sales Trend" subtitle="Total quantity (MT) by reporting quarter â€” line chart">
+        <ChartCard title="Quarterly Sales Trend" subtitle="Total quantity by reporting quarter — line chart">
           {quarterlyTrend.length === 0 ? (
             <EmptyChart />
           ) : (
@@ -309,9 +309,9 @@ function ProductsTab({
                 <YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
                 <Tooltip
                   contentStyle={{ fontSize: 12, borderRadius: 8, border: `1px solid ${BORDER}` }}
-                  formatter={(v: number) => [`${Number(v).toLocaleString()} MT`, 'Quantity']}
+                  formatter={(v: number) => [`${Number(v).toLocaleString()}`, 'Quantity']}
                 />
-                <Line type="monotone" dataKey="qty" stroke={BLUE} strokeWidth={2.5} dot={{ r: 3 }} name="Quantity (MT)" />
+                <Line type="monotone" dataKey="qty" stroke={BLUE} strokeWidth={2.5} dot={{ r: 3 }} name="Quantity" />
               </LineChart>
             </ResponsiveContainer>
           )}
@@ -339,9 +339,9 @@ function ProductsTab({
                 <YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
                 <Tooltip
                   contentStyle={{ fontSize: 12, borderRadius: 8, border: `1px solid ${BORDER}` }}
-                  formatter={(v: number) => [`${Number(v).toLocaleString()} MT`, 'Quantity']}
+                  formatter={(v: number) => [`${Number(v).toLocaleString()}`, 'Quantity']}
                 />
-                <Bar dataKey="qty" name="Quantity (MT)" radius={[4, 4, 0, 0]}>
+                <Bar dataKey="qty" name="Quantity" radius={[4, 4, 0, 0]}>
                   {productBarData.map((entry, i) => (
                     <Cell
                       key={i}
@@ -354,7 +354,7 @@ function ProductsTab({
           )}
         </ChartCard>
 
-        <ChartCard title="Product Mix" subtitle="Treemap â€” contribution by quantity (ACTIVE reports)">
+        <ChartCard title="Product Mix" subtitle="Treemap — contribution by quantity (ACTIVE reports)">
           {treemapData.length === 0 ? (
             <EmptyChart />
           ) : (
@@ -372,7 +372,7 @@ function ProductsTab({
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 20 }}>
-        <ChartCard title="Product Mix (share %)" subtitle="Donut fallback view â€” Top products + Others">
+        <ChartCard title="Product Mix (share %)" subtitle="Donut fallback view — Top products + Others">
           {productMix.length === 0 ? (
             <EmptyChart />
           ) : (
@@ -462,7 +462,7 @@ function DistributorsTab({
                 <YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
                 <Tooltip
                   contentStyle={{ fontSize: 12, borderRadius: 8, border: `1px solid ${BORDER}` }}
-                  formatter={(v: number) => [`${Number(v).toLocaleString()} MT`, 'Quantity']}
+                  formatter={(v: number) => [`${Number(v).toLocaleString()}`, 'Quantity']}
                 />
                 <Line type="monotone" dataKey="qty" stroke={BLUE} strokeWidth={2.5} dot={{ r: 3 }} />
               </LineChart>
@@ -472,7 +472,7 @@ function DistributorsTab({
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
-        <ChartCard title="Sales by Distributor Company" subtitle="Horizontal bar â€” sorted descending">
+        <ChartCard title="Sales by Distributor Company" subtitle="Horizontal bar — sorted descending">
           {topDist.length === 0 ? (
             <EmptyChart />
           ) : (
@@ -490,9 +490,9 @@ function DistributorsTab({
                 />
                 <Tooltip
                   contentStyle={{ fontSize: 12, borderRadius: 8, border: `1px solid ${BORDER}` }}
-                  formatter={(v: number) => [`${Number(v).toLocaleString()} MT`, 'Quantity']}
+                  formatter={(v: number) => [`${Number(v).toLocaleString()}`, 'Quantity']}
                 />
-                <Bar dataKey="qty" name="Quantity (MT)" radius={[0, 4, 4, 0]}>
+                <Bar dataKey="qty" name="Quantity" radius={[0, 4, 4, 0]}>
                   {topDist.map((_, i) => (
                     <Cell key={i} fill={DIST_COLORS[i % DIST_COLORS.length]} />
                   ))}
@@ -502,7 +502,7 @@ function DistributorsTab({
           )}
         </ChartCard>
 
-        <ChartCard title="Distributor Company Contribution" subtitle="Donut â€” % share of total quantity">
+        <ChartCard title="Distributor Company Contribution" subtitle="Donut — % share of total quantity">
           {distContribution.length === 0 ? (
             <EmptyChart />
           ) : (
@@ -524,7 +524,7 @@ function DistributorsTab({
                 </Pie>
                 <Tooltip
                   formatter={(v: number, _n, props: any) => [
-                    `${v}% (${Number(props?.payload?.qty || 0).toLocaleString()} MT)`,
+                    `${v}% (${Number(props?.payload?.qty || 0).toLocaleString()})`,
                     'Share',
                   ]}
                   contentStyle={{ fontSize: 12, borderRadius: 8, border: `1px solid ${BORDER}` }}
@@ -547,7 +547,7 @@ function DistributorsTab({
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 20, marginBottom: 20 }}>
-        <ChartCard title="Distributor vs Quarter" subtitle="Heatmap â€” quantity intensity (Top Distributor Companies)">
+        <ChartCard title="Distributor vs Quarter" subtitle="Heatmap — quantity intensity (Top Distributor Companies)">
           <SalesHeatmap data={heatmap} height={360} />
         </ChartCard>
       </div>
@@ -572,7 +572,7 @@ function DistributorsTab({
                 <YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
                 <Tooltip
                   contentStyle={{ fontSize: 12, borderRadius: 8, border: `1px solid ${BORDER}` }}
-                  formatter={(v: number) => [`${Number(v).toLocaleString()} MT`]}
+                  formatter={(v: number) => [`${Number(v).toLocaleString()}`]}
                 />
                 <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
                 {stackKeys.map((key, i) => (
@@ -649,14 +649,14 @@ function FilterBar({
         options={distOpts}
         value={filters.distributor}
         onChange={v => setFilter('distributor', v)}
-        placeholder="Search distributorâ€¦"
+        placeholder="Search distributor…"
       />
       <SearchAutocomplete
         label="Product"
         options={productOpts}
         value={filters.product}
         onChange={v => setFilter('product', v)}
-        placeholder="Search productâ€¦"
+        placeholder="Search product…"
       />
 
       <div style={{ minWidth: 160 }}>

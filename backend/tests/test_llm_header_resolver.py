@@ -97,7 +97,7 @@ def test_weird_headers_llm_called(tmp_path: Path):
     assert result.mapping_source == "llm"
     assert result.imported_rows == 2
     assert result.rows[0]["customer_name"] == "Omega Mills"
-    assert float(result.rows[0]["sales_quantity"]) == 0.055  # 55 KG → MT
+    assert float(result.rows[0]["sales_quantity"]) == 55
     assert result.overall_confidence >= 85
 
 
@@ -320,7 +320,7 @@ def test_explicit_preview_can_call_llm(tmp_path: Path):
 
     mock_resolver.resolve_headers.assert_called_once()
     assert result["mapping_source"] == "llm"
-    assert abs(float(result["rows"][0]["sales_quantity"]) - 0.055) < 1e-9
+    assert abs(float(result["rows"][0]["sales_quantity"]) - 55) < 1e-9
 
 
 def test_resolver_builds_openai_request_shape():

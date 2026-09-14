@@ -31,7 +31,7 @@ def test_single_sheet_erp(tmp_path: Path):
     assert result.imported_rows == 2
     assert result.rows[0]["customer_name"] == "AKS RUGS"
     assert result.rows[0]["product"] == "P1"
-    assert float(result.rows[0]["sales_quantity"]) == 0.01  # 10 KG → MT
+    assert float(result.rows[0]["sales_quantity"]) == 10
     assert result.parsed_rows[0].unit == "MT"
     assert result.overall_confidence >= 75
     assert result.parsed_rows[0].segment == ""
@@ -93,7 +93,7 @@ def test_merged_header_workbook(tmp_path: Path):
     assert result.imported_rows == 1
     assert result.rows[0]["customer_name"] == "Omega Mills"
     assert result.rows[0]["product"] == "Latex-100"
-    assert float(result.rows[0]["sales_quantity"]) == 0.055  # 55 KG → MT
+    assert float(result.rows[0]["sales_quantity"]) == 55
 
 
 def test_different_header_names_fuzzy(tmp_path: Path):
@@ -137,7 +137,7 @@ def test_quantity_parsing(tmp_path: Path):
 
     result = ERPParserService().parse_workbook(path)
     assert result.imported_rows == 2
-    assert float(result.rows[0]["sales_quantity"]) == 1.2505  # 1,250.5 KG → MT
+    assert float(result.rows[0]["sales_quantity"]) == 1250.5
     assert isinstance(result.parsed_rows[0].quantity, Decimal)
 
 
@@ -172,10 +172,10 @@ def test_monthly_pivot_erp(tmp_path: Path):
         for r in result.rows
         if r["product"] == "NBR - APCOFLEX N 745" and r["period"] == "Q1 2025"
     )
-    assert float(q1["sales_quantity"]) == (525 + 1015 + 1015) / 1000
+    assert float(q1["sales_quantity"]) == 525 + 1015 + 1015
     q2_n285 = next(r for r in result.rows if r["product"] == "NBR - APCOFLEX N 285")
     assert q2_n285["period"] == "Q2 2025"
-    assert float(q2_n285["sales_quantity"]) == 0.07  # 70 KG → MT
+    assert float(q2_n285["sales_quantity"]) == 70
     assert result.overall_confidence >= 75
     qty_map = next(m for m in result.mapping if m["field"] == "quantity")
     assert qty_map["method"] == "monthly_sum"

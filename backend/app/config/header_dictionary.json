@@ -14,7 +14,11 @@
     "consignee name",
     "name of customer",
     "particulars",
-    "particular"
+    "particular",
+    "sold to",
+    "soldto",
+    "dealer",
+    "dealer name"
   ],
   "product": [
     "product",
@@ -32,7 +36,8 @@
     "description",
     "grade",
     "sku",
-    "product fg code"
+    "product fg code",
+    "commodity"
   ],
   "quantity": [
     "qty",
@@ -45,9 +50,12 @@
     "invoice quantity",
     "net qty",
     "net quantity",
+    "net movement",
     "billed qty",
     "billed quantity",
     "qty kg",
-    "quantity kg"
+    "quantity kg",
+    "bags moved",
+    "movement"
   ]
 }

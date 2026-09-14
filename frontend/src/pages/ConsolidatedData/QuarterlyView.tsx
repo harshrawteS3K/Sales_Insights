@@ -156,7 +156,7 @@ export function QuarterlyView({ quarters, companies }: Props) {
                   {[
                     'Distributor Company',
                     'Quarter',
-                    'Total Quantity (MT)',
+                    'Total Quantity',
                     'Products Sold',
                     'Reports Included',
                     'Periods Included',
@@ -362,7 +362,7 @@ function QuarterlyReportPanel({
               marginTop: 14,
             }}
           >
-            <Stat label="Total Quantity (MT)" value={report.totalQuantityDisplay} />
+            <Stat label="Total Quantity" value={report.totalQuantityDisplay} />
             <Stat label="Products Sold" value={String(report.productsSold)} />
             <Stat label="Customers" value={String(report.customerCount)} />
             <Stat label="Reports Included" value={String(report.reportsIncluded)} />
@@ -462,7 +462,7 @@ function QuarterlyReportPanel({
                   Product{sortMark('product')}
                 </th>
                 <th style={{ ...thStyle, cursor: 'pointer' }} onClick={() => toggleSort('quantity')}>
-                  Quantity (MT){sortMark('quantity')}
+                  Quantity{sortMark('quantity')}
                 </th>
                 <th
                   style={{ ...thStyle, cursor: 'pointer' }}
