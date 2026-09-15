@@ -83,7 +83,10 @@ export const EmailsService = {
   triggerSync: async (reporting_quarter?: string): Promise<{ success: boolean; message: string }> => {
     return apiRequest('/outlook/sync', {
       method: 'POST',
-      body: reporting_quarter ? { reporting_quarter } : {},
+      body: {
+        max_messages: 5,
+        ...(reporting_quarter ? { reporting_quarter } : {}),
+      },
     });
   },
 

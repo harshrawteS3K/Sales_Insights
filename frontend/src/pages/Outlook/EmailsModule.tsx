@@ -19,11 +19,22 @@ import {
 } from '../../services/emails.service';
 import { ApiError, getSession } from '../../api';
 import { isAdminRole } from '../../utils/rbac';
-import { DistributorService } from '../../services/distributor.service';
 
 const QUARTERS = ['Q1 2026', 'Q2 2026', 'Q3 2026', 'Q4 2026', 'Q1 2027', 'Q2 2027'];
 
 const MAP_OPTIONS = ['Customer Name', 'Product', 'Sales Quantity', 'Ignored'] as const;
+
+/** Max unread emails per Sync Outlook click; max ready emails per Proceed batch. */
+const BATCH_LIMIT = 5;
+const MIN_IMPORT_ACCURACY = 75;
+
+type BatchItemResult = {
+  emailId: number;
+  subject: string;
+  status: 'ok' | 'failed' | 'skipped';
+  detail: string;
+  rows?: number;
+};
 
 function confColor(score: number): string {
   if (score >= 90) return '#059669';
@@ -107,7 +118,6 @@ export function EmailsModule() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [mappings, setMappings] = useState<ERPMappingItem[]>([]);
   const [distributorId, setDistributorId] = useState<number | ''>('');
-  const [distributorNameDraft, setDistributorNameDraft] = useState('');
   const [quarter, setQuarter] = useState('Q3 2026');
   const [fiscalYearStart, setFiscalYearStart] = useState(2025);
   const [importDone, setImportDone] = useState<string | null>(null);
@@ -115,7 +125,12 @@ export function EmailsModule() {
   const [consolidateOpen, setConsolidateOpen] = useState(false);
   const [consolidateBusy, setConsolidateBusy] = useState(false);
   const [consolidateError, setConsolidateError] = useState<string | null>(null);
-  const [consolidatePreview, setConsolidatePreview] = useState<ERPPreviewResponse | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{
+    current: number;
+    total: number;
+    label: string;
+  } | null>(null);
+  const [batchResults, setBatchResults] = useState<BatchItemResult[]>([]);
 
   const refreshEmails = async () => {
     const data = await EmailsService.getExtractedEmails();
@@ -146,7 +161,10 @@ export function EmailsModule() {
     try {
       if (isAdmin) {
         const sync = await EmailsService.triggerSync();
-        setSyncMessage(sync.message || 'Outlook sync completed — review emails and Preview to import.');
+        setSyncMessage(
+          sync.message ||
+            `Outlook sync completed (max ${BATCH_LIMIT} unread). Review Accuracy, then Proceed to consolidation.`,
+        );
       } else {
         setSyncMessage('Signed in as user — loading history only (admin required to sync).');
       }
@@ -261,149 +279,193 @@ export function EmailsModule() {
     }
   };
 
-  const targetEmailForConsolidate = useMemo(() => {
-    const pending = emails.filter(
-      e => e.hasExcel && (e.statusLabel || '').toLowerCase() !== 'imported',
-    );
-    if (selectedEmailId != null) {
-      const found = pending.find(e => e.id === selectedEmailId);
-      if (found) return found;
-    }
-    return (
-      pending.find(e => (e.confidenceScore || 0) >= 75) ||
-      pending[0] ||
-      null
-    );
-  }, [emails, selectedEmailId]);
+  const readyEmailsForBatch = useMemo(() => {
+    return emails
+      .filter(
+        e =>
+          e.hasExcel &&
+          (e.statusLabel || '').toLowerCase() !== 'imported' &&
+          (e.statusLabel || '').toLowerCase() !== 'failed' &&
+          (e.confidenceScore || 0) >= MIN_IMPORT_ACCURACY,
+      )
+      .slice(0, BATCH_LIMIT);
+  }, [emails]);
 
-  const openConsolidate = async () => {
+  const pendingLowAccuracyCount = useMemo(
+    () =>
+      emails.filter(
+        e =>
+          e.hasExcel &&
+          (e.statusLabel || '').toLowerCase() !== 'imported' &&
+          (e.confidenceScore || 0) > 0 &&
+          (e.confidenceScore || 0) < MIN_IMPORT_ACCURACY,
+      ).length,
+    [emails],
+  );
+
+  const resolveDistributorId = (data: ERPPreviewResponse): number | null => {
+    if (data.distributor_id != null) return Number(data.distributor_id);
+    const matches = data.distributor_matches || [];
+    if (matches.length === 1 && !data.distributor_unknown) return Number(matches[0].id);
+    return null;
+  };
+
+  const resolveReportingQuarter = (
+    data: ERPPreviewResponse,
+  ): { reporting_quarter: string; fiscal_year_start?: number } => {
+    if (data.monthly_pivot) {
+      const fy = Number(data.fiscal_year_start || fiscalYearStart || 2025);
+      return { reporting_quarter: `Q1 ${fy}`, fiscal_year_start: fy };
+    }
+    const fromRow = (data.rows || [])
+      .map(r => (r.period || r.reporting_quarter || '').trim())
+      .find(Boolean);
+    if (fromRow) return { reporting_quarter: fromRow };
+    return { reporting_quarter: quarter.trim() || 'Q1 2026' };
+  };
+
+  const runBatchConsolidate = async () => {
     setConsolidateError(null);
-    const email = targetEmailForConsolidate;
-    if (!email) {
-      setError('No Excel email available to consolidate. Sync Outlook first.');
+    setBatchResults([]);
+    setError(null);
+
+    const batch = readyEmailsForBatch;
+    if (!batch.length) {
+      if (pendingLowAccuracyCount > 0) {
+        setError(
+          `${pendingLowAccuracyCount} email(s) need Preview (accuracy < ${MIN_IMPORT_ACCURACY}%). Fix mappings there before consolidating.`,
+        );
+      } else {
+        setError(
+          `No ready emails to consolidate (need Excel + accuracy ≥ ${MIN_IMPORT_ACCURACY}%). Sync Outlook or wait for scoring.`,
+        );
+      }
       return;
     }
-    if ((email.confidenceScore || 0) > 0 && (email.confidenceScore || 0) < 75) {
-      setError(
-        `Accuracy is ${email.confidenceScore}% — review mappings in Preview before consolidating.`,
-      );
-      return;
-    }
-    setSelectedEmailId(email.id);
+
     setConsolidateOpen(true);
     setConsolidateBusy(true);
-    setConsolidatePreview(null);
+    setBatchProgress({ current: 0, total: batch.length, label: 'Starting…' });
+
+    const results: BatchItemResult[] = [];
+    let totalRows = 0;
+
     try {
-      const data = await EmailsService.previewEmail(email.id);
-      setConsolidatePreview(data);
-      setDistributorId(data.distributor_id ?? '');
-      const matched =
-        data.distributor_id != null
-          ? (data.distributor_matches || data.all_distributors || []).find(
-              d => d.id === data.distributor_id,
-            )
-          : null;
-      setDistributorNameDraft(
-        matched?.company ||
-          matched?.name ||
-          data.sender_name ||
-          email.senderName ||
-          email.senderEmail.split('@')[0] ||
-          '',
-      );
-      if (data.fiscal_year_start) setFiscalYearStart(Number(data.fiscal_year_start));
-      await refreshEmails();
-    } catch (err) {
-      setConsolidateError(err instanceof ApiError ? err.message : 'Failed to prepare workbook');
-    } finally {
-      setConsolidateBusy(false);
-    }
-  };
-
-  const ensureDistributorId = async (): Promise<number> => {
-    const email = targetEmailForConsolidate;
-    if (!email) throw new Error('No email selected');
-    const company =
-      distributorNameDraft.trim() ||
-      email.senderName?.trim() ||
-      email.senderEmail.split('@')[0] ||
-      'Unknown Distributor';
-
-    if (distributorId) {
-      const id = Number(distributorId);
-      const selected = distributorOptions.find(d => d.id === id);
-      const currentLabel = (selected?.company || selected?.name || '').trim();
-      if (company && company !== currentLabel) {
-        await DistributorService.update(id, { company, name: company });
+      for (let i = 0; i < batch.length; i++) {
+        const email = batch[i];
+        setBatchProgress({
+          current: i + 1,
+          total: batch.length,
+          label: email.subject || email.senderEmail || `Email #${email.id}`,
+        });
+        try {
+          const data = await EmailsService.previewEmail(
+            email.id,
+            undefined,
+            fiscalYearStart || undefined,
+          );
+          const accuracy = data.confidence?.overall ?? email.confidenceScore ?? 0;
+          if (accuracy < MIN_IMPORT_ACCURACY) {
+            results.push({
+              emailId: email.id,
+              subject: email.subject,
+              status: 'skipped',
+              detail: `Accuracy ${Math.round(accuracy)}% — use Preview`,
+            });
+            setBatchResults([...results]);
+            continue;
+          }
+          const distId = resolveDistributorId(data);
+          if (distId == null) {
+            results.push({
+              emailId: email.id,
+              subject: email.subject,
+              status: 'skipped',
+              detail: 'Distributor not matched — use Preview to map',
+            });
+            setBatchResults([...results]);
+            continue;
+          }
+          if (data.fiscal_year_start) setFiscalYearStart(Number(data.fiscal_year_start));
+          const periodArgs = resolveReportingQuarter(data);
+          const result = await EmailsService.importErp({
+            email_id: email.id,
+            distributor_id: distId,
+            reporting_quarter: periodArgs.reporting_quarter,
+            fiscal_year_start: periodArgs.fiscal_year_start,
+            rows: data.rows,
+          });
+          totalRows += result.records_inserted || 0;
+          const qLabel =
+            result.quarters_imported?.length
+              ? result.quarters_imported.join(', ')
+              : result.reporting_quarter;
+          results.push({
+            emailId: email.id,
+            subject: email.subject,
+            status: 'ok',
+            detail: `${result.records_inserted} rows (${qLabel})`,
+            rows: result.records_inserted,
+          });
+        } catch (err) {
+          results.push({
+            emailId: email.id,
+            subject: email.subject,
+            status: 'failed',
+            detail: err instanceof ApiError ? err.message : 'Import failed',
+          });
+        }
+        setBatchResults([...results]);
       }
-      return id;
-    }
 
-    // Do NOT attach sender mailbox email — identity is the typed distributor name.
-    const created = await DistributorService.create({
-      name: company,
-      company,
-      is_active: true,
-    });
-    setDistributorId(created.id);
-    return created.id;
-  };
-
-  const proceedToConsolidation = async () => {
-    const email = targetEmailForConsolidate;
-    if (!email || !consolidatePreview) return;
-    const accuracy = consolidatePreview.confidence?.overall ?? email.confidenceScore ?? 0;
-    if (accuracy < 75) {
-      setConsolidateError(
-        `Accuracy is ${Math.round(accuracy)}%. Review column mappings in Preview before consolidating.`,
+      const refreshed = await EmailsService.getExtractedEmails();
+      setEmails(refreshed);
+      setSelectedEmailId(prev =>
+        prev != null && refreshed.some(e => e.id === prev) ? prev : null,
       );
-      return;
-    }
-    if (!consolidatePreview.monthly_pivot && !quarter.trim()) {
-      setConsolidateError('Select a reporting quarter');
-      return;
-    }
-    if (!distributorNameDraft.trim() && !distributorId) {
-      setConsolidateError('Enter a distributor name before importing');
-      return;
-    }
-    setConsolidateBusy(true);
-    setConsolidateError(null);
-    try {
-      const distId = await ensureDistributorId();
-      const result = await EmailsService.importErp({
-        email_id: email.id,
-        distributor_id: distId,
-        reporting_quarter: consolidatePreview.monthly_pivot
-          ? `Q1 ${fiscalYearStart}`
-          : quarter,
-        fiscal_year_start: consolidatePreview.monthly_pivot ? fiscalYearStart : undefined,
-        rows: consolidatePreview.rows,
-      });
-      setConsolidateOpen(false);
-      const qLabel =
-        result.quarters_imported?.length
-          ? result.quarters_imported.join(', ')
-          : result.reporting_quarter;
+
+      const ok = results.filter(r => r.status === 'ok').length;
+      const skipped = results.filter(r => r.status === 'skipped').length;
+      const failed = results.filter(r => r.status === 'failed').length;
+      const stillReady = refreshed.filter(
+        e =>
+          e.hasExcel &&
+          (e.statusLabel || '').toLowerCase() !== 'imported' &&
+          (e.statusLabel || '').toLowerCase() !== 'failed' &&
+          (e.confidenceScore || 0) >= MIN_IMPORT_ACCURACY,
+      ).length;
+
       setSyncMessage(
-        `Imported ${result.records_inserted} rows for ${qLabel}. Opening Consolidated Data…`,
+        `Batch consolidate: ${ok} imported (${totalRows} rows), ${skipped} skipped, ${failed} failed.` +
+          (stillReady > 0
+            ? ` ${stillReady} ready left — click Proceed again (max ${BATCH_LIMIT}).`
+            : '') +
+          (ok > 0 ? ' Opening Consolidated Data…' : ''),
       );
-      await refreshEmails();
-      navigate('/consolidated-data');
-    } catch (err) {
-      setConsolidateError(err instanceof ApiError ? err.message : 'Consolidation import failed');
+      setBatchProgress(null);
+      if (ok > 0) {
+        window.setTimeout(() => {
+          setConsolidateOpen(false);
+          navigate('/consolidated-data');
+        }, 1100);
+      } else {
+        setConsolidateError(
+          'No emails were imported. Fix skipped items via Preview, then try again.',
+        );
+      }
     } finally {
       setConsolidateBusy(false);
+      setBatchProgress(null);
     }
   };
 
   const distributorOptions = useMemo(() => {
-    const matches = (consolidatePreview || preview)?.distributor_matches || [];
-    const all = (consolidatePreview || preview)?.all_distributors || [];
+    const matches = preview?.distributor_matches || [];
+    const all = preview?.all_distributors || [];
     if (matches.length > 1) return matches;
-    if (matches.length === 1 && !(consolidatePreview || preview)?.distributor_unknown) return matches;
+    if (matches.length === 1 && !preview?.distributor_unknown) return matches;
     return all.length ? all : matches;
-  }, [preview, consolidatePreview]);
+  }, [preview]);
 
   return (
     <div style={{ padding: '28px 32px', fontFamily: "'Inter', system-ui, sans-serif", maxWidth: 1200 }}>
@@ -428,12 +490,18 @@ export function EmailsModule() {
         </div>
         <button
           type="button"
-          onClick={() => void openConsolidate()}
+          onClick={() => void runBatchConsolidate()}
           style={btnPrimary}
-          disabled={!targetEmailForConsolidate || consolidateBusy}
+          disabled={consolidateBusy || (!readyEmailsForBatch.length && !emails.some(e => e.hasExcel))}
+          title={
+            readyEmailsForBatch.length
+              ? `Import up to ${BATCH_LIMIT} ready emails (accuracy ≥ ${MIN_IMPORT_ACCURACY}%)`
+              : `Need Excel emails with accuracy ≥ ${MIN_IMPORT_ACCURACY}%`
+          }
         >
-          {consolidateBusy && consolidateOpen ? <Loader2 size={15} /> : null}
+          {consolidateBusy ? <Loader2 size={15} className="spin" /> : null}
           Proceed to consolidation
+          {readyEmailsForBatch.length > 0 ? ` (${Math.min(readyEmailsForBatch.length, BATCH_LIMIT)})` : ''}
           <ArrowRight size={15} />
         </button>
       </div>
@@ -468,7 +536,8 @@ export function EmailsModule() {
           <div>
             <div style={{ fontWeight: 700, color: '#111827' }}>Outlook Sync</div>
             <div style={{ fontSize: '0.8125rem', color: '#6B7280' }}>
-              Downloads Excel only — import happens after you Preview and Approve.
+              Pulls up to {BATCH_LIMIT} unread Excel emails per sync. Import with Proceed (batch of{' '}
+              {BATCH_LIMIT}).
             </div>
           </div>
         </div>
@@ -978,7 +1047,8 @@ export function EmailsModule() {
           onClick={() => {
             if (!consolidateBusy) {
               setConsolidateOpen(false);
-              setConsolidatePreview(null);
+              setBatchResults([]);
+              setConsolidateError(null);
             }
           }}
         >
@@ -993,33 +1063,51 @@ export function EmailsModule() {
             }}
             onClick={e => e.stopPropagation()}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 12,
+              }}
+            >
               <h2 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 700, color: '#111827' }}>
-                Proceed to consolidation
+                Batch consolidation
               </h2>
               <button
                 type="button"
-                style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}
+                style={{ border: 'none', background: 'transparent', cursor: consolidateBusy ? 'default' : 'pointer' }}
+                disabled={consolidateBusy}
                 onClick={() => {
-                  if (!consolidateBusy) {
-                    setConsolidateOpen(false);
-                    setConsolidatePreview(null);
-                  }
+                  setConsolidateOpen(false);
+                  setBatchResults([]);
+                  setConsolidateError(null);
                 }}
               >
                 <X size={18} />
               </button>
             </div>
             <p style={{ margin: '0 0 16px', fontSize: '0.875rem', color: '#6B7280' }}>
-              Import all extracted rows into Consolidated Data (Customer, Product, Sales Quantity),
-              then open that tab.
+              Importing up to {BATCH_LIMIT} ready emails (Excel + accuracy ≥ {MIN_IMPORT_ACCURACY}% +
+              matched distributor). Others stay for Preview.
             </p>
 
-            {consolidateBusy && !consolidatePreview ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: BLUE, marginBottom: 12 }}>
-                <Loader2 size={16} /> Preparing workbook…
+            {batchProgress && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  color: BLUE,
+                  marginBottom: 14,
+                  fontSize: '0.875rem',
+                  fontWeight: 600,
+                }}
+              >
+                <Loader2 size={16} className="spin" />
+                Importing {batchProgress.current}/{batchProgress.total}: {batchProgress.label}
               </div>
-            ) : null}
+            )}
 
             {consolidateError && (
               <div
@@ -1036,144 +1124,77 @@ export function EmailsModule() {
               </div>
             )}
 
-            {consolidatePreview && (
-              <>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1fr 1fr',
-                    gap: 10,
-                    marginBottom: 14,
-                    padding: 12,
-                    background: '#F9FAFB',
-                    borderRadius: 8,
-                    border: `1px solid ${BORDER}`,
-                  }}
-                >
-                  <Info label="Workbook" value={consolidatePreview.workbook_name || '—'} />
-                  <Info
-                    label="Accuracy"
-                    value={`${Math.round(consolidatePreview.confidence?.overall || 0)}%`}
-                    valueColor={confColor(consolidatePreview.confidence?.overall || 0)}
-                  />
-                  <Info label="Rows to import" value={String(consolidatePreview.row_count)} />
-                  <Info label="Sheet" value={consolidatePreview.sheet_name || '—'} />
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
-                  <div>
-                    <label style={labelStyle}>Distributor name</label>
-                    <input
-                      value={distributorNameDraft}
-                      onChange={e => {
-                        setDistributorNameDraft(e.target.value);
-                        // Typing a custom name = create/update path; clear forced pick
-                        if (!e.target.value.trim()) setDistributorId('');
-                      }}
-                      placeholder="Enter distributor company name"
-                      style={{
-                        ...selectStyle,
-                        width: '100%',
-                      }}
-                    />
-                    <div style={{ fontSize: '0.75rem', color: '#6B7280', marginTop: 6 }}>
-                      {distributorId
-                        ? 'Linked to an existing distributor — name will be updated on import if you change it.'
-                        : 'No match yet — a new distributor will be created with this name.'}
-                    </div>
-                  </div>
-                  {distributorOptions.length > 0 && (
-                    <div>
-                      <label style={labelStyle}>Or pick existing distributor</label>
-                      <select
-                        value={distributorId}
-                        onChange={e => {
-                          const id = e.target.value ? Number(e.target.value) : '';
-                          setDistributorId(id);
-                          if (id) {
-                            const opt = distributorOptions.find(d => d.id === id);
-                            if (opt) setDistributorNameDraft(opt.company || opt.name || '');
-                          }
-                        }}
-                        style={selectStyle}
-                      >
-                        <option value="">Create new from name above</option>
-                        {distributorOptions.map(d => (
-                          <option key={d.id} value={d.id}>
-                            {d.company}
-                            {d.email ? ` (${d.email})` : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                  <div style={{ flex: '0 1 180px', maxWidth: 280 }}>
-                    <label style={labelStyle}>
-                      {consolidatePreview.monthly_pivot
-                        ? 'Fiscal Year Start (Apr)'
-                        : 'Reporting Quarter'}
-                    </label>
-                    {consolidatePreview.monthly_pivot ? (
-                      <select
-                        value={fiscalYearStart}
-                        onChange={e => setFiscalYearStart(Number(e.target.value))}
-                        style={selectStyle}
-                      >
-                        {[2024, 2025, 2026, 2027].map(y => (
-                          <option key={y} value={y}>
-                            FY {y}-{String(y + 1).slice(-2)}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <select
-                        value={quarter}
-                        onChange={e => setQuarter(e.target.value)}
-                        style={selectStyle}
-                      >
-                        {QUARTERS.map(q => (
-                          <option key={q} value={q}>
-                            {q}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                </div>
-              </>
+            {batchResults.length > 0 && (
+              <div
+                style={{
+                  maxHeight: 260,
+                  overflow: 'auto',
+                  border: `1px solid ${BORDER}`,
+                  borderRadius: 8,
+                  marginBottom: 14,
+                }}
+              >
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
+                  <thead>
+                    <tr style={{ background: '#F3F4F6' }}>
+                      <th style={th}>Email</th>
+                      <th style={th}>Status</th>
+                      <th style={th}>Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {batchResults.map(r => (
+                      <tr key={r.emailId} style={{ borderBottom: `1px solid ${BORDER}` }}>
+                        <td style={{ ...td, maxWidth: 160 }}>{r.subject || `#${r.emailId}`}</td>
+                        <td
+                          style={{
+                            ...td,
+                            fontWeight: 700,
+                            color:
+                              r.status === 'ok'
+                                ? '#059669'
+                                : r.status === 'skipped'
+                                  ? '#B45309'
+                                  : RED,
+                          }}
+                        >
+                          {r.status}
+                        </td>
+                        <td style={td}>{r.detail}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button
-                type="button"
-                style={btnSecondary}
-                disabled={consolidateBusy}
-                onClick={() => {
-                  setConsolidateOpen(false);
-                  setConsolidatePreview(null);
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                style={{
-                  ...btnPrimary,
-                  background:
-                    consolidatePreview && (consolidatePreview.confidence?.overall || 0) >= 75
-                      ? BLUE
-                      : '#9CA3AF',
-                }}
-                disabled={
-                  consolidateBusy ||
-                  !consolidatePreview ||
-                  (consolidatePreview.confidence?.overall || 0) < 75
-                }
-                onClick={() => void proceedToConsolidation()}
-              >
-                {consolidateBusy ? 'Importing…' : 'Import & open Consolidated'}
-              </button>
-            </div>
+            {!consolidateBusy && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button
+                  type="button"
+                  style={btnSecondary}
+                  onClick={() => {
+                    setConsolidateOpen(false);
+                    setBatchResults([]);
+                    setConsolidateError(null);
+                  }}
+                >
+                  Close
+                </button>
+                {batchResults.some(r => r.status === 'ok') && (
+                  <button
+                    type="button"
+                    style={btnPrimary}
+                    onClick={() => {
+                      setConsolidateOpen(false);
+                      navigate('/consolidated-data');
+                    }}
+                  >
+                    Open Consolidated Data
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

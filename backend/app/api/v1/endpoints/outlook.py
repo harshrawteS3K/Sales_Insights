@@ -31,13 +31,14 @@ def trigger_outlook_sync(
     payload: OutlookSyncRequest | None = None,
 ) -> OutlookSyncResponse:
     """
-    Sync unread Outlook emails, download Excel attachments, ingest sales data,
-    and mark messages as read on success (Admin).
+    Sync up to 5 unread Outlook emails per run, download Excel attachments,
+    score accuracy, and mark messages as read on success (Admin).
+    Click Sync again for the next batch of unread mail.
     """
     request = payload or OutlookSyncRequest()
     job = service.sync(request, actor=current.name)
     return OutlookSyncResponse(
-        message=f"Outlook sync {job.status}",
+        message=f"Outlook sync {job.status} (max {request.max_messages} unread)",
         job=SyncJobResponse.model_validate(job),
     )
 

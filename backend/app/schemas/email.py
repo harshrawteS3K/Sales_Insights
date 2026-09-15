@@ -95,8 +95,8 @@ class OutlookSyncRequest(BaseModel):
 
     mailbox: Optional[str] = None
     mark_as_read: bool = True
-    # Cap per sync run; Graph pages via @odata.nextLink until this limit.
-    max_messages: int = Field(default=50, ge=1, le=5000)
+    # Cap per sync run (Emails work-queue batch size). Graph pages until this limit.
+    max_messages: int = Field(default=5, ge=1, le=5)
     # Reporting quarter for ERP ingest (not read from Excel). Example: "Q3 2026".
     reporting_quarter: Optional[str] = None
 
