@@ -43,11 +43,25 @@ class EmailMessageRepository(BaseRepository[EmailMessage]):
         return self.db.scalar(query)
 
     def list_extracted(self, *, skip: int = 0, limit: int = 200) -> List[EmailMessage]:
-        """List extracted emails newest first."""
+        """List Emails-tab queue: newest first, exclude already consolidated.
+
+        ``inserted`` / ``marked_read`` stay in DB for audit/re-check but are
+        hidden from the work queue after successful consolidation.
+        """
+        from app.enums import EmailProcessStatus
+
         query = (
             select(EmailMessage)
             .options(selectinload(EmailMessage.attachments))
-            .where(EmailMessage.is_deleted.is_(False))
+            .where(
+                EmailMessage.is_deleted.is_(False),
+                EmailMessage.process_status.notin_(
+                    [
+                        EmailProcessStatus.INSERTED.value,
+                        EmailProcessStatus.MARKED_READ.value,
+                    ]
+                ),
+            )
             .order_by(EmailMessage.received_at.desc())
             .offset(skip)
             .limit(limit)

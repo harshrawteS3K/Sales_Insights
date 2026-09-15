@@ -213,11 +213,60 @@ class ERPIngestService:
         return preview
 
     def _available_columns(self, path: Path, sheet_name: Optional[str]) -> List[Dict[str, Any]]:
-        if not sheet_name:
-            sheet_name, _ = detect_best_sheet(path)
-        matrix = read_sheet_matrix(path, sheet_name)
-        header_info = detect_header_row(matrix)
-        header_row = list(matrix[header_info["header_row_index"]]) if matrix else []
+        """Return header cells for remapping UI. Never pass fake multi-sheet labels."""
+        from openpyxl import load_workbook
+
+        from app.erp_parser.workbook_detector import resolve_sheet_name
+
+        real_name = (sheet_name or "").strip()
+        # Guard: monthly-sheets display labels like "Apr-25, May-25, Jun-25…"
+        if (
+            not real_name
+            or "," in real_name
+            or real_name.endswith("…")
+            or real_name.endswith("...")
+        ):
+            real_name = ""
+        else:
+            try:
+                real_name = resolve_sheet_name(path, real_name)
+            except Exception:  # noqa: BLE001
+                real_name = ""
+
+        if not real_name:
+            try:
+                real_name, _ = detect_best_sheet(path, allow_llm_fallback=True)
+            except Exception:  # noqa: BLE001
+                try:
+                    wb = load_workbook(path, read_only=True, data_only=True)
+                    names = list(wb.sheetnames)
+                    wb.close()
+                    real_name = names[0] if names else ""
+                except Exception:  # noqa: BLE001
+                    return []
+
+        if not real_name:
+            return []
+
+        try:
+            matrix = read_sheet_matrix(path, real_name)
+        except Exception:  # noqa: BLE001
+            return []
+
+        # Prefer product-matrix header row when present (Particulars | Product…)
+        try:
+            from app.erp_parser.monthly_product_sheets import _find_product_header_row
+
+            product_header = _find_product_header_row(matrix)
+        except Exception:  # noqa: BLE001
+            product_header = None
+
+        if product_header:
+            header_row = list(matrix[int(product_header["header_row_index"])]) if matrix else []
+        else:
+            header_info = detect_header_row(matrix)
+            header_row = list(matrix[header_info["header_row_index"]]) if matrix else []
+
         cols = []
         for i, h in enumerate(header_row):
             text = str(h).strip() if h is not None else ""
@@ -472,6 +521,23 @@ class ERPIngestService:
                 raw.get("period") or raw.get("reporting_quarter") or quarter or ""
             ).strip()
             if not period:
+                continue
+            # Aggregate duplicates within the same quarter before persist
+            existing = next(
+                (
+                    r
+                    for r in by_period[period]
+                    if r.customer_name.casefold() == customer.casefold()
+                    and r.product.casefold() == product.casefold()
+                ),
+                None,
+            )
+            if existing is not None:
+                existing.quantity = Decimal(str(existing.quantity)) + Decimal(str(qty_val))
+                existing.quantity_display = str(existing.quantity)
+                existing.row_hash = build_sales_row_hash(
+                    company, existing.customer_name, "", existing.product, existing.quantity, period
+                )
                 continue
             by_period[period].append(
                 ParsedSalesRow(

@@ -65,6 +65,36 @@ def list_candidate_sheets(path: Union[str, Path]) -> List[str]:
         wb.close()
 
 
+def resolve_sheet_name(path: Union[str, Path], sheet_name: str) -> str:
+    """Resolve a sheet title with exact, casefold, and fuzzy contains matching."""
+    wanted = (sheet_name or "").strip()
+    if not wanted:
+        raise ExcelProcessingError("Sheet name is empty")
+    # Never treat multi-sheet display labels as real titles
+    if "," in wanted or wanted.endswith("…") or wanted.endswith("..."):
+        raise ExcelProcessingError(f"Sheet not found: {wanted}")
+
+    wb = load_workbook_safe(path)
+    try:
+        names = list(wb.sheetnames)
+    finally:
+        wb.close()
+
+    if wanted in names:
+        return wanted
+    folded = {n.casefold(): n for n in names}
+    if wanted.casefold() in folded:
+        return folded[wanted.casefold()]
+    # Prefix / contains (e.g. "Apr-25" vs "Apr-25 ")
+    for n in names:
+        if n.strip().casefold() == wanted.casefold():
+            return n
+    for n in names:
+        if wanted.casefold() in n.casefold() or n.casefold() in wanted.casefold():
+            return n
+    raise ExcelProcessingError(f"Sheet not found: {wanted}")
+
+
 def read_sheet_matrix(
     path: Union[str, Path],
     sheet_name: str,
@@ -73,11 +103,10 @@ def read_sheet_matrix(
     max_cols: int = 60,
 ) -> List[List[Any]]:
     """Read a worksheet into a dense matrix of cell values (merged cells unwrapped)."""
+    resolved = resolve_sheet_name(path, sheet_name)
     wb = load_workbook_safe(path)
     try:
-        if sheet_name not in wb.sheetnames:
-            raise ExcelProcessingError(f"Sheet not found: {sheet_name}")
-        ws = wb[sheet_name]
+        ws = wb[resolved]
 
         # Unwrap merged cells so header/title spans appear in every covered cell.
         merged_map: dict[tuple[int, int], Any] = {}

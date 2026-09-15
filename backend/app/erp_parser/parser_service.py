@@ -22,6 +22,7 @@ from app.erp_parser.llm_header_resolver import (
     sanitize_headers,
     sanitize_sample_rows,
 )
+from app.erp_parser.monthly_product_sheets import extract_monthly_product_sheets
 from app.erp_parser.row_extractor import extract_rows
 from app.erp_parser.sheet_detector import detect_best_sheet
 from app.erp_parser.workbook_detector import detect_workbook, read_sheet_matrix
@@ -234,19 +235,103 @@ class ERPParserService:
         wb_info = detect_workbook(file_path)
         candidates = wb_info["candidate_sheets"]
 
+        # Multi-sheet monthly product matrix (NORTH CHOWDHRY: Apr-25…Mar-26 tabs)
+        monthly_sheets = extract_monthly_product_sheets(
+            file_path,
+            fiscal_year_start=fiscal_year_start,
+            reporting_quarter=reporting_quarter,
+        )
+        if monthly_sheets and monthly_sheets.get("rows"):
+            field_conf = {"customer": 96.0, "product": 96.0, "quantity": 94.0}
+            confidence = compute_erp_confidence(
+                field_confidences=field_conf,
+                sheet_score=float(monthly_sheets.get("score") or 80),
+                extracted_rows=len(monthly_sheets["rows"]),
+                quantity_ok=monthly_sheets["quantity_ok"],
+                quantity_fail=monthly_sheets["quantity_fail"],
+                skipped_invalid=monthly_sheets["skipped_invalid"],
+            )
+            sheets_used = monthly_sheets.get("sheets_used") or []
+            sheet_label = ", ".join(sheets_used[:3]) + ("…" if len(sheets_used) > 3 else "")
+            primary_sheet = sheets_used[0] if sheets_used else "monthly sheets"
+            active_mapped = {
+                "positions": {"customer": 0, "product": None, "quantity": None},
+                "originals": {
+                    "customer": "Particulars",
+                    "product": "Product columns per month sheet",
+                    "quantity": "Month sheets → quarterly totals",
+                },
+                "confidences": field_conf,
+                "methods": {
+                    "customer": "monthly_sheets",
+                    "product": "monthly_sheets",
+                    "quantity": "monthly_sum",
+                },
+                "quantity_columns": [],
+                "month_column_meta": [],
+            }
+            logger.info(
+                "ERP monthly product sheets detected | sheets={} | rows={} | score={}",
+                len(sheets_used),
+                len(monthly_sheets["rows"]),
+                monthly_sheets.get("score"),
+            )
+            result = self._finalize_result(
+                chosen=primary_sheet,
+                sheet_score=float(monthly_sheets.get("score") or 80),
+                header_row=1,
+                active_mapped=active_mapped,
+                active_extracted=monthly_sheets,
+                confidence=confidence,
+                mapping_source="python",
+                candidates=candidates,
+                distributor_label=distributor_label,
+                reporting_quarter=reporting_quarter,
+                python_overall=float(confidence["overall_confidence"]),
+            )
+            # Keep a human label for UI without breaking sheet lookups
+            if sheet_label and sheet_label != primary_sheet:
+                result.sheet_name = primary_sheet
+                result.confidence_breakdown = {
+                    **(result.confidence_breakdown or {}),
+                    "sheet_label": sheet_label,
+                    "sheets_used": sheets_used,
+                }
+            return result
+
         if sheet_name:
-            if sheet_name not in candidates and sheet_name not in (candidates or []):
-                chosen = sheet_name
-                sheet_score = 0.0
-            else:
-                chosen = sheet_name
+            try:
+                from app.erp_parser.workbook_detector import resolve_sheet_name
+
+                chosen = resolve_sheet_name(file_path, sheet_name)
                 from app.erp_parser.sheet_detector import score_sheet
 
                 sheet_score = score_sheet(read_sheet_matrix(file_path, chosen))
+            except Exception:  # noqa: BLE001
+                chosen, sheet_score = detect_best_sheet(
+                    file_path, allow_llm_fallback=allow_llm_fallback
+                )
         else:
-            chosen, sheet_score = detect_best_sheet(file_path)
+            chosen, sheet_score = detect_best_sheet(
+                file_path, allow_llm_fallback=allow_llm_fallback
+            )
 
-        matrix = read_sheet_matrix(file_path, chosen)
+        try:
+            matrix = read_sheet_matrix(file_path, chosen)
+        except Exception as exc:  # noqa: BLE001
+            if not allow_llm_fallback:
+                raise ExcelProcessingError(f"Unable to read sheet '{chosen}': {exc}") from exc
+            try:
+                from app.erp_parser.llm_sheet_resolver import LLMSheetResolver
+
+                chosen, sheet_score = LLMSheetResolver().pick_sheet(
+                    file_path, candidates=candidates
+                )
+                matrix = read_sheet_matrix(file_path, chosen)
+            except Exception as llm_exc:  # noqa: BLE001
+                raise ExcelProcessingError(
+                    f"Unable to open a sales sheet in this workbook: {llm_exc}"
+                ) from llm_exc
         if not matrix:
             raise ExcelProcessingError(f"Sheet '{chosen}' has no readable cells")
 
@@ -382,7 +467,10 @@ class ERPParserService:
             and active_extracted.get("rows")
             and active_confidence is not None
             and (
-                active_extracted.get("layout") == "product_month_matrix"
+                active_extracted.get("layout") in {
+                    "product_month_matrix",
+                    "monthly_product_sheets",
+                }
                 or _mapping_complete(
                     active_mapped["positions"],
                     active_mapped.get("quantity_columns") or [],
@@ -395,8 +483,36 @@ class ERPParserService:
                 "Please verify the ERP export has recognizable headers."
             )
 
+        return self._finalize_result(
+            chosen=chosen,
+            sheet_score=sheet_score,
+            header_row=header_info["header_row"],
+            active_mapped=active_mapped,
+            active_extracted=active_extracted,
+            confidence=active_confidence,
+            mapping_source=mapping_source,
+            candidates=candidates,
+            distributor_label=distributor_label,
+            reporting_quarter=reporting_quarter,
+            python_overall=python_overall,
+        )
+
+    def _finalize_result(
+        self,
+        *,
+        chosen: str,
+        sheet_score: float,
+        header_row: int,
+        active_mapped: Dict[str, Any],
+        active_extracted: Dict[str, Any],
+        confidence: Dict[str, Any],
+        mapping_source: str,
+        candidates: List[str],
+        distributor_label: str,
+        reporting_quarter: Optional[str],
+        python_overall: float,
+    ) -> ERPParseResult:
         raw_rows: List[Dict[str, Any]] = active_extracted["rows"]
-        confidence = active_confidence
 
         mapping_list: List[Dict[str, Any]] = []
         for field in ("customer", "product", "quantity"):
@@ -427,7 +543,7 @@ class ERPParserService:
                 sr_no=None,
                 distributor=dist_label,
                 customer_name=raw["customer_name"],
-                segment="",  # not used in ERP pipeline; DB NOT NULL → empty string
+                segment="",
                 product=raw["product"],
                 quantity=qty,
                 quantity_display=str(raw.get("sales_quantity_display") or qty),
@@ -460,7 +576,7 @@ class ERPParserService:
         result = ERPParseResult(
             sheet_name=chosen,
             sheet_score=sheet_score,
-            header_row=header_info["header_row"],
+            header_row=header_row,
             column_positions=column_positions,
             mapping=mapping_list,
             rows=[
@@ -477,9 +593,9 @@ class ERPParserService:
                 for r in raw_rows
             ],
             parsed_rows=parsed_rows,
-            expected_rows=len(raw_rows) + active_extracted["skipped_invalid"],
+            expected_rows=len(raw_rows) + int(active_extracted.get("skipped_invalid") or 0),
             imported_rows=len(raw_rows),
-            incomplete_rows=active_extracted["skipped_invalid"],
+            incomplete_rows=int(active_extracted.get("skipped_invalid") or 0),
             quality_score=quality,
             overall_confidence=confidence["overall_confidence"],
             customer_confidence=confidence["customer_confidence"],
@@ -492,6 +608,7 @@ class ERPParserService:
                 "monthly_pivot": active_extracted.get("monthly_pivot"),
                 "mapping_source": mapping_source,
                 "python_confidence": python_overall,
+                "layout": active_extracted.get("layout"),
             },
             row_errors=active_extracted.get("errors") or [],
             candidate_sheets=candidates,

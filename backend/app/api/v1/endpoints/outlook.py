@@ -89,9 +89,11 @@ def list_emails(
     limit: int = Query(200, ge=1, le=500),
 ) -> List[FrontendEmailRecord]:
     """
-    GET /api/emails — Email Processing History (not live Outlook inbox).
+    GET /api/emails — Emails work queue (not live Outlook inbox).
 
-    Rows are stored processing records in Sales Insights.
+    Returns stored processing records that still need action.
+    Already consolidated emails (``inserted`` / ``marked_read``) stay in the
+    database but are omitted from this list.
     """
     messages = service.list_emails(skip=skip, limit=limit)
     return service.to_frontend_emails(messages)

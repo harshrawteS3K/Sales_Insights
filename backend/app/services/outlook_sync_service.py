@@ -51,7 +51,7 @@ class OutlookSyncService:
         self.audit = AuditService(db)
 
     def list_emails(self, *, skip: int = 0, limit: int = 200) -> List[EmailMessage]:
-        """List stored email metadata."""
+        """List Emails-tab work queue (excludes already consolidated)."""
         return self.emails.list_extracted(skip=skip, limit=limit)
 
     def to_frontend_emails(self, messages: List[EmailMessage]) -> List[FrontendEmailRecord]:
@@ -96,34 +96,21 @@ class OutlookSyncService:
                 }
             ):
                 try:
-                    from app.erp_parser import ERPParserService
+                    from app.services.erp_score_queue import enqueue_email_score, is_pending
 
                     path = Path(excel_path)
                     if path.is_file():
-                        # Python-only scoring on list refresh — never call OpenAI here.
-                        # Skip re-parse when a score already exists to avoid Accuracy flicker.
-                        if msg.confidence_score is not None and int(msg.confidence_score) > 0:
-                            if msg.process_status in {
-                                EmailProcessStatus.UNREAD.value,
-                                EmailProcessStatus.DOWNLOADED.value,
-                            }:
-                                msg.process_status = EmailProcessStatus.PARSED.value
-                                self.db.flush()
-                        else:
-                            preview = ERPParserService().preview(
-                                path, allow_llm_fallback=False
-                            )
-                            overall = float(
-                                (preview.get("confidence") or {}).get("overall") or 0
-                            )
-                            score = int(round(overall))
-                            if msg.confidence_score != score:
-                                msg.confidence_score = score
-                            if msg.process_status in {
-                                EmailProcessStatus.UNREAD.value,
-                                EmailProcessStatus.DOWNLOADED.value,
-                            }:
-                                msg.process_status = EmailProcessStatus.PARSED.value
+                        # Never re-parse synchronously on list load (latency + OpenAI).
+                        # Queue background score when accuracy is still pending.
+                        score = msg.confidence_score
+                        if score is None or int(score) <= 0:
+                            if not is_pending(int(msg.id)):
+                                enqueue_email_score(int(msg.id), allow_llm=True)
+                        elif msg.process_status in {
+                            EmailProcessStatus.UNREAD.value,
+                            EmailProcessStatus.DOWNLOADED.value,
+                        }:
+                            msg.process_status = EmailProcessStatus.PARSED.value
                             self.db.flush()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
@@ -728,33 +715,29 @@ class OutlookSyncService:
                 )
 
             email.process_status = EmailProcessStatus.DOWNLOADED.value
+            # Fast sync: download only. Accuracy scoring runs in background queue
+            # (Python layouts first, then LLM header fallback when needed).
+            email.confidence_score = 0
+            email.error_message = None
+            self.db.flush()
 
-            # Score extraction quality without importing (Accuracy column in UI).
-            # Python-only — LLM runs only on explicit Preview / Approve Import.
             try:
-                from app.erp_parser import ERPParserService
+                from app.services.erp_score_queue import enqueue_email_score
 
-                preview = ERPParserService().preview(Path(path), allow_llm_fallback=False)
-                overall = float((preview.get("confidence") or {}).get("overall") or 0)
-                email.confidence_score = int(round(overall))
-                email.process_status = EmailProcessStatus.PARSED.value
-                email.error_message = None
+                enqueue_email_score(int(email.id), allow_llm=True)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "ERP accuracy score failed after download | file={} | err={}",
-                    file_name,
+                    "ERP score enqueue failed | email_id={} | err={}",
+                    email.id,
                     exc,
                 )
-                email.confidence_score = 0
-                email.error_message = f"Extraction accuracy check failed: {exc}"
 
-            # Download + score only — import happens after admin Preview / Approve.
+            # Download only — import happens after admin Preview / Approve.
             any_success = True
             logger.info(
-                "Attachment downloaded (awaiting preview/import) | message_id={} | file={} | confidence={}",
+                "Attachment downloaded (score queued) | message_id={} | file={}",
                 graph_id,
                 file_name,
-                email.confidence_score,
             )
 
         self.audit.log(

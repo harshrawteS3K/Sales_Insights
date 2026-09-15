@@ -5,11 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, List, Sequence, Tuple, Union
 
+from app.core.logging import get_logger
 from app.erp_parser.header_mapper import (
     best_field_match,
     normalize_header_text,
 )
 from app.erp_parser.workbook_detector import list_candidate_sheets, read_sheet_matrix
+
+logger = get_logger(__name__)
 
 
 def _populated_cells(matrix: Sequence[Sequence[Any]], *, max_rows: int = 80) -> Tuple[int, int]:
@@ -73,18 +76,46 @@ def score_sheet(matrix: Sequence[Sequence[Any]]) -> float:
     return round(density + header_pts + triad_bonus, 2)
 
 
-def detect_best_sheet(path: Union[str, Path]) -> Tuple[str, float]:
+def detect_best_sheet(
+    path: Union[str, Path],
+    *,
+    allow_llm_fallback: bool = True,
+    min_score: float = 25.0,
+) -> Tuple[str, float]:
     """
     Choose the highest-scoring non-empty worksheet.
+
+    When all deterministic scores are weak, optionally ask the LLM which sheet
+    holds sales data.
 
     Returns ``(sheet_name, sheet_score)``.
     """
     candidates = list_candidate_sheets(path)
     scored: List[Tuple[str, float]] = []
     for name in candidates:
-        matrix = read_sheet_matrix(path, name)
-        scored.append((name, score_sheet(matrix)))
+        try:
+            matrix = read_sheet_matrix(path, name)
+            scored.append((name, score_sheet(matrix)))
+        except Exception:  # noqa: BLE001
+            scored.append((name, 0.0))
 
     scored.sort(key=lambda t: t[1], reverse=True)
     best_name, best_score = scored[0]
+
+    if allow_llm_fallback and best_score < min_score:
+        try:
+            from app.erp_parser.llm_sheet_resolver import LLMSheetResolver
+
+            llm_name, llm_conf = LLMSheetResolver().pick_sheet(path, candidates=candidates)
+            logger.info(
+                "Sheet pick via LLM | sheet={} | llm_conf={} | python_best={} ({})",
+                llm_name,
+                llm_conf,
+                best_name,
+                best_score,
+            )
+            return llm_name, max(best_score, float(llm_conf) * 0.9)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LLM sheet pick skipped | err={}", exc)
+
     return best_name, best_score

@@ -1,5 +1,6 @@
 """Report and sales ingestion service."""
 
+from decimal import Decimal
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -25,6 +26,7 @@ from app.utils.datetime_utils import format_report_date, utc_now
 from app.utils.db_locks import acquire_report_replace_lock
 from app.utils.files import get_upload_subdir, save_upload_file
 from app.utils.hashing import sha256_file, sha256_bytes, build_sales_row_hash
+from app.utils.quantity import format_quantity
 from app.utils.reporting_month import months_equivalent, normalize_reporting_month
 from app.utils.validation_summary import build_validation_summary
 
@@ -363,6 +365,106 @@ class ReportService:
             sales_deleted,
         )
         return sales_deleted
+
+    @staticmethod
+    def _normalize_report_file_key(file_name: Optional[str]) -> str:
+        """Strip attachment hash prefix so re-uploads of the same Excel match."""
+        import re
+
+        name = Path(file_name or "").name.strip()
+        # uploads often look like ``{32hex}_{original.xlsx}``
+        return re.sub(r"^[0-9a-f]{32}_", "", name, flags=re.IGNORECASE).casefold()
+
+    def _aggregate_parsed_rows(
+        self,
+        rows: List[ParsedSalesRow],
+        *,
+        company: str,
+        reporting_month: str,
+    ) -> List[ParsedSalesRow]:
+        """Sum duplicate Customer×Product×Period lines so row_hash stays unique."""
+        buckets: dict[tuple[str, str, str], ParsedSalesRow] = {}
+        order: List[tuple[str, str, str]] = []
+        for row in rows:
+            customer = (row.customer_name or "").strip()
+            product = (row.product or "").strip()
+            period = (row.period or reporting_month or "").strip()
+            if not customer or not product or not period:
+                continue
+            key = (customer.casefold(), product.casefold(), period.casefold())
+            qty = row.quantity if isinstance(row.quantity, Decimal) else Decimal(str(row.quantity))
+            if key in buckets:
+                existing = buckets[key]
+                existing.quantity = Decimal(str(existing.quantity)) + qty
+                existing.quantity_display = format_quantity(existing.quantity)
+                existing.row_hash = build_sales_row_hash(
+                    company, existing.customer_name, "", existing.product, existing.quantity, period
+                )
+            else:
+                row.distributor = company
+                row.company = company
+                row.period = period
+                row.segment = ""
+                row.quantity = qty
+                row.quantity_display = format_quantity(qty)
+                row.row_hash = build_sales_row_hash(
+                    company, customer, "", product, qty, period
+                )
+                buckets[key] = row
+                order.append(key)
+        return [buckets[k] for k in order]
+
+    def _retire_matching_file_reports(
+        self,
+        *,
+        distributor_id: int,
+        reporting_month: str,
+        distributor_name: str,
+        actor: str,
+        file_name: str,
+        company: Optional[str] = None,
+    ) -> List[int]:
+        """
+        Soft-delete prior reports for the same company + quarter + Excel file.
+
+        Different product files from the same distributor (9 files / quarter)
+        must coexist — only replace when the same workbook is re-imported.
+        """
+        month = normalize_reporting_month(reporting_month)
+        company_key = (company or "").strip() or distributor_name
+        target_key = self._normalize_report_file_key(file_name)
+        if not target_key:
+            return []
+
+        candidates = self.reports.list_active_for_company(company_key)
+        if not candidates:
+            candidates = self.reports.list_active_for_distributor(distributor_id)
+
+        retired_ids: List[int] = []
+        for existing in candidates:
+            existing_month = normalize_reporting_month(existing.reporting_month)
+            if existing_month.casefold() != month.casefold():
+                continue
+            existing_key = self._normalize_report_file_key(existing.file_name or existing.name)
+            if existing_key != target_key:
+                continue
+            self._retire_active_report(
+                existing,
+                actor=actor,
+                distributor_name=company_key,
+                reporting_month=month,
+                reason="Same-file Report Replacement",
+            )
+            retired_ids.append(existing.id)
+        if retired_ids:
+            logger.info(
+                "Same-file replacement | company={} | month={} | file={} | retired={}",
+                company_key,
+                month,
+                target_key,
+                retired_ids,
+            )
+        return retired_ids
 
     def _retire_matching_active_reports(
         self,
@@ -804,23 +906,24 @@ class ReportService:
         if not reporting_month:
             raise ValidationAppError("reporting_quarter is required (e.g. Q3 2026)")
 
-        for row in parsed_rows:
-            row.distributor = company
-            row.company = company
-            row.period = reporting_month
-            row.segment = ""
-            row.row_hash = build_sales_row_hash(
-                company, row.customer_name, "", row.product, row.quantity, reporting_month
-            )
+        parsed_rows = self._aggregate_parsed_rows(
+            list(parsed_rows),
+            company=company,
+            reporting_month=reporting_month,
+        )
+        if not parsed_rows:
+            raise ValidationAppError("No sales records to import after aggregation")
 
         acquire_report_replace_lock(
             self.db, distributor_id, reporting_month, company=company
         )
-        previous_ids = self._retire_matching_active_reports(
+        # Multi-file distributors: only retire the same Excel, not other product files
+        previous_ids = self._retire_matching_file_reports(
             distributor_id=distributor_id,
             reporting_month=reporting_month,
             distributor_name=company,
             actor=actor,
+            file_name=file_path.name,
             company=company,
         )
         previous_report_id = previous_ids[0] if previous_ids else None
@@ -886,6 +989,7 @@ class ReportService:
             **sender_meta,
         )
         report = self.reports.create(report)
+        report_id = report.id
         try:
             entities = SalesRecordMapper.to_orm_many(
                 parsed_rows,
@@ -933,7 +1037,14 @@ class ReportService:
             )
             return report, inserted, False, quality_score
         except Exception:
-            self.reports.soft_delete(report)
+            # Do not soft_delete here: IntegrityError leaves the Session unusable.
+            # get_db() rolls back the whole request (including this report create).
+            logger.exception(
+                "Approved import failed | report_id={} | company={} | quarter={}",
+                report_id,
+                company,
+                reporting_month,
+            )
             raise
 
     def to_frontend_reports(self, reports: List[Report]) -> List[FrontendReport]:

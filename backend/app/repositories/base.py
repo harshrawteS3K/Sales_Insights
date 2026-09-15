@@ -95,13 +95,25 @@ class BaseRepository(Generic[ModelT]):
 
     def soft_delete(self, entity: ModelT) -> ModelT:
         """Soft-delete an entity when supported."""
+        from sqlalchemy import inspect as sa_inspect
+
         if not hasattr(entity, "is_deleted"):
             raise AttributeError(f"{self.model.__name__} does not support soft delete")
         entity.is_deleted = True  # type: ignore[attr-defined]
         if hasattr(entity, "deleted_at"):
             entity.deleted_at = datetime.now(timezone.utc)  # type: ignore[attr-defined]
         self.db.flush()
-        self.db.refresh(entity)
+        # After IntegrityError + rollback recovery, entity may already be expired.
+        try:
+            state = sa_inspect(entity)
+            if state.persistent and not state.detached:
+                self.db.refresh(entity)
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "Soft-delete refresh skipped | model={} | id={}",
+                self.model.__name__,
+                getattr(entity, "id", None),
+            )
         logger.debug("Soft-deleted {} id={}", self.model.__name__, getattr(entity, "id", None))
         return entity
 

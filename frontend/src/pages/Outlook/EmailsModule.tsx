@@ -41,8 +41,8 @@ function accuracyMeta(score?: number | null): {
   const value = score ?? 0;
   if (value <= 0) {
     return {
-      label: 'Not assessed',
-      detail: 'Accuracy pending — refresh after Sync',
+      label: 'Scoring…',
+      detail: 'Background job running — refresh in a few seconds',
       bg: 'rgba(107,114,128,0.12)',
       color: '#4B5563',
     };
@@ -120,11 +120,24 @@ export function EmailsModule() {
   const refreshEmails = async () => {
     const data = await EmailsService.getExtractedEmails();
     setEmails(data);
+    setSelectedEmailId(prev =>
+      prev != null && data.some(e => e.id === prev) ? prev : null,
+    );
   };
 
   useEffect(() => {
     refreshEmails().catch(() => undefined);
   }, []);
+
+  // While any email is still scoring (confidence 0), poll so Accuracy updates without manual refresh.
+  useEffect(() => {
+    const pending = emails.some(e => !e.confidenceScore || e.confidenceScore <= 0);
+    if (!pending) return undefined;
+    const id = window.setInterval(() => {
+      refreshEmails().catch(() => undefined);
+    }, 4000);
+    return () => window.clearInterval(id);
+  }, [emails]);
 
   const handleExtract = async () => {
     setExtracting(true);
@@ -249,19 +262,16 @@ export function EmailsModule() {
   };
 
   const targetEmailForConsolidate = useMemo(() => {
+    const pending = emails.filter(
+      e => e.hasExcel && (e.statusLabel || '').toLowerCase() !== 'imported',
+    );
     if (selectedEmailId != null) {
-      const found = emails.find(e => e.id === selectedEmailId);
-      if (found?.hasExcel) return found;
+      const found = pending.find(e => e.id === selectedEmailId);
+      if (found) return found;
     }
     return (
-      emails.find(
-        e =>
-          e.hasExcel &&
-          (e.statusLabel || '').toLowerCase() !== 'imported' &&
-          (e.confidenceScore || 0) >= 75,
-      ) ||
-      emails.find(e => e.hasExcel && (e.statusLabel || '').toLowerCase() !== 'imported') ||
-      emails.find(e => e.hasExcel) ||
+      pending.find(e => (e.confidenceScore || 0) >= 75) ||
+      pending[0] ||
       null
     );
   }, [emails, selectedEmailId]);
