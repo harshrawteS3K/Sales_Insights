@@ -73,14 +73,18 @@ class OutlookSyncService:
             excel_name = None
             has_excel = False
             excel_path: Optional[str] = None
+            excel_count = 0
             for att in msg.attachments or []:
                 if getattr(att, "is_deleted", False):
                     continue
                 if att.is_excel or (att.file_name or "").lower().endswith((".xlsx", ".xlsm")):
-                    excel_name = att.file_name
-                    has_excel = True
-                    excel_path = att.file_path
-                    break
+                    excel_count += 1
+                    if excel_name is None:
+                        excel_name = att.file_name
+                        has_excel = True
+                        excel_path = att.file_path
+            if excel_count > 1 and excel_name:
+                excel_name = f"{excel_name} (+{excel_count - 1} more)"
 
             # Always refresh Accuracy from the Excel for non-imported emails so the
             # list never shows a stale score (e.g. 76% from an older parser pass).
@@ -634,6 +638,16 @@ class OutlookSyncService:
 
         attachments = self.graph.list_attachments(graph_id, mailbox=mailbox)
         excel_attachments = [a for a in attachments if GraphClient.is_excel_attachment(a)]
+        from app.services.erp_ingest_service import MAX_EXCEL_ATTACHMENTS_PER_EMAIL
+
+        if len(excel_attachments) > MAX_EXCEL_ATTACHMENTS_PER_EMAIL:
+            logger.warning(
+                "Excel attachments capped | message_id={} | found={} | cap={}",
+                graph_id,
+                len(excel_attachments),
+                MAX_EXCEL_ATTACHMENTS_PER_EMAIL,
+            )
+            excel_attachments = excel_attachments[:MAX_EXCEL_ATTACHMENTS_PER_EMAIL]
         logger.info(
             "Excel Attachment Found | message_id={} | total_attachments={} | excel={}",
             graph_id,
@@ -721,6 +735,15 @@ class OutlookSyncService:
             email.error_message = None
             self.db.flush()
 
+            # Download only — import happens after admin Preview / Approve.
+            any_success = True
+            logger.info(
+                "Attachment downloaded | message_id={} | file={}",
+                graph_id,
+                file_name,
+            )
+
+        if any_success:
             try:
                 from app.services.erp_score_queue import enqueue_email_score
 
@@ -731,14 +754,6 @@ class OutlookSyncService:
                     email.id,
                     exc,
                 )
-
-            # Download only — import happens after admin Preview / Approve.
-            any_success = True
-            logger.info(
-                "Attachment downloaded (score queued) | message_id={} | file={}",
-                graph_id,
-                file_name,
-            )
 
         self.audit.log(
             AuditTrailCreate(

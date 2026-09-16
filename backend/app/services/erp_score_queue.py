@@ -2,6 +2,10 @@
 
 Sync downloads Excel quickly and enqueues scoring so Outlook sync stays fast.
 A single worker thread processes jobs FIFO — safe for UAT / private network.
+
+Scores up to ``MAX_EXCEL_ATTACHMENTS_PER_EMAIL`` workbooks per email; the
+email-level accuracy is the **minimum** of those scores so batch consolidate
+only proceeds when every attachment is ready.
 """
 
 from __future__ import annotations
@@ -9,7 +13,7 @@ from __future__ import annotations
 import queue
 import threading
 from pathlib import Path
-from typing import Optional, Set
+from typing import Any, List, Set
 
 from app.core.logging import get_logger
 from app.database.session import SessionLocal
@@ -82,6 +86,7 @@ def _score_email(email_id: int, *, allow_llm: bool = True) -> None:
     try:
         from app.erp_parser import ERPParserService
         from app.models.email_message import EmailMessage
+        from app.services.erp_ingest_service import MAX_EXCEL_ATTACHMENTS_PER_EMAIL
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
 
@@ -93,7 +98,7 @@ def _score_email(email_id: int, *, allow_llm: bool = True) -> None:
         if email is None:
             return
 
-        # Skip if already scored well or already imported
+        # Skip if already imported / skipped
         status = (email.process_status or "").lower()
         if status in {
             EmailProcessStatus.INSERTED.value,
@@ -104,54 +109,80 @@ def _score_email(email_id: int, *, allow_llm: bool = True) -> None:
         if email.confidence_score is not None and int(email.confidence_score) >= 75:
             return
 
-        excel = None
+        excels: List[Any] = []
         for att in email.attachments or []:
             if getattr(att, "is_deleted", False):
                 continue
             if att.is_excel or (att.file_name or "").lower().endswith((".xlsx", ".xlsm")):
-                excel = att
+                excels.append(att)
+            if len(excels) >= MAX_EXCEL_ATTACHMENTS_PER_EMAIL:
                 break
-        if excel is None or not excel.file_path:
+
+        if not excels:
             email.confidence_score = 0
             email.error_message = "No Excel attachment on disk for scoring"
             db.commit()
             return
 
-        path = Path(excel.file_path)
-        if not path.is_file():
-            email.confidence_score = 0
-            email.error_message = "Excel file missing on disk — re-sync Outlook"
-            db.commit()
-            return
+        scores: List[float] = []
+        failed_names: List[str] = []
+        parser = ERPParserService()
 
-        # 1) Deterministic (+ layout detectors). 2) LLM header fallback if needed.
-        try:
-            preview = ERPParserService().preview(path, allow_llm_fallback=allow_llm)
-            overall = float((preview.get("confidence") or {}).get("overall") or 0)
-            email.confidence_score = int(round(overall))
-            email.process_status = EmailProcessStatus.PARSED.value
-            email.error_message = None
-            logger.info(
-                "ERP score complete | email_id={} | file={} | confidence={} | source={}",
-                email_id,
-                excel.file_name,
-                email.confidence_score,
-                preview.get("mapping_source"),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "ERP score parse failed | email_id={} | file={} | err={}",
-                email_id,
-                excel.file_name,
-                exc,
-            )
+        for excel in excels:
+            if not excel.file_path:
+                failed_names.append(excel.file_name or "?")
+                continue
+            path = Path(excel.file_path)
+            if not path.is_file():
+                failed_names.append(excel.file_name or "?")
+                continue
+            try:
+                preview = parser.preview(path, allow_llm_fallback=allow_llm)
+                overall = float((preview.get("confidence") or {}).get("overall") or 0)
+                scores.append(overall)
+                logger.info(
+                    "ERP score attachment | email_id={} | file={} | confidence={} | source={}",
+                    email_id,
+                    excel.file_name,
+                    int(round(overall)),
+                    preview.get("mapping_source"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "ERP score parse failed | email_id={} | file={} | err={}",
+                    email_id,
+                    excel.file_name,
+                    exc,
+                )
+                failed_names.append(excel.file_name or "?")
+
+        if not scores:
             email.confidence_score = 0
-            # Keep downloaded so user can still open Preview / remap manually
             if status in {"", EmailProcessStatus.UNREAD.value}:
                 email.process_status = EmailProcessStatus.DOWNLOADED.value
             email.error_message = (
-                "Could not auto-score this Excel. Open Preview to map columns manually."
+                "Could not auto-score Excel attachment(s). Open Preview to map columns manually."
             )
+            db.commit()
+            return
+
+        # Email-level accuracy = worst workbook so batch only runs when all are ready
+        email.confidence_score = int(round(min(scores)))
+        email.process_status = EmailProcessStatus.PARSED.value
+        if failed_names:
+            email.error_message = (
+                f"Scored {len(scores)}/{len(excels)} workbook(s); "
+                f"failed: {', '.join(failed_names[:3])}"
+            )
+        else:
+            email.error_message = None
+        logger.info(
+            "ERP score complete | email_id={} | workbooks={} | min_confidence={} | scores={}",
+            email_id,
+            len(scores),
+            email.confidence_score,
+            [int(round(s)) for s in scores],
+        )
         db.commit()
     finally:
         db.close()

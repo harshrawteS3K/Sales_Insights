@@ -269,7 +269,11 @@ export function EmailsModule() {
           ? result.quarters_imported.join(', ')
           : result.reporting_quarter;
       setImportDone(
-        `Imported ${result.records_inserted} rows into Consolidated Data (${qLabel}).`,
+        `Imported ${result.records_inserted} rows` +
+          (result.workbooks_imported && result.workbooks_imported.length > 1
+            ? ` from ${result.workbooks_imported.length} workbooks`
+            : '') +
+          ` into Consolidated Data (${qLabel}).`,
       );
       await refreshEmails();
     } catch (err) {
@@ -400,11 +404,15 @@ export function EmailsModule() {
             result.quarters_imported?.length
               ? result.quarters_imported.join(', ')
               : result.reporting_quarter;
+          const wbCount = result.workbooks_imported?.length || 1;
+          const skipN = result.workbook_skips?.length || 0;
           results.push({
             emailId: email.id,
             subject: email.subject,
             status: 'ok',
-            detail: `${result.records_inserted} rows (${qLabel})`,
+            detail: `${result.records_inserted} rows / ${wbCount} workbook(s)${
+              skipN ? `, ${skipN} skipped` : ''
+            } (${qLabel})`,
             rows: result.records_inserted,
           });
         } catch (err) {

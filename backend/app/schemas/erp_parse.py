@@ -84,6 +84,9 @@ class ERPParsePreviewResponse(BaseModel):
         default="python",
         description="python | llm | manual — which engine produced column mapping",
     )
+    attachment_count: int = 1
+    attachment_names: List[str] = Field(default_factory=list)
+    attachments_capped: bool = False
 
 
 class ERPEmailPreviewRequest(BaseModel):
@@ -112,5 +115,7 @@ class ERPImportResponse(BaseModel):
     distributor_id: int
     reporting_quarter: str
     workbook_name: Optional[str] = None
+    workbooks_imported: List[str] = Field(default_factory=list)
+    workbook_skips: List[Dict[str, Any]] = Field(default_factory=list)
     reports_created: int = 1
     quarters_imported: List[str] = Field(default_factory=list)

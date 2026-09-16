@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -28,6 +28,10 @@ from app.utils.hashing import build_sales_row_hash
 from app.utils.quantity import parse_quantity
 
 logger = get_logger(__name__)
+
+# Cap Excel workbooks processed per email (download / score / import).
+MAX_EXCEL_ATTACHMENTS_PER_EMAIL = 5
+MIN_IMPORT_ACCURACY = 75.0
 
 _FIELD_ALIASES = {
     "customer": "customer",
@@ -107,22 +111,155 @@ class ERPIngestService:
             )
         return out
 
-    def _excel_attachment(self, email_id: int):
-        email = self.emails.get_or_raise(email_id)
-        excel = None
+    def _is_excel_att(self, att: Any) -> bool:
+        if getattr(att, "is_deleted", False):
+            return False
+        if getattr(att, "is_excel", False):
+            return True
+        return (getattr(att, "file_name", None) or "").lower().endswith((".xlsx", ".xlsm"))
+
+    def _list_excel_attachments(
+        self,
+        email: Any,
+        *,
+        limit: int = MAX_EXCEL_ATTACHMENTS_PER_EMAIL,
+    ) -> List[Any]:
+        """Active Excel attachments for an email, capped at ``limit`` (default 5)."""
+        found: List[Any] = []
         for att in email.attachments or []:
-            if getattr(att, "is_deleted", False):
+            if not self._is_excel_att(att):
                 continue
-            if att.is_excel or (att.file_name or "").lower().endswith((".xlsx", ".xlsm")):
-                excel = att
+            found.append(att)
+            if len(found) >= limit:
                 break
-        if excel is None:
+        return found
+
+    def _excel_attachment(self, email_id: int):
+        """Primary (first) Excel attachment — used by Preview remap UI."""
+        email = self.emails.get_or_raise(email_id)
+        attachments = self._list_excel_attachments(email)
+        if not attachments:
             raise ValidationAppError("No Excel attachment found for this email")
+        excel = attachments[0]
         if not excel.file_path or not Path(excel.file_path).is_file():
             raise ValidationAppError(
                 "Excel attachment file is missing on disk. Re-sync Outlook to download again."
             )
         return email, excel
+
+    def _rows_by_period(
+        self,
+        use_rows: List[Dict[str, Any]],
+        *,
+        company: str,
+        quarter: str,
+    ) -> Dict[str, List[ParsedSalesRow]]:
+        from collections import defaultdict
+
+        by_period: Dict[str, List[ParsedSalesRow]] = defaultdict(list)
+        for raw in use_rows:
+            qty = raw.get("sales_quantity", raw.get("quantity"))
+            try:
+                if isinstance(qty, Decimal):
+                    qty_val, qty_disp = qty, str(qty)
+                else:
+                    qty_val, qty_disp = parse_quantity(qty)
+            except ValueError as exc:
+                raise ValidationAppError(f"Invalid quantity in import rows: {exc}") from exc
+            customer = str(raw.get("customer_name") or raw.get("customer") or "").strip()
+            product = str(raw.get("product") or "").strip()
+            if not customer or not product:
+                continue
+            period = str(
+                raw.get("period") or raw.get("reporting_quarter") or quarter or ""
+            ).strip()
+            if not period:
+                continue
+            existing = next(
+                (
+                    r
+                    for r in by_period[period]
+                    if r.customer_name.casefold() == customer.casefold()
+                    and r.product.casefold() == product.casefold()
+                ),
+                None,
+            )
+            if existing is not None:
+                existing.quantity = Decimal(str(existing.quantity)) + Decimal(str(qty_val))
+                existing.quantity_display = str(existing.quantity)
+                existing.row_hash = build_sales_row_hash(
+                    company, existing.customer_name, "", existing.product, existing.quantity, period
+                )
+                continue
+            by_period[period].append(
+                ParsedSalesRow(
+                    distributor=company,
+                    customer_name=customer,
+                    segment="",
+                    product=product,
+                    quantity=qty_val,
+                    quantity_display=qty_disp,
+                    period=period,
+                    unit="MT",
+                    company=company,
+                    row_hash=build_sales_row_hash(
+                        company, customer, "", product, qty_val, period
+                    ),
+                )
+            )
+        return by_period
+
+    def _persist_preview_rows(
+        self,
+        *,
+        email: Any,
+        att: Any,
+        preview: Dict[str, Any],
+        use_rows: List[Dict[str, Any]],
+        distributor_id: int,
+        company: str,
+        quarter: str,
+        actor: str,
+        fiscal_year_start: Optional[int],
+        overall: float,
+    ) -> Tuple[int, bool, Any, List[str], int]:
+        """Persist one workbook's rows. Returns inserted, dup, last_report, quarters, reports."""
+        path = Path(att.file_path)
+        by_period = self._rows_by_period(use_rows, company=company, quarter=quarter)
+        if not by_period:
+            raise ValidationAppError(
+                f"No valid rows to import after validation ({att.file_name})"
+            )
+
+        total_inserted = 0
+        any_dup = False
+        last_report = None
+        quarters_imported: List[str] = []
+        for period, parsed in sorted(by_period.items()):
+            report, inserted, was_dup, _quality = self.reports.persist_approved_rows(
+                path,
+                parsed,
+                quality_score=int(round(overall)),
+                source=ReportSource.OUTLOOK,
+                report_name=f"{email.subject} - {att.file_name} ({period})",
+                email_message_id=email.id,
+                actor=actor,
+                reporting_quarter=period,
+                distributor_id=distributor_id,
+                mark_duplicate_as_error=False,
+                confidence_breakdown=(preview.get("confidence") or {}).get("breakdown"),
+                workbook_meta={
+                    "sheet_name": preview.get("sheet_name"),
+                    "workbook_name": att.file_name,
+                    "monthly_pivot": preview.get("monthly_pivot"),
+                    "fiscal_year_start": preview.get("fiscal_year_start") or fiscal_year_start,
+                },
+            )
+            total_inserted += inserted
+            any_dup = any_dup or was_dup
+            last_report = report
+            quarters_imported.append(period)
+        return total_inserted, any_dup, last_report, quarters_imported, len(quarters_imported)
 
     def preview_email(
         self,
@@ -188,6 +325,7 @@ class ERPIngestService:
             )
 
         matches = self.resolve_distributors_for_sender(email.sender_email)
+        all_excels = self._list_excel_attachments(email)
         preview["email_id"] = email.id
         preview["workbook_name"] = att.file_name
         preview["subject"] = email.subject
@@ -197,7 +335,12 @@ class ERPIngestService:
         preview["all_distributors"] = self.list_active_distributors()
         preview["distributor_id"] = matches[0]["id"] if len(matches) == 1 else None
         preview["distributor_unknown"] = len(matches) == 0
-        preview["import_allowed"] = float((preview.get("confidence") or {}).get("overall") or 0) >= 75
+        preview["import_allowed"] = float((preview.get("confidence") or {}).get("overall") or 0) >= MIN_IMPORT_ACCURACY
+        preview["attachment_count"] = len(all_excels)
+        preview["attachment_names"] = [a.file_name for a in all_excels]
+        preview["attachments_capped"] = len(
+            [a for a in (email.attachments or []) if self._is_excel_att(a)]
+        ) > MAX_EXCEL_ATTACHMENTS_PER_EMAIL
 
         if email.process_status not in {
             EmailProcessStatus.INSERTED.value,
@@ -465,12 +608,15 @@ class ERPIngestService:
     ) -> Dict[str, Any]:
         """Persist approved ERP rows after accuracy + mapping review.
 
-        Monthly-pivot workbooks expand into multiple FY quarters — one report
-        per quarter under Year → Quarter → Distributor.
+        Processes up to ``MAX_EXCEL_ATTACHMENTS_PER_EMAIL`` Excel files on the
+        email. Manual ``mapping`` / client ``rows`` apply only to the primary
+        (first) workbook; remaining workbooks are re-parsed server-side.
         """
-        from collections import defaultdict
+        email = self.emails.get_or_raise(email_id)
+        attachments = self._list_excel_attachments(email)
+        if not attachments:
+            raise ValidationAppError("No Excel attachment found for this email")
 
-        email, att = self._excel_attachment(email_id)
         quarter = (reporting_quarter or "").strip()
         if not quarter and not fiscal_year_start:
             raise ValidationAppError("reporting_quarter is required (e.g. Q3 2026)")
@@ -479,140 +625,156 @@ class ERPIngestService:
         if not dist.is_active or dist.is_deleted:
             raise ValidationAppError("Distributor is inactive")
 
-        path = Path(att.file_path)
-        if mapping:
-            preview = self._preview_with_override(
-                path, mapping, fiscal_year_start=fiscal_year_start, reporting_quarter=quarter or None
-            )
-        else:
-            preview = self.parser.preview(
-                path,
-                fiscal_year_start=fiscal_year_start,
-                reporting_quarter=quarter or None,
-            )
-
-        overall = float((preview.get("confidence") or {}).get("overall") or 0)
-        if overall < 75:
-            raise ValidationAppError(
-                "Low accuracy detected. Please review column mappings before importing.",
-                details={"overall_confidence": overall},
-            )
-
-        use_rows = preview.get("rows") or rows or []
-        if not use_rows:
-            raise ValidationAppError("No rows to import")
-
         company = (dist.company or dist.name or "").strip()
-        by_period: Dict[str, List[ParsedSalesRow]] = defaultdict(list)
-        for raw in use_rows:
-            qty = raw.get("sales_quantity", raw.get("quantity"))
-            try:
-                if isinstance(qty, Decimal):
-                    qty_val, qty_disp = qty, str(qty)
-                else:
-                    qty_val, qty_disp = parse_quantity(qty)
-            except ValueError as exc:
-                raise ValidationAppError(f"Invalid quantity in import rows: {exc}") from exc
-            customer = str(raw.get("customer_name") or raw.get("customer") or "").strip()
-            product = str(raw.get("product") or "").strip()
-            if not customer or not product:
-                continue
-            period = str(
-                raw.get("period") or raw.get("reporting_quarter") or quarter or ""
-            ).strip()
-            if not period:
-                continue
-            # Aggregate duplicates within the same quarter before persist
-            existing = next(
-                (
-                    r
-                    for r in by_period[period]
-                    if r.customer_name.casefold() == customer.casefold()
-                    and r.product.casefold() == product.casefold()
-                ),
-                None,
-            )
-            if existing is not None:
-                existing.quantity = Decimal(str(existing.quantity)) + Decimal(str(qty_val))
-                existing.quantity_display = str(existing.quantity)
-                existing.row_hash = build_sales_row_hash(
-                    company, existing.customer_name, "", existing.product, existing.quantity, period
-                )
-                continue
-            by_period[period].append(
-                ParsedSalesRow(
-                    distributor=company,
-                    customer_name=customer,
-                    segment="",
-                    product=product,
-                    quantity=qty_val,
-                    quantity_display=qty_disp,
-                    period=period,
-                    unit="MT",
-                    company=company,
-                    row_hash=build_sales_row_hash(
-                        company, customer, "", product, qty_val, period
-                    ),
-                )
-            )
-
-        if not by_period:
-            raise ValidationAppError("No valid rows to import after validation")
-
         total_inserted = 0
         any_dup = False
         last_report = None
         quarters_imported: List[str] = []
-        for period, parsed in sorted(by_period.items()):
-            report, inserted, was_dup, quality = self.reports.persist_approved_rows(
-                path,
-                parsed,
-                quality_score=int(round(overall)),
-                source=ReportSource.OUTLOOK,
-                report_name=f"{email.subject} - {att.file_name} ({period})",
-                email_message_id=email.id,
-                actor=actor,
-                reporting_quarter=period,
-                distributor_id=distributor_id,
-                mark_duplicate_as_error=False,
-                confidence_breakdown=(preview.get("confidence") or {}).get("breakdown"),
-                workbook_meta={
-                    "sheet_name": preview.get("sheet_name"),
-                    "workbook_name": att.file_name,
-                    "monthly_pivot": preview.get("monthly_pivot"),
-                    "fiscal_year_start": preview.get("fiscal_year_start") or fiscal_year_start,
-                },
-            )
+        reports_created = 0
+        workbooks_imported: List[str] = []
+        workbook_skips: List[Dict[str, Any]] = []
+        qualities: List[float] = []
+
+        for idx, att in enumerate(attachments):
+            path = Path(att.file_path or "")
+            if not path.is_file():
+                workbook_skips.append(
+                    {"workbook": att.file_name, "reason": "file missing on disk"}
+                )
+                continue
+
+            try:
+                # Mapping / client rows only for the primary workbook (Preview remap).
+                if idx == 0 and mapping:
+                    preview = self._preview_with_override(
+                        path,
+                        mapping,
+                        fiscal_year_start=fiscal_year_start,
+                        reporting_quarter=quarter or None,
+                    )
+                    use_rows = preview.get("rows") or rows or []
+                elif idx == 0 and rows and len(attachments) == 1:
+                    # Single-file Approve with precomputed rows (no remap)
+                    preview = self.parser.preview(
+                        path,
+                        fiscal_year_start=fiscal_year_start,
+                        reporting_quarter=quarter or None,
+                    )
+                    use_rows = rows
+                else:
+                    # Multi-file or subsequent attachments: always re-parse
+                    preview = self.parser.preview(
+                        path,
+                        fiscal_year_start=fiscal_year_start,
+                        reporting_quarter=quarter or None,
+                    )
+                    use_rows = preview.get("rows") or []
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "ERP import parse failed | email_id={} | file={} | err={}",
+                    email_id,
+                    att.file_name,
+                    exc,
+                )
+                workbook_skips.append(
+                    {"workbook": att.file_name, "reason": f"parse failed: {exc}"}
+                )
+                continue
+
+            overall = float((preview.get("confidence") or {}).get("overall") or 0)
+            if overall < MIN_IMPORT_ACCURACY:
+                workbook_skips.append(
+                    {
+                        "workbook": att.file_name,
+                        "reason": f"accuracy {round(overall)}% < {int(MIN_IMPORT_ACCURACY)}%",
+                    }
+                )
+                continue
+            if not use_rows:
+                workbook_skips.append(
+                    {"workbook": att.file_name, "reason": "no rows extracted"}
+                )
+                continue
+
+            try:
+                inserted, was_dup, report, periods, n_reports = self._persist_preview_rows(
+                    email=email,
+                    att=att,
+                    preview=preview,
+                    use_rows=use_rows,
+                    distributor_id=distributor_id,
+                    company=company,
+                    quarter=quarter,
+                    actor=actor,
+                    fiscal_year_start=fiscal_year_start,
+                    overall=overall,
+                )
+            except ValidationAppError as exc:
+                workbook_skips.append(
+                    {"workbook": att.file_name, "reason": str(exc.message)}
+                )
+                continue
+
             total_inserted += inserted
             any_dup = any_dup or was_dup
-            last_report = report
-            quarters_imported.append(period)
+            last_report = report or last_report
+            quarters_imported.extend(periods)
+            reports_created += n_reports
+            workbooks_imported.append(att.file_name or f"attachment-{att.id}")
+            qualities.append(overall)
+            logger.info(
+                "ERP workbook imported | email_id={} | file={} | rows={} | quarters={}",
+                email_id,
+                att.file_name,
+                inserted,
+                periods,
+            )
 
+        if not workbooks_imported:
+            detail = workbook_skips or [{"reason": "no importable Excel attachments"}]
+            raise ValidationAppError(
+                "No Excel attachments could be imported for this email.",
+                details={"skips": detail},
+            )
+
+        overall_quality = min(qualities) if qualities else 0.0
         email.process_status = EmailProcessStatus.INSERTED.value
-        email.confidence_score = int(round(overall))
-        email.error_message = None
+        email.confidence_score = int(round(overall_quality))
+        if workbook_skips:
+            email.error_message = (
+                f"Imported {len(workbooks_imported)} workbook(s); "
+                f"skipped {len(workbook_skips)}: "
+                + "; ".join(
+                    f"{s.get('workbook')}: {s.get('reason')}" for s in workbook_skips[:5]
+                )
+            )
+        else:
+            email.error_message = None
         self.db.flush()
 
+        unique_quarters = list(dict.fromkeys(quarters_imported))
         self.audit.log(
             AuditTrailCreate(
                 user_name=actor,
                 action=AuditAction.PROCESSED,
                 details=(
                     f"ERP Report Imported | email_id={email_id} | "
-                    f"distributor={company} | quarters={quarters_imported} | "
-                    f"workbook={att.file_name} | rows={total_inserted}"
+                    f"distributor={company} | quarters={unique_quarters} | "
+                    f"workbooks={workbooks_imported} | rows={total_inserted} | "
+                    f"skipped={len(workbook_skips)}"
                 ),
                 entity_type="report",
                 entity_id=str(last_report.id if last_report else ""),
                 module="Email Extraction",
                 status="Success",
-                report_name=att.file_name,
+                report_name=", ".join(workbooks_imported[:3]),
                 extra_metadata={
                     "email_id": email_id,
                     "distributor_id": distributor_id,
                     "distributor": company,
-                    "quarters_imported": quarters_imported,
-                    "workbook": att.file_name,
+                    "quarters_imported": unique_quarters,
+                    "workbooks": workbooks_imported,
+                    "workbook_skips": workbook_skips,
                     "row_count": total_inserted,
                     "duplicate": any_dup,
                 },
@@ -623,12 +785,22 @@ class ERPIngestService:
             "report_id": last_report.id if last_report else 0,
             "records_inserted": total_inserted,
             "duplicate": any_dup,
-            "quality_score": int(round(overall)),
+            "quality_score": int(round(overall_quality)),
             "distributor_id": distributor_id,
-            "reporting_quarter": ", ".join(quarters_imported) if len(quarters_imported) > 1 else (quarters_imported[0] if quarters_imported else quarter),
-            "workbook_name": att.file_name,
-            "reports_created": len(quarters_imported),
-            "quarters_imported": quarters_imported,
+            "reporting_quarter": (
+                ", ".join(unique_quarters)
+                if len(unique_quarters) > 1
+                else (unique_quarters[0] if unique_quarters else quarter)
+            ),
+            "workbook_name": (
+                workbooks_imported[0]
+                if len(workbooks_imported) == 1
+                else f"{len(workbooks_imported)} workbooks"
+            ),
+            "workbooks_imported": workbooks_imported,
+            "workbook_skips": workbook_skips,
+            "reports_created": reports_created,
+            "quarters_imported": unique_quarters,
         }
 
     def skip_email(self, email_id: int, *, actor: str) -> Dict[str, Any]:

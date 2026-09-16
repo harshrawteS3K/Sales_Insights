@@ -61,6 +61,9 @@ export type ERPPreviewResponse = {
   accuracy?: number;
   /** python | llm | manual */
   mapping_source?: string | null;
+  attachment_count?: number;
+  attachment_names?: string[];
+  attachments_capped?: boolean;
 };
 
 export type ERPImportResult = {
@@ -71,6 +74,8 @@ export type ERPImportResult = {
   distributor_id: number;
   reporting_quarter: string;
   workbook_name?: string | null;
+  workbooks_imported?: string[];
+  workbook_skips?: Array<{ workbook?: string; reason?: string }>;
   reports_created?: number;
   quarters_imported?: string[];
 };
