@@ -140,13 +140,16 @@ export function UserManagement() {
   const [formError, setFormError] = useState<string | null>(null);
 
   // Distributor edit state
-  const [allDistributors, setAllDistributors] = useState<Array<{ id: number; name: string }>>([]);
+  const [allDistributors, setAllDistributors] = useState<
+    Array<{ id: number; name: string; segment: string }>
+  >([]);
   const [selectedDistributorIds, setSelectedDistributorIds] = useState<number[]>([]);
   const [distSearch, setDistSearch] = useState('');
   const [newDistributorName, setNewDistributorName] = useState('');
   const [addingDistributor, setAddingDistributor] = useState(false);
   const [renameDistributorRows, setRenameDistributorRows] = useState<Array<{ id: number; name: string }>>([]);
   const [credentialsMenuId, setCredentialsMenuId] = useState<number | null>(null);
+  const [collapsedDistSegments, setCollapsedDistSegments] = useState<string[]>([]);
 
   // Form State
   const [fullName, setFullName] = useState('');
@@ -404,6 +407,30 @@ export function UserManagement() {
     setDialog('email');
   };
 
+  const distributorsBySegment = useMemo(() => {
+    const q = distSearch.trim().toLowerCase();
+    const filtered = allDistributors.filter(d => !q || d.name.toLowerCase().includes(q));
+    return ALL_SEGMENTS.map(segment => ({
+      segment,
+      items: filtered
+        .filter(d => d.segment === segment)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    }));
+  }, [allDistributors, distSearch]);
+
+  const resolveDistributorSegment = (
+    name: string,
+    id: number,
+    segmentById: Map<number, string>,
+  ): string => {
+    const mapped = segmentById.get(id);
+    if (mapped && ALL_SEGMENTS.includes(mapped)) return mapped;
+    const key = (name || '').toLowerCase();
+    // Known Construction accounts (Admin / FYIP / export)
+    if (key.includes('redachem')) return 'Construction';
+    return 'Construction';
+  };
+
   const openDistributors = async (user: {
     id: number;
     full_name?: string;
@@ -411,6 +438,7 @@ export function UserManagement() {
     username?: string;
     email?: string;
     role?: string;
+    segments?: string[];
     associatedDistributorIds?: number[];
     distributor_ids?: number[];
   }) => {
@@ -421,18 +449,68 @@ export function UserManagement() {
       email: user.email || '',
       role: (user.role as ManagedUser['role']) || 'user',
       is_active: true,
+      segments: user.segments || [],
       distributor_ids: user.associatedDistributorIds || user.distributor_ids || [],
     } as ManagedUser);
     setFormError(null);
     setDistSearch('');
     setNewDistributorName('');
+    setCollapsedDistSegments([]);
     setBusy(true);
     try {
+      let matrixRows = matrixData.rows || [];
+      try {
+        const fresh = await UserManagementService.getSegmentMatrix();
+        setMatrixData(fresh);
+        matrixRows = fresh.rows || [];
+      } catch {
+        /* keep existing matrix */
+      }
+
+      const segmentById = new Map<number, string>();
+      const applyOwner = (distributorIds: number[] | undefined, segments: string[] | undefined) => {
+        const primary = (segments || []).find(s => s && s !== '*' && ALL_SEGMENTS.includes(s));
+        if (!primary || !distributorIds?.length) return;
+        for (const id of distributorIds) {
+          if (typeof id === 'number' && id > 0 && !segmentById.has(id)) {
+            segmentById.set(id, primary);
+          }
+        }
+      };
+
+      // Sales Owners: their segment owns their distributors
+      for (const u of rows) {
+        if (u.role === 'admin' || u.role === 'super_admin') continue;
+        applyOwner(u.distributor_ids, u.segments);
+      }
+      for (const u of matrixRows) {
+        if (u.role === 'admin' || u.role === 'super_admin') continue;
+        const fromAssigned: string[] = Array.isArray(u.assignedSegments) ? u.assignedSegments : [];
+        const fromMap: string[] = Object.entries(u.segments || {})
+          .filter(([, enabled]) => Boolean(enabled))
+          .map(([seg]) => String(seg));
+        applyOwner(u.associatedDistributorIds, fromAssigned.length ? fromAssigned : fromMap);
+      }
+
+      // Admin / Debabrata linked distributors → Construction (e.g. REDACHEM VIETNAM)
+      for (const u of rows) {
+        if (u.role !== 'admin' && u.role !== 'super_admin') continue;
+        applyOwner(u.distributor_ids, ['Construction']);
+      }
+      for (const u of matrixRows) {
+        if (u.role !== 'admin' && u.role !== 'super_admin') continue;
+        applyOwner(u.associatedDistributorIds, ['Construction']);
+      }
+
       const list = await DistributorService.list({ active_only: true, limit: 500 });
-      const opts = (list.data || []).map(d => ({
-        id: d.id,
-        name: (d.company || d.name || `Distributor #${d.id}`).trim(),
-      }));
+      const opts = (list.data || []).map(d => {
+        const name = (d.company || d.name || `Distributor #${d.id}`).trim();
+        return {
+          id: d.id,
+          name,
+          segment: resolveDistributorSegment(name, d.id, segmentById),
+        };
+      });
       setAllDistributors(opts);
       const preselected =
         user.associatedDistributorIds?.length
@@ -498,9 +576,15 @@ export function UserManagement() {
         is_active: true,
       });
       const label = (created.company || created.name || company).trim();
+      const ownerSeg =
+        (target?.segments || []).find(s => s && s !== '*' && ALL_SEGMENTS.includes(s)) ||
+        (rows.find(r => r.id === target?.id)?.segments || []).find(
+          s => s && s !== '*' && ALL_SEGMENTS.includes(s),
+        ) ||
+        (target?.role === 'admin' || target?.role === 'super_admin' ? 'Construction' : 'Rubber');
       setAllDistributors(prev => {
         if (prev.some(d => d.id === created.id)) return prev;
-        return [...prev, { id: created.id, name: label }].sort((a, b) =>
+        return [...prev, { id: created.id, name: label, segment: ownerSeg }].sort((a, b) =>
           a.name.localeCompare(b.name),
         );
       });
@@ -1999,15 +2083,48 @@ export function UserManagement() {
         </div>
       )}
 
-      {/* EDIT DISTRIBUTORS DIALOG (assign + add new) */}
+      {/* EDIT DISTRIBUTORS DIALOG (assign + add new) — segment-wise */}
       {dialog === 'distributors' && target && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div style={{ background: 'white', borderRadius: 12, padding: 24, width: 520, maxWidth: '92vw', maxHeight: '85vh', overflow: 'auto', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              background: 'white',
+              borderRadius: 12,
+              width: 560,
+              maxWidth: '92vw',
+              height: 'min(720px, 90vh)',
+              maxHeight: '90vh',
+              boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '20px 24px 12px',
+                flexShrink: 0,
+                borderBottom: `1px solid ${BORDER}`,
+              }}
+            >
               <div>
                 <h3 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 700 }}>Assign Distributors</h3>
                 <p style={{ margin: '2px 0 0', fontSize: '0.8125rem', color: '#6B7280' }}>
-                  {target.full_name} · select existing or add a new Master distributor
+                  {target.full_name} · Paper / Carpet / Construction / Rubber / Gloves
                 </p>
               </div>
               <button type="button" onClick={() => setDialog(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6B7280' }}>
@@ -2015,110 +2132,226 @@ export function UserManagement() {
               </button>
             </div>
 
-            {formError && <StatusBanner message={formError} type="error" style={{ marginBottom: 16 }} />}
+            <form
+              onSubmit={handleSaveDistributors}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                flex: 1,
+                minHeight: 0,
+                overflow: 'hidden',
+              }}
+            >
+              <div style={{ padding: '12px 24px 0', flexShrink: 0 }}>
+                {formError && <StatusBanner message={formError} type="error" style={{ marginBottom: 12 }} />}
 
-            <form onSubmit={handleSaveDistributors}>
-              <div
-                style={{
-                  display: 'flex',
-                  gap: 8,
-                  marginBottom: 14,
-                  padding: 12,
-                  background: '#F8FAFC',
-                  borderRadius: 8,
-                  border: `1px solid ${BORDER}`,
-                }}
-              >
-                <input
-                  type="text"
-                  value={newDistributorName}
-                  onChange={e => setNewDistributorName(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      void handleAddDistributorInline();
-                    }
-                  }}
-                  placeholder="New distributor company name…"
-                  style={{ ...inputStyle, flex: 1 }}
-                />
-                <button
-                  type="button"
-                  onClick={() => void handleAddDistributorInline()}
-                  disabled={addingDistributor || !newDistributorName.trim()}
+                <div
                   style={{
-                    padding: '0 14px',
+                    display: 'flex',
+                    gap: 8,
+                    marginBottom: 12,
+                    padding: 12,
+                    background: '#F8FAFC',
                     borderRadius: 8,
-                    border: 'none',
-                    background: newDistributorName.trim() ? TEAL : '#9CA3AF',
-                    color: 'white',
-                    fontWeight: 600,
-                    fontSize: '0.8125rem',
-                    cursor: newDistributorName.trim() && !addingDistributor ? 'pointer' : 'not-allowed',
-                    whiteSpace: 'nowrap',
+                    border: `1px solid ${BORDER}`,
                   }}
                 >
-                  {addingDistributor ? 'Adding…' : '+ Add'}
-                </button>
+                  <input
+                    type="text"
+                    value={newDistributorName}
+                    onChange={e => setNewDistributorName(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleAddDistributorInline();
+                      }
+                    }}
+                    placeholder="New distributor company name…"
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleAddDistributorInline()}
+                    disabled={addingDistributor || !newDistributorName.trim()}
+                    style={{
+                      padding: '0 14px',
+                      borderRadius: 8,
+                      border: 'none',
+                      background: newDistributorName.trim() ? TEAL : '#9CA3AF',
+                      color: 'white',
+                      fontWeight: 600,
+                      fontSize: '0.8125rem',
+                      cursor: newDistributorName.trim() && !addingDistributor ? 'pointer' : 'not-allowed',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {addingDistributor ? 'Adding…' : '+ Add'}
+                  </button>
+                </div>
+
+                <input
+                  type="text"
+                  value={distSearch}
+                  onChange={e => setDistSearch(e.target.value)}
+                  placeholder="Search distributors…"
+                  style={{ ...inputStyle, marginBottom: 8 }}
+                />
+                <div style={{ fontSize: '0.75rem', color: '#6B7280', marginBottom: 8 }}>
+                  {selectedDistributorIds.length} selected · scroll inside each segment to see all
+                </div>
               </div>
 
-              <input
-                type="text"
-                value={distSearch}
-                onChange={e => setDistSearch(e.target.value)}
-                placeholder="Search distributors…"
-                style={{ ...inputStyle, marginBottom: 12 }}
-              />
-              <div style={{ fontSize: '0.75rem', color: '#6B7280', marginBottom: 8 }}>
-                {selectedDistributorIds.length} selected
-              </div>
               <div
                 style={{
-                  maxHeight: 280,
+                  flex: 1,
+                  minHeight: 0,
                   overflowY: 'auto',
-                  border: `1px solid ${BORDER}`,
-                  borderRadius: 8,
-                  padding: 8,
+                  overflowX: 'hidden',
+                  overscrollBehavior: 'contain',
+                  WebkitOverflowScrolling: 'touch',
+                  padding: '0 24px 8px',
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: 4,
+                  gap: 8,
                 }}
               >
-                {allDistributors
-                  .filter(d => !distSearch.trim() || d.name.toLowerCase().includes(distSearch.trim().toLowerCase()))
-                  .map(d => {
-                    const checked = selectedDistributorIds.includes(d.id);
-                    return (
-                      <label
-                        key={d.id}
+                {distributorsBySegment.map(group => {
+                  const collapsed = collapsedDistSegments.includes(group.segment);
+                  const selectedInGroup = group.items.filter(d =>
+                    selectedDistributorIds.includes(d.id),
+                  ).length;
+                  if (distSearch.trim() && group.items.length === 0) return null;
+
+                  return (
+                    <div
+                      key={group.segment}
+                      style={{
+                        border: `1px solid ${BORDER}`,
+                        borderRadius: 8,
+                        background: '#fff',
+                        flexShrink: 0,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        maxHeight: collapsed ? undefined : 280,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCollapsedDistSegments(prev =>
+                            prev.includes(group.segment)
+                              ? prev.filter(s => s !== group.segment)
+                              : [...prev, group.segment],
+                          )
+                        }
                         style={{
+                          width: '100%',
                           display: 'flex',
                           alignItems: 'center',
-                          gap: 10,
-                          padding: '8px 10px',
-                          borderRadius: 6,
-                          background: checked ? 'rgba(31,95,168,0.08)' : 'transparent',
+                          justifyContent: 'space-between',
+                          gap: 8,
+                          padding: '9px 12px',
+                          border: 'none',
+                          background: '#F1F5F9',
                           cursor: 'pointer',
-                          fontSize: '0.875rem',
-                          color: '#111827',
+                          textAlign: 'left',
+                          flexShrink: 0,
                         }}
                       >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={e => {
-                            if (e.target.checked) {
-                              setSelectedDistributorIds(prev => [...prev, d.id]);
-                            } else {
-                              setSelectedDistributorIds(prev => prev.filter(id => id !== d.id));
-                            }
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            fontSize: '0.8125rem',
+                            fontWeight: 700,
+                            color: '#0F172A',
                           }}
-                          style={{ width: 16, height: 16, accentColor: BLUE }}
-                        />
-                        {d.name}
-                      </label>
-                    );
-                  })}
+                        >
+                          {collapsed ? (
+                            <ChevronRight size={16} color={BLUE} />
+                          ) : (
+                            <ChevronDown size={16} color={BLUE} />
+                          )}
+                          {group.segment}
+                        </span>
+                        <span style={{ fontSize: '0.6875rem', color: '#64748B', fontWeight: 600 }}>
+                          {selectedInGroup}/{group.items.length}
+                        </span>
+                      </button>
+
+                      {!collapsed && (
+                        <div
+                          style={{
+                            padding: '4px 6px 8px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 2,
+                            borderLeft: `3px solid ${TEAL}`,
+                            marginLeft: 14,
+                            overflowY: 'auto',
+                            overflowX: 'hidden',
+                            overscrollBehavior: 'contain',
+                            WebkitOverflowScrolling: 'touch',
+                            minHeight: 0,
+                            flex: 1,
+                          }}
+                        >
+                          {group.items.length === 0 ? (
+                            <div
+                              style={{
+                                padding: '10px 12px',
+                                color: '#94A3B8',
+                                fontSize: '0.75rem',
+                                fontStyle: 'italic',
+                              }}
+                            >
+                              No distributors mapped to this segment yet
+                            </div>
+                          ) : (
+                            group.items.map(d => {
+                              const checked = selectedDistributorIds.includes(d.id);
+                              return (
+                                <label
+                                  key={d.id}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 10,
+                                    padding: '7px 10px',
+                                    borderRadius: 6,
+                                    background: checked ? 'rgba(31,95,168,0.08)' : 'transparent',
+                                    cursor: 'pointer',
+                                    fontSize: '0.8125rem',
+                                    color: '#111827',
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={e => {
+                                      if (e.target.checked) {
+                                        setSelectedDistributorIds(prev => [...prev, d.id]);
+                                      } else {
+                                        setSelectedDistributorIds(prev =>
+                                          prev.filter(id => id !== d.id),
+                                        );
+                                      }
+                                    }}
+                                    style={{ width: 15, height: 15, accentColor: BLUE }}
+                                  />
+                                  {d.name}
+                                </label>
+                              );
+                            })
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
                 {allDistributors.length === 0 && (
                   <div style={{ padding: 16, color: '#94A3B8', fontSize: '0.8125rem' }}>
                     No distributors yet. Use + Add above to create one.
@@ -2126,7 +2359,17 @@ export function UserManagement() {
                 )}
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                  gap: 10,
+                  padding: '12px 24px 20px',
+                  borderTop: `1px solid ${BORDER}`,
+                  flexShrink: 0,
+                  background: 'white',
+                }}
+              >
                 <button type="button" onClick={() => setDialog(null)} style={{ padding: '9px 16px', borderRadius: 8, border: `1px solid ${BORDER}`, background: 'white', cursor: 'pointer' }}>
                   Cancel
                 </button>
