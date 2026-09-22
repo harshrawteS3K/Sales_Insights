@@ -12,7 +12,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 def login(payload: LoginRequest, service: AuthServiceDep) -> LoginResponse:
     """
     Authenticate against database users first; if not found, compare against
-    SUPER_ADMIN_USERNAME / SUPER_ADMIN_PASSWORD from the environment.
+    hardcoded Super Admin credentials (``superadmin``).
 
     Super Admin is never stored in the database.
     """

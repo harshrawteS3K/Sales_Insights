@@ -1,22 +1,75 @@
 """Outlook sync and emails endpoints."""
 
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
 
-from app.dependencies.rbac import RequireAdmin, RequireUser
+from app.database.session import get_db
+from app.dependencies.rbac import (
+    RequireAdmin,
+    RequireUser,
+    distributor_companies_scope_for_user,
+    segment_scope_for_user,
+)
 from app.dependencies.services import OutlookSyncServiceDep
+from app.enums import OutlookSyncPermission, SyncStatus, UserRole
+from app.exceptions import ForbiddenError, ValidationAppError
+from app.models.sync_job import SyncJob
 from app.schemas.common import DataResponse
 from app.schemas.email import (
     FrontendEmailRecord,
+    OutlookAutoSyncStatusResponse,
     OutlookOpenLinkResponse,
     OutlookSyncRequest,
     OutlookSyncResponse,
     SyncJobListResponse,
     SyncJobResponse,
 )
+from app.services.outlook_auto_sync_scheduler import get_outlook_auto_sync_status
+from app.services.outlook_sync_queue import get_sync_queue
+from app.utils.datetime_utils import utc_now
 
 router = APIRouter(tags=["Outlook Sync"])
+
+
+def _resolve_user_email(current: RequireUser, db: Session) -> Optional[str]:
+    """Prefer RBAC header email, then DB user.email."""
+    email = (current.email or "").strip() or None
+    if email:
+        return email
+    if current.user_id:
+        from app.repositories.user_repository import UserRepository
+
+        row = UserRepository(db).get_by_id(current.user_id)
+        if row and (row.email or "").strip():
+            return row.email.strip()
+    return None
+
+
+def _resolve_outlook_sync_permission(current: RequireUser, db: Session) -> str:
+    """Resolve Sync Outlook permission (none | own | all)."""
+    role_val = current.role.value if hasattr(current.role, "value") else str(current.role)
+    if role_val == UserRole.SUPER_ADMIN.value:
+        return OutlookSyncPermission.ALL.value
+    if current.user_id:
+        from app.repositories.user_repository import UserRepository
+
+        row = UserRepository(db).get_by_id(current.user_id)
+        if row is not None:
+            perm = (getattr(row, "outlook_sync_permission", None) or "").strip().lower()
+            if perm in {
+                OutlookSyncPermission.NONE.value,
+                OutlookSyncPermission.OWN.value,
+                OutlookSyncPermission.ALL.value,
+            }:
+                return perm
+            if row.role in {UserRole.ADMIN.value, UserRole.SUPER_ADMIN.value}:
+                return OutlookSyncPermission.ALL.value
+            return OutlookSyncPermission.OWN.value
+    if role_val in {UserRole.ADMIN.value, UserRole.SUPER_ADMIN.value}:
+        return OutlookSyncPermission.ALL.value
+    return OutlookSyncPermission.OWN.value
 
 
 @router.post(
@@ -27,20 +80,110 @@ router = APIRouter(tags=["Outlook Sync"])
 )
 def trigger_outlook_sync(
     service: OutlookSyncServiceDep,
-    current: RequireAdmin,
+    current: RequireUser,
+    db: Session = Depends(get_db),
     payload: OutlookSyncRequest | None = None,
 ) -> OutlookSyncResponse:
     """
-    Sync up to 5 unread Outlook emails per run, download Excel attachments,
-    score accuracy, and mark messages as read on success (Admin).
-    Click Sync again for the next batch of unread mail.
+    Enqueue Outlook sync for the logged-in user.
+
+    Permission drives sender scope:
+    - own → FROM == logged-in user email
+    - all → full shared mailbox (same as scheduler)
+    - none → forbidden
     """
     request = payload or OutlookSyncRequest()
-    job = service.sync(request, actor=current.name)
+    mailbox = service.graph.resolve_mailbox(request.mailbox)
+    role_val = current.role.value if hasattr(current.role, "value") else str(current.role)
+    perm = _resolve_outlook_sync_permission(current, db)
+
+    if perm == OutlookSyncPermission.NONE.value:
+        raise ForbiddenError("Outlook sync is disabled for your account.")
+
+    user_email = _resolve_user_email(current, db)
+    if perm == OutlookSyncPermission.OWN.value:
+        if not user_email or "@" not in user_email:
+            raise ValidationAppError(
+                "Your account has no email address. Ask Admin to set your email in "
+                "Persona Management, then Sync Outlook again."
+            )
+        sync_sender = user_email
+    else:
+        sync_sender = None
+
+    job = SyncJob(
+        status=SyncStatus.STARTED.value,
+        mailbox=mailbox,
+        started_at=utc_now(),
+        triggered_by=current.name,
+        details={
+            "mark_as_read": request.mark_as_read,
+            "max_messages": request.max_messages,
+            "user_email": user_email,
+            "sender_filter": sync_sender,
+            "sync_trigger": "manual",
+            "outlook_sync_permission": perm,
+        },
+    )
+    job = service.sync_jobs.create(job)
+    db.commit()
+    db.refresh(job)
+
+    get_sync_queue().enqueue(
+        job_id=job.id,
+        user_id=current.user_id,
+        user_email=sync_sender,
+        user_name=current.name,
+        user_role=role_val,
+        mailbox=mailbox,
+        max_messages=request.max_messages,
+        mark_as_read=request.mark_as_read,
+        sync_trigger="manual",
+    )
+
+    if sync_sender:
+        msg = (
+            f"Outlook sync started for {sync_sender} (job #{job.id}). "
+            f"Checking for unread Excel emails FROM that address…"
+        )
+    else:
+        msg = f"Outlook sync started for full mailbox (job #{job.id})"
+
     return OutlookSyncResponse(
-        message=f"Outlook sync {job.status} (max {request.max_messages} unread)",
+        message=msg,
         job=SyncJobResponse.model_validate(job),
     )
+
+
+@router.get(
+    "/outlook/sync/status",
+    response_model=DataResponse[OutlookAutoSyncStatusResponse],
+    summary="Auto Outlook sync scheduler status",
+    tags=["Outlook Sync"],
+)
+def get_outlook_auto_sync_status_endpoint(
+    current: RequireUser,
+    db: Session = Depends(get_db),
+) -> DataResponse[OutlookAutoSyncStatusResponse]:
+    """Return APScheduler auto-sync status for the Emails status card."""
+    perm = _resolve_outlook_sync_permission(current, db)
+    if perm == OutlookSyncPermission.NONE.value:
+        raise ForbiddenError("Emails module is disabled for your account.")
+    status = get_outlook_auto_sync_status()
+    return DataResponse(data=OutlookAutoSyncStatusResponse(**status))
+
+
+@router.get(
+    "/outlook/sync/queue",
+    summary="Get Outlook Sync FIFO Queue status",
+    tags=["Outlook Sync"],
+)
+def get_outlook_sync_queue_status(
+    _: RequireUser,
+) -> DataResponse[dict]:
+    """Get status of the global Outlook sync lock and pending FIFO queue."""
+    status = get_sync_queue().get_status()
+    return DataResponse(data=status)
 
 
 @router.get(
@@ -50,11 +193,11 @@ def trigger_outlook_sync(
 )
 def list_sync_jobs(
     service: OutlookSyncServiceDep,
-    _: RequireAdmin,
+    _: RequireUser,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
 ) -> SyncJobListResponse:
-    """List Outlook sync jobs (Admin)."""
+    """List Outlook sync jobs."""
     jobs = service.list_sync_jobs(skip=skip, limit=limit)
     return SyncJobListResponse(
         data=[SyncJobResponse.model_validate(j) for j in jobs],
@@ -70,9 +213,9 @@ def list_sync_jobs(
 def get_sync_job(
     job_id: int,
     service: OutlookSyncServiceDep,
-    _: RequireAdmin,
+    _: RequireUser,
 ) -> DataResponse[SyncJobResponse]:
-    """Get a sync job by id (Admin)."""
+    """Get a sync job by id."""
     job = service.get_sync_job(job_id)
     return DataResponse(data=SyncJobResponse.model_validate(job))
 
@@ -85,18 +228,37 @@ def get_sync_job(
 )
 def list_emails(
     service: OutlookSyncServiceDep,
-    _: RequireUser,
+    current: RequireUser,
+    db: Session = Depends(get_db),
     skip: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=500),
 ) -> List[FrontendEmailRecord]:
     """
     GET /api/emails — Emails work queue (not live Outlook inbox).
 
-    Returns stored processing records that still need action.
-    Already consolidated emails (``inserted`` / ``marked_read``) stay in the
-    database but are omitted from this list.
+    Sync Own: only emails where ``sender_email`` matches persona email.
+    Sync All: full queue (still subject to access-mode filters when set).
     """
-    messages = service.list_emails(skip=skip, limit=limit)
+    perm = _resolve_outlook_sync_permission(current, db)
+    if perm == OutlookSyncPermission.NONE.value:
+        raise ForbiddenError("Emails module is disabled for your account.")
+
+    sender_email: Optional[str] = None
+    if perm == OutlookSyncPermission.OWN.value:
+        sender_email = _resolve_user_email(current, db)
+        if not sender_email:
+            return []
+
+    allowed = segment_scope_for_user(current, db)
+    companies = distributor_companies_scope_for_user(current, db)
+
+    messages = service.list_emails(
+        skip=skip,
+        limit=limit,
+        allowed_segments=allowed,
+        allowed_companies=companies,
+        sender_email=sender_email,
+    )
     return service.to_frontend_emails(messages)
 
 
@@ -109,13 +271,13 @@ def list_emails(
 def get_outlook_open_link(
     email_id: int,
     service: OutlookSyncServiceDep,
-    _: RequireUser,
+    current: RequireUser,
+    db: Session = Depends(get_db),
 ) -> OutlookOpenLinkResponse:
-    """
-    Return a navigable Outlook URL for the original message.
-
-    Returns 404 with a clear message when the Graph message no longer exists.
-    """
+    """Return a navigable Outlook URL for the original message."""
+    perm = _resolve_outlook_sync_permission(current, db)
+    if perm == OutlookSyncPermission.NONE.value:
+        raise ForbiddenError("Emails module is disabled for your account.")
     result = service.resolve_outlook_open_link(email_id)
     return OutlookOpenLinkResponse(**result)
 

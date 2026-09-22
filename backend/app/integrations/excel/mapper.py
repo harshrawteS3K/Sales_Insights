@@ -21,6 +21,7 @@ class SalesRecordMapper:
             sr_no=row.sr_no,
             customer_name=row.customer_name,
             segment=row.segment,
+            location=getattr(row, "location", "") or "",
             product=row.product,
             quantity=row.quantity,
             quantity_display=row.quantity_display,

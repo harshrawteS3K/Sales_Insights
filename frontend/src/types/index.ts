@@ -5,6 +5,7 @@
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 export type UserRole = 'admin' | 'user' | 'super_admin';
+export type OutlookSyncPermission = 'none' | 'own' | 'all';
 
 export interface AuthUser {
   role: UserRole;
@@ -18,10 +19,14 @@ export interface ManagedUser {
   email: string;
   full_name: string;
   title?: string | null;
-  role: 'admin' | 'user';
+  role: 'admin' | 'user' | 'super_admin';
   is_active: boolean;
   phone?: string | null;
   department?: string | null;
+  segments?: string[];
+  distributor_ids?: number[];
+  assigned_distributor_count?: number;
+  outlook_sync_permission?: OutlookSyncPermission;
   created_at?: string;
   updated_at?: string;
 }
@@ -47,6 +52,7 @@ export interface LayoutContext {
   userRole: UserRole | null;
   userName: string;
   userTitle: string;
+  outlookSyncPermission?: OutlookSyncPermission | null;
 }
 
 // ─── Nav ──────────────────────────────────────────────────────────────────────
@@ -80,8 +86,15 @@ export interface EmailRecord {
   statusLabel?: string;
   attachmentName?: string | null;
   distributorName?: string | null;
+  distributor?: string | null;
+  location?: string | null;
+  segment?: string | null;
+  quarter?: string | null;
+  subjectValid?: boolean;
   hasExcel?: boolean;
   errorMessage?: string | null;
+  /** python = deterministic | llm = OpenAI fallback | manual = user mapping */
+  mappingSource?: string | null;
 }
 
 // ─── Distributors (admin CRUD) ────────────────────────────────────────────────
@@ -154,6 +167,7 @@ export interface SalesLineItem {
   srNo: number;
   customerName: string;
   segment?: string;
+  location?: string;
   product: string;
   quantity: string;
 }
@@ -164,6 +178,7 @@ export interface ReportSalesGroup {
   distributor: string;
   company?: string | null;
   distributorId?: number | null;
+  location?: string | null;
   reportingQuarter?: string | null;
   reportingMonth?: string | null; // backward-compat alias
   senderName?: string | null;
@@ -218,6 +233,7 @@ export interface ConsolidatedFilterOptions {
   distributors: string[];
   customers: string[];
   segments: string[];
+  locations?: string[];
   products: string[];
   companies: string[];
   reportingQuarters?: string[];
@@ -317,6 +333,7 @@ export interface ConsolidatedRecordQuery {
   distributor?: string;
   customer?: string;
   segment?: string;
+  location?: string;
   product?: string;
   company?: string;
   period?: string;
@@ -339,6 +356,7 @@ export type SortKey =
   | 'distributor'
   | 'customerName'
   | 'segment'
+  | 'location'
   | 'product'
   | 'quantity'
   | 'reportingQuarter'

@@ -57,8 +57,14 @@ class FrontendEmailRecord(BaseModel):
     statusLabel: str = "New"
     attachmentName: Optional[str] = None
     distributorName: Optional[str] = None
+    distributor: Optional[str] = None
+    location: Optional[str] = None
+    segment: Optional[str] = None
+    quarter: Optional[str] = None
+    subjectValid: bool = False
     hasExcel: bool = False
     errorMessage: Optional[str] = None
+    mappingSource: Optional[str] = None  # python | llm | manual
 
 
 class OutlookOpenLinkResponse(BaseModel):
@@ -96,9 +102,17 @@ class OutlookSyncRequest(BaseModel):
     mailbox: Optional[str] = None
     mark_as_read: bool = True
     # Cap per sync run (Emails work-queue batch size). Graph pages until this limit.
-    max_messages: int = Field(default=5, ge=1, le=5)
-    # Reporting quarter for ERP ingest (not read from Excel). Example: "Q3 2026".
-    reporting_quarter: Optional[str] = None
+    # Manual UI typically uses 5; automated scheduler may use a higher batch.
+    max_messages: int = Field(default=5, ge=1, le=100)
+
+
+class OutlookAutoSyncStatusResponse(BaseModel):
+    """Auto-sync scheduler status for the Emails UI card."""
+
+    status: str
+    frequency: str
+    last_successful_sync: Optional[str] = None
+    next_scheduled_sync: Optional[str] = None
 
 
 class OutlookSyncResponse(BaseModel):

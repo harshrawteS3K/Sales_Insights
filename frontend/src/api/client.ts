@@ -44,9 +44,18 @@ function buildHeaders(extra?: HeadersInit, isFormData = false): Headers {
     headers.set('Content-Type', 'application/json');
   }
   const session = getSession();
-  if (session) {
+    if (session) {
     headers.set('X-User-Role', session.role);
     headers.set('X-User-Name', session.name);
+    if (session.user_id != null) {
+      headers.set('X-User-Id', String(session.user_id));
+    }
+    if (session.email) {
+      headers.set('X-User-Email', session.email);
+    }
+    if (session.segments?.length) {
+      headers.set('X-User-Segments', session.segments.join(','));
+    }
   }
   return headers;
 }
@@ -155,6 +164,15 @@ export async function apiUpload<T>(
     if (session) {
       xhr.setRequestHeader('X-User-Role', session.role);
       xhr.setRequestHeader('X-User-Name', session.name);
+      if (session.user_id != null) {
+        xhr.setRequestHeader('X-User-Id', String(session.user_id));
+      }
+      if (session.email) {
+        xhr.setRequestHeader('X-User-Email', session.email);
+      }
+      if (session.segments?.length) {
+        xhr.setRequestHeader('X-User-Segments', session.segments.join(','));
+      }
     }
 
     xhr.upload.onprogress = event => {

@@ -7,9 +7,16 @@ Endpoints remain mounted for API compatibility only.
 
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy.orm import Session
 
-from app.dependencies.rbac import RequireAdmin, RequireUser
+from app.database.session import get_db
+from app.dependencies.rbac import (
+    RequireAdmin,
+    RequireUser,
+    distributor_companies_scope_for_user,
+    segment_scope_for_user,
+)
 from app.dependencies.services import DistributorServiceDep, MasterDataServiceDep
 from app.exceptions import NotFoundError
 from app.schemas.common import DataResponse, MessageResponse
@@ -26,6 +33,7 @@ from app.schemas.distributor import (
     QuarterlyPackageRequest,
 )
 from app.services import bulk_email_draft_service
+from app.services.distributor_performance_service import DistributorPerformanceService
 
 router = APIRouter(prefix="/distributors", tags=["Distributors"])
 
@@ -34,6 +42,15 @@ def _to_response(service: DistributorServiceDep, item) -> DistributorResponse:
     data = DistributorResponse.model_validate(item)
     data.customer_count = service.customer_count(item.id)
     return data
+
+
+def _clean(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    text = value.strip()
+    if not text or text.lower() == "all":
+        return None
+    return text
 
 
 @router.get("", response_model=DistributorListResponse, summary="List distributors")
@@ -66,6 +83,63 @@ def distributor_details_map(
 ) -> DataResponse[Dict[str, DistributorInfo]]:
     """Frontend-aligned distributor detail map."""
     return DataResponse(data=service.details_map())
+
+
+@router.get(
+    "/performance/filter-options",
+    response_model=DataResponse[dict],
+    summary="Distributor Performance filter dropdowns",
+)
+def performance_filter_options(
+    current: RequireUser,
+    db: Session = Depends(get_db),
+) -> DataResponse[dict]:
+    service = DistributorPerformanceService(db)
+    data = service.filter_options(
+        allowed_segments=segment_scope_for_user(current, db),
+        allowed_companies=distributor_companies_scope_for_user(current, db),
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/performance",
+    response_model=DataResponse[dict],
+    summary="Distributor Performance benchmarking",
+)
+def distributor_performance(
+    current: RequireUser,
+    db: Session = Depends(get_db),
+    fiscal_year_start: Optional[int] = Query(
+        None, description="Indian FY start year e.g. 2025 for FY 2025–26"
+    ),
+    period: Optional[str] = Query(
+        "full_year",
+        description="full_year | q1 | q2 | q3 | q4 | last_3_months | last_6_months | last_12_months | custom",
+    ),
+    segment: Optional[str] = Query(None),
+    location: Optional[str] = Query(None),
+    distributor_id: Optional[int] = Query(None),
+    customer: Optional[str] = Query(None),
+    product: Optional[str] = Query(None),
+    start_month: Optional[str] = Query(None, description="YYYY-MM for custom range"),
+    end_month: Optional[str] = Query(None, description="YYYY-MM for custom range"),
+) -> DataResponse[dict]:
+    service = DistributorPerformanceService(db)
+    data = service.performance(
+        fiscal_year_start=fiscal_year_start,
+        period=period,
+        segment=_clean(segment),
+        location=_clean(location),
+        distributor_id=distributor_id,
+        customer=_clean(customer),
+        product=_clean(product),
+        start_month=start_month,
+        end_month=end_month,
+        allowed_segments=segment_scope_for_user(current, db),
+        allowed_companies=distributor_companies_scope_for_user(current, db),
+    )
+    return DataResponse(data=data)
 
 
 @router.post(

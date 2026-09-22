@@ -5,10 +5,12 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, UploadFile
 
-from app.dependencies.rbac import RequireAdmin
+from app.dependencies.rbac import RequireAdmin, RequireUser
 from app.database.session import get_db
+from app.enums import UserRole
+from app.services.segment_access_service import SegmentAccessService
 from app.erp_parser import ERPParserService
-from app.exceptions import ExcelProcessingError, ValidationAppError
+from app.exceptions import ExcelProcessingError, ForbiddenError, ValidationAppError
 from app.schemas.common import DataResponse, MessageResponse
 from app.schemas.erp_parse import (
     ERPEmailPreviewRequest,
@@ -26,6 +28,53 @@ router = APIRouter(prefix="/erp", tags=["ERP Parser"])
 
 def _erp_service(db: Session = Depends(get_db)) -> ERPIngestService:
     return ERPIngestService(db)
+
+
+def _resolve_user_email(current: RequireUser, db: Session) -> Optional[str]:
+    """Prefer RBAC header email, then DB user.email."""
+    email = (current.email or "").strip() or None
+    if email:
+        return email
+    if current.user_id:
+        from app.repositories.user_repository import UserRepository
+
+        row = UserRepository(db).get_by_id(current.user_id)
+        if row and (row.email or "").strip():
+            return row.email.strip()
+    return None
+
+
+def _ensure_email_access(
+    current: RequireUser,
+    db: Session,
+    email,
+    *,
+    check_segment: bool = True,
+) -> None:
+    """
+    Admin: unrestricted.
+    Sales Owner: must own the email (FROM == persona email) and have segment access.
+    """
+    role_val = current.role.value if hasattr(current.role, "value") else str(current.role)
+    if role_val in {UserRole.ADMIN.value, UserRole.SUPER_ADMIN.value}:
+        return
+
+    user_email = (_resolve_user_email(current, db) or "").strip().lower()
+    sender = (getattr(email, "sender_email", None) or "").strip().lower()
+    if not user_email or not sender or user_email != sender:
+        raise ForbiddenError(
+            "You can only preview/import emails sent from your registered persona email.",
+            details={
+                "email_id": getattr(email, "id", None),
+                "sender_email": sender or None,
+                "your_email": user_email or None,
+            },
+        )
+
+    if check_segment:
+        SegmentAccessService(db).require_segment_access(
+            current, getattr(email, "parsed_segment", None)
+        )
 
 
 @router.post(
@@ -67,11 +116,16 @@ async def parse_erp_preview(
 )
 def preview_email_attachment(
     email_id: int,
-    current: RequireAdmin,
+    current: RequireUser,
     payload: Optional[ERPEmailPreviewRequest] = None,
     service: ERPIngestService = Depends(_erp_service),
+    db: Session = Depends(get_db),
 ) -> DataResponse[ERPParsePreviewResponse]:
     """Parse email attachment; optional mapping override recomputes rows."""
+    email = service.emails.get_or_raise(email_id)
+    # Ownership only here — subject/segment validated inside preview_email
+    _ensure_email_access(current, db, email, check_segment=False)
+
     mapping = payload.mapping if payload else None
     fiscal_year_start = payload.fiscal_year_start if payload else None
     # Convert pydantic mapping items to plain dicts
@@ -96,10 +150,13 @@ def preview_email_attachment(
 )
 def import_erp_rows(
     payload: ERPImportRequest,
-    current: RequireAdmin,
+    current: RequireUser,
     service: ERPIngestService = Depends(_erp_service),
+    db: Session = Depends(get_db),
 ) -> DataResponse[ERPImportResponse]:
     """Import approved preview rows into Consolidated Data."""
+    email = service.emails.get_or_raise(payload.email_id)
+    _ensure_email_access(current, db, email, check_segment=True)
     mapping: Any = payload.mapping
     if mapping is not None and not isinstance(mapping, dict):
         mapping = [m.model_dump() if hasattr(m, "model_dump") else m for m in mapping]
@@ -128,8 +185,11 @@ def import_erp_rows(
 )
 def skip_erp_email(
     email_id: int,
-    current: RequireAdmin,
+    current: RequireUser,
     service: ERPIngestService = Depends(_erp_service),
+    db: Session = Depends(get_db),
 ) -> MessageResponse:
+    email = service.emails.get_or_raise(email_id)
+    _ensure_email_access(current, db, email, check_segment=False)
     service.skip_email(email_id, actor=current.name)
     return MessageResponse(message=f"Email {email_id} skipped")

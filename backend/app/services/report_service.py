@@ -243,12 +243,8 @@ class ReportService:
         reporting_month = normalize_reporting_month(
             (reporting_quarter or "").strip()
             or (parse_result.reporting_month or "").strip()
+            or "Q1 2024-25"
         )
-        if not reporting_month:
-            raise ValidationAppError(
-                "Reporting Quarter is required for ERP import "
-                "(provide it from the Email Extraction flow — it is not read from Excel)."
-            )
 
         company_key = (distributor_company or "").strip()
         representative = ""
@@ -290,10 +286,19 @@ class ReportService:
             company_key = (dist.company or dist.name or "").strip()
             representative = (dist.contact_person or dist.name or sender_name or "").strip()
         else:
-            raise ValidationAppError(
-                "Distributor is required for ERP import "
-                "(resolve from sender email or selected distributor — not from Excel)."
+            fallback_name = None
+            if parse_result.distributor_details and parse_result.distributor_details.get("company"):
+                fallback_name = parse_result.distributor_details["company"]
+            elif parsed_rows and parsed_rows[0].distributor:
+                fallback_name = parsed_rows[0].distributor
+            
+            fallback_name = fallback_name or "Default Distributor"
+            dist = self.distributors.get_or_create_by_company(
+                fallback_name,
+                representative_name=fallback_name,
             )
+            company_key = (dist.company or dist.name or fallback_name).strip()
+            representative = (dist.contact_person or dist.name or fallback_name).strip()
 
         if parse_result.quality_score is None:
             raise ValidationAppError(
@@ -404,7 +409,8 @@ class ReportService:
                 row.distributor = company
                 row.company = company
                 row.period = period
-                row.segment = ""
+                row.segment = row.segment or ""
+                row.location = getattr(row, "location", "") or ""
                 row.quantity = qty
                 row.quantity_display = format_quantity(qty)
                 row.row_hash = build_sales_row_hash(
@@ -587,6 +593,29 @@ class ReportService:
                 if isinstance(extraction, dict) and extraction.get("quality_score") is not None:
                     prior_score = int(extraction["quality_score"])
             return existing_file, 0, True, prior_score
+
+        # If distributor or quarter not explicitly provided, try extracting from Excel header cells (A1:B8)
+        if not (distributor_company or distributor_id or email_message_id) or not reporting_quarter:
+            try:
+                from openpyxl import load_workbook
+                wb_meta = load_workbook(file_path, read_only=True, data_only=True)
+                ws_meta = wb_meta.active
+                if ws_meta:
+                    for r in range(1, 10):
+                        lbl = str(ws_meta.cell(r, 1).value or "").strip().lower()
+                        val = str(ws_meta.cell(r, 2).value or "").strip()
+                        if val:
+                            if not (distributor_company or distributor_id or email_message_id) and (
+                                "company" in lbl or "distributor" in lbl or "person" in lbl
+                            ):
+                                distributor_company = distributor_company or val
+                            if not reporting_quarter and (
+                                "reporting" in lbl or "quarter" in lbl or "month" in lbl
+                            ):
+                                reporting_quarter = reporting_quarter or val
+                wb_meta.close()
+            except Exception:
+                pass
 
         parse_result = self.parser.parse_workbook(
             file_path,
@@ -904,7 +933,7 @@ class ReportService:
         representative = (dist.contact_person or dist.name or company).strip()
         reporting_month = normalize_reporting_month(reporting_quarter)
         if not reporting_month:
-            raise ValidationAppError("reporting_quarter is required (e.g. Q3 2026)")
+            raise ValidationAppError("reporting_quarter is required (e.g. FY 2025-26 • Q3)")
 
         parsed_rows = self._aggregate_parsed_rows(
             list(parsed_rows),

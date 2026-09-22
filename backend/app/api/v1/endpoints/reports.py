@@ -121,7 +121,7 @@ async def upload_report(
     ),
     reporting_quarter: Optional[str] = Form(
         default=None,
-        description="Reporting quarter e.g. Q3 2026 (required for ERP ingest; not read from Excel)",
+        description="Reporting quarter e.g. FY 2025-26 • Q3 (required for ERP ingest; not read from Excel)",
     ),
     distributor_company: Optional[str] = Form(
         default=None,

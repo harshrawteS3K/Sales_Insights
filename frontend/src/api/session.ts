@@ -1,4 +1,4 @@
-import type { UserRole } from '../types';
+import type { OutlookSyncPermission, UserRole } from '../types';
 
 const SESSION_KEY = 'apcotex_session';
 
@@ -6,6 +6,13 @@ export interface SessionUser {
   role: UserRole;
   name: string;
   title: string;
+  username?: string;
+  user_id?: number | null;
+  email?: string | null;
+  segments?: string[];
+  distributor_ids?: number[];
+  access_mode?: 'segment' | 'distributor';
+  outlook_sync_permission?: OutlookSyncPermission;
 }
 
 export function saveSession(user: SessionUser): void {

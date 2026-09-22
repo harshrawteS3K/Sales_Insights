@@ -67,6 +67,18 @@ class EmailMessage(Base, TimestampMixin, SoftDeleteMixin):
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     mailbox: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     outlook_web_link: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+    parsed_distributor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    parsed_location: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    parsed_segment: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    detected_quarter: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    subject_valid: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+    )
+    # python | llm | manual — how Excel columns were mapped during extraction/scoring
+    mapping_source: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
 
     attachments: Mapped[List["EmailAttachment"]] = relationship(
         "EmailAttachment",

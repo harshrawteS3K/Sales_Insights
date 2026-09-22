@@ -1,16 +1,20 @@
 """Fiscal-year quarter helpers for monthly-pivot ERP workbooks.
 
-APCOTEX quarters (same as frontend):
+APCOTEX Indian FY (Apr–Mar):
   Q1 = Apr–Jun
   Q2 = Jul–Sep
   Q3 = Oct–Dec
   Q4 = Jan–Mar (calendar year = FY start + 1)
+
+Canonical storage label: ``FY 2025-26 • Q1``
 """
 
 from __future__ import annotations
 
 from datetime import date
 from typing import Dict, List, Optional, Tuple
+
+from app.utils.period_calendar import fy_quarter_label, parse_quarter_label
 
 # Month key (normalized) → fiscal quarter number
 MONTH_TO_FY_QUARTER: Dict[str, int] = {
@@ -52,8 +56,8 @@ def month_key_to_quarter(month_key: str) -> Optional[int]:
 
 
 def quarter_label(fy_start_year: int, quarter: int) -> str:
-    """Label stored on reports / sales.period, e.g. ``Q1 2025``."""
-    return f"Q{quarter} {fy_start_year}"
+    """Label stored on reports / sales.period, e.g. ``FY 2025-26 • Q1``."""
+    return fy_quarter_label(int(fy_start_year), int(quarter))
 
 
 def resolve_fy_start_year(
@@ -61,16 +65,12 @@ def resolve_fy_start_year(
     fiscal_year_start: Optional[int] = None,
     reporting_quarter: Optional[str] = None,
 ) -> int:
-    """
-    Prefer explicit FY start; else year from ``Q3 2026``-style label; else current FY.
-    """
+    """Prefer explicit FY start; else year from period label; else current FY."""
     if fiscal_year_start and 1990 <= int(fiscal_year_start) <= 2100:
         return int(fiscal_year_start)
-    raw = (reporting_quarter or "").strip()
-    if raw.upper().startswith("Q") and len(raw) >= 3:
-        parts = raw.replace("  ", " ").split()
-        if len(parts) >= 2 and parts[1].isdigit():
-            return int(parts[1])
+    spec = parse_quarter_label((reporting_quarter or "").strip())
+    if spec and spec.year is not None:
+        return int(spec.year)
     return current_fy_start_year()
 
 

@@ -4,7 +4,7 @@ import { Mail, Table2, BarChart3, ArrowUpRight } from 'lucide-react';
 import { BLUE, TEAL, BORDER } from '../../constants/theme';
 import { DashboardService, type DashboardSummary } from '../../services/dashboard.service';
 import { StatusBanner } from '../../components/common/StatusBanner';
-import { ApiError } from '../../api';
+import { ApiError, getSession } from '../../api';
 
 const quickModules = [
   {
@@ -14,6 +14,7 @@ const quickModules = [
     path: '/emails',
     color: BLUE,
     bg: 'rgba(31,95,168,0.07)',
+    emailsOnly: true,
   },
   {
     title: 'Consolidated Data',
@@ -38,6 +39,8 @@ export function SalesDashboard() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const hideEmails = getSession()?.outlook_sync_permission === 'none';
+  const modules = quickModules.filter(m => !(m.emailsOnly && hideEmails));
 
   const loadSummary = async () => {
     setLoading(true);
@@ -87,7 +90,7 @@ export function SalesDashboard() {
           maxHeight: 340,
           marginTop: error || (loading && !summary) ? 16 : 0,
         }}>
-          {quickModules.map(mod => {
+          {modules.map(mod => {
             const Icon = mod.icon;
             return (
               <button

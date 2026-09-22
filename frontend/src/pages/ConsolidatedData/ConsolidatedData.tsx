@@ -37,13 +37,18 @@ import {
   applyPeriodSummaries,
   buildYearQuarterTimeline,
   formatMt,
+  formatPeriodDisplay,
+  fyShortDisplay,
   overviewFromPeriodSummaries,
+  parseQuarter,
 } from '../../utils/quarter';
 import type { PeriodSummaryItem } from '../../types';
 
 type FilterState = {
   distributor: string;
   customer: string;
+  segment: string;
+  location: string;
   product: string;
   company: string;
   reportingQuarter: string;
@@ -57,6 +62,8 @@ type FilterState = {
 const EMPTY_FILTERS: FilterState = {
   distributor: '',
   customer: '',
+  segment: '',
+  location: '',
   product: '',
   company: '',
   reportingQuarter: '',
@@ -67,6 +74,8 @@ const EMPTY_FILTERS: FilterState = {
   importedTo: '',
 };
 
+const BUSINESS_SEGMENTS = ['Paper', 'Carpet', 'Construction', 'Rubber', 'Gloves'] as const;
+
 /** Reports per page — complete distributor reports (not mid-cut sales rows). */
 const PAGE_SIZE = 20;
 const EXPAND_ALL_THRESHOLD = 3;
@@ -75,12 +84,49 @@ type ViewTarget = { report: ReportSalesGroup; line: SalesLineItem };
 type DeleteRecordTarget = { report: ReportSalesGroup; line: SalesLineItem };
 
 function reportingQuarterOf(report: ReportSalesGroup): string {
-  return (report.reportingQuarter || report.reportingMonth)?.trim() || '—';
+  const raw = (report.reportingQuarter || report.reportingMonth)?.trim() || '';
+  if (!raw) return '—';
+  return formatPeriodDisplay(raw);
 }
 
 /** Primary business entity label for reporting. */
 function companyOf(report: ReportSalesGroup): string {
   return (report.company || report.distributor || '').trim() || '—';
+}
+
+/** Segment stamped from email subject onto sales lines for this report. */
+function segmentOf(report: ReportSalesGroup): string {
+  const values = report.sales
+    .map(s => (s.segment || '').trim())
+    .filter(Boolean);
+  if (!values.length) return '—';
+  return [...new Set(values)].join(', ');
+}
+
+/** Location stamped from email subject onto sales lines for this report. */
+function locationOf(report: ReportSalesGroup): string {
+  const fromReport = (report.location || '').trim();
+  if (fromReport) return fromReport;
+  const values = report.sales
+    .map(s => (s.location || '').trim())
+    .filter(Boolean);
+  if (!values.length) return '—';
+  return [...new Set(values)].join(', ');
+}
+
+function fiscalYearOf(report: ReportSalesGroup): string {
+  const raw = (report.reportingQuarter || report.reportingMonth)?.trim() || '';
+  const parsed = parseQuarter(raw);
+  if (parsed?.year) return fyShortDisplay(parsed.year);
+  return '—';
+}
+
+function quarterOnlyOf(report: ReportSalesGroup): string {
+  const raw = (report.reportingQuarter || report.reportingMonth)?.trim() || '';
+  const parsed = parseQuarter(raw);
+  if (parsed?.quarter) return `Q${parsed.quarter}`;
+  if (parsed?.kind === 'year') return 'Full Year';
+  return '—';
 }
 
 function formatConfidence(score?: number | null): string {
@@ -119,6 +165,7 @@ export function ConsolidatedData() {
     distributors: [],
     customers: [],
     segments: [],
+    locations: [],
     products: [],
     companies: [],
     reportingQuarters: [],
@@ -166,6 +213,8 @@ export function ConsolidatedData() {
         search: search || undefined,
         distributor: f.distributor || undefined,
         customer: f.customer || undefined,
+        segment: f.segment || undefined,
+        location: f.location || undefined,
         product: f.product || undefined,
         company: f.company || undefined,
         reportingQuarter: quarter,
@@ -345,18 +394,32 @@ export function ConsolidatedData() {
         const detailLines = [
           report.distributor,
           report.company || '',
+          `Location: ${locationOf(report)}`,
+          `Segment: ${segmentOf(report)}`,
           `Reporting Quarter: ${quarter}`,
+          `Financial Year: ${fiscalYearOf(report)}`,
         ].filter(Boolean);
 
         csvRows.push(csvEscape(detailLines.join('\n')));
         csvRows.push(
-          ['Sr No', 'Customer', 'Product', 'Quantity'].map(csvEscape).join(',')
+          ['Sr No', 'Distributor', 'Location', 'Customer', 'Product', 'Sales Qty', 'Financial Year', 'Quarter']
+            .map(csvEscape)
+            .join(',')
         );
 
         report.sales.forEach(line => {
           exportedLines += 1;
           csvRows.push(
-            [line.srNo, line.customerName, line.product, line.quantity]
+            [
+              line.srNo,
+              companyOf(report),
+              line.location || locationOf(report),
+              line.customerName,
+              line.product,
+              line.quantity,
+              fiscalYearOf(report),
+              quarterOnlyOf(report),
+            ]
               .map(csvEscape)
               .join(',')
           );
@@ -611,6 +674,86 @@ export function ConsolidatedData() {
             </div>
           </div>
 
+          {/* Segment filter — Paper / Carpet / Construction / Rubber / Gloves */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginBottom: 16,
+              flexWrap: 'wrap',
+            }}
+          >
+            <span
+              style={{
+                fontSize: '0.6875rem',
+                fontWeight: 700,
+                color: '#6B7280',
+                textTransform: 'uppercase',
+                letterSpacing: '0.04em',
+                marginRight: 4,
+              }}
+            >
+              Segment
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setFilters(f => ({ ...f, segment: '' }));
+                setAppliedFilters(f => ({ ...f, segment: '' }));
+                setPage(0);
+              }}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 999,
+                fontSize: '0.8125rem',
+                fontWeight: 600,
+                border: `1px solid ${!appliedFilters.segment ? BLUE : BORDER}`,
+                background: !appliedFilters.segment ? 'rgba(31,95,168,0.1)' : 'white',
+                color: !appliedFilters.segment ? BLUE : '#374151',
+                cursor: 'pointer',
+              }}
+            >
+              All
+            </button>
+            {(filterOptions.segments?.length ? filterOptions.segments : [...BUSINESS_SEGMENTS]).map(seg => {
+              const active = appliedFilters.segment === seg;
+              return (
+                <button
+                  key={seg}
+                  type="button"
+                  title={
+                    seg === 'Rubber'
+                      ? 'Rubber (NVC, HSR, NBR, Latex)'
+                      : seg
+                  }
+                  onClick={() => {
+                    setFilters(f => ({ ...f, segment: seg }));
+                    setAppliedFilters(f => ({ ...f, segment: seg }));
+                    setPage(0);
+                  }}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: 999,
+                    fontSize: '0.8125rem',
+                    fontWeight: 600,
+                    border: `1px solid ${active ? BLUE : BORDER}`,
+                    background: active ? 'rgba(31,95,168,0.1)' : 'white',
+                    color: active ? BLUE : '#374151',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {seg === 'Rubber' ? 'Rubber' : seg}
+                </button>
+              );
+            })}
+            {appliedFilters.segment === 'Rubber' && (
+              <span style={{ fontSize: '0.75rem', color: '#6B7280' }}>
+                (NVC · HSR · NBR · Latex)
+              </span>
+            )}
+          </div>
+
           {reportGroups.length === 0 ? (
             <div
               style={{
@@ -664,11 +807,8 @@ export function ConsolidatedData() {
                           borderBottom: `1px solid ${BORDER}`,
                         }}
                       >
-                        <span style={{ fontWeight: 700, minWidth: 88, color: '#111827' }}>
-                          {q.label}
-                          {q.range ? (
-                            <span style={{ fontWeight: 500, color: '#9CA3AF' }}> ({q.range})</span>
-                          ) : null}
+                        <span style={{ fontWeight: 700, minWidth: 140, color: '#111827' }}>
+                          {q.displayLabel || formatPeriodDisplay(q.label)}
                         </span>
                         <span style={{ color: '#6B7280' }}>
                           {q.distributorCount} distributor{q.distributorCount === 1 ? '' : 's'}
@@ -711,7 +851,7 @@ export function ConsolidatedData() {
                     >
                       <CalendarDays size={18} color={BLUE} />
                       <span style={{ fontSize: '1.0625rem', fontWeight: 700, color: '#111827' }}>
-                        {yearBucket.year || 'Unknown'}
+                        {yearBucket.fyLabel || (yearBucket.year ? `FY ${yearBucket.year}` : 'Unknown')}
                       </span>
                     </div>
                     <div style={{ height: 1, flex: 1, background: '#D1D5DB' }} />
@@ -763,13 +903,7 @@ export function ConsolidatedData() {
                             </span>
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ fontSize: '0.9375rem', fontWeight: 700, color: '#111827' }}>
-                                {qBucket.label}
-                                {qBucket.range ? (
-                                  <span style={{ fontWeight: 500, color: '#6B7280' }}>
-                                    {' '}
-                                    ({qBucket.range})
-                                  </span>
-                                ) : null}
+                                {qBucket.displayLabel || formatPeriodDisplay(qBucket.label)}
                               </div>
                               <div style={{ marginTop: 2, fontSize: '0.75rem', color: '#6B7280' }}>
                                 {qBucket.distributorCount} distributor
@@ -1034,7 +1168,10 @@ export function ConsolidatedData() {
                             {report.distributor && report.company && report.distributor !== report.company && (
                               <InfoCell label="Representative" value={report.distributor} />
                             )}
-                            <InfoCell label="Company" value={report.company || '—'} />
+                            <InfoCell label="Location" value={locationOf(report)} />
+                            <InfoCell label="Segment" value={segmentOf(report)} />
+                            <InfoCell label="Financial Year" value={fiscalYearOf(report)} />
+                            <InfoCell label="Quarter" value={quarterOnlyOf(report)} />
                             <InfoCell label="Reporting Quarter" value={quarter} />
                             <InfoCell
                               label="Sender"
@@ -1060,12 +1197,18 @@ export function ConsolidatedData() {
 
                         {/* Nested sales table */}
                         <div style={{ overflowX: 'auto' }}>
-                          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 780 }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 960 }}>
                             <thead>
                               <tr style={{ background: '#F3F4F6', borderBottom: `1px solid ${BORDER}` }}>
                                 <th onClick={() => handleSort('srNo')} style={thStyle('left')}>
                                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                                     Sr No <SortIcon col="srNo" />
+                                  </div>
+                                </th>
+                                <th style={{ ...thStyle('left'), cursor: 'default' }}>Distributor</th>
+                                <th onClick={() => handleSort('location')} style={thStyle('left')}>
+                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    Location <SortIcon col="location" />
                                   </div>
                                 </th>
                                 <th onClick={() => handleSort('customerName')} style={thStyle('left')}>
@@ -1080,9 +1223,11 @@ export function ConsolidatedData() {
                                 </th>
                                 <th onClick={() => handleSort('quantity')} style={thStyle('right')}>
                                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                    Quantity <SortIcon col="quantity" />
+                                    Sales Qty <SortIcon col="quantity" />
                                   </div>
                                 </th>
+                                <th style={{ ...thStyle('left'), cursor: 'default' }}>Financial Year</th>
+                                <th style={{ ...thStyle('left'), cursor: 'default' }}>Quarter</th>
                                 <th style={{ ...thStyle('left'), cursor: 'default' }}>Actions</th>
                               </tr>
                             </thead>
@@ -1097,6 +1242,20 @@ export function ConsolidatedData() {
                                   }}
                                 >
                                   <td style={tdMuted}>{line.srNo}</td>
+                                  <td
+                                    style={{
+                                      padding: '12px 16px',
+                                      fontSize: '0.875rem',
+                                      fontWeight: 600,
+                                      color: '#111827',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    {companyOf(report)}
+                                  </td>
+                                  <td style={{ padding: '12px 16px' }}>
+                                    <span style={chipBlue}>{line.location || locationOf(report)}</span>
+                                  </td>
                                   <td
                                     style={{
                                       padding: '12px 16px',
@@ -1121,6 +1280,12 @@ export function ConsolidatedData() {
                                     }}
                                   >
                                     {line.quantity}
+                                  </td>
+                                  <td style={{ padding: '12px 16px', fontSize: '0.8125rem', color: '#374151' }}>
+                                    {fiscalYearOf(report)}
+                                  </td>
+                                  <td style={{ padding: '12px 16px', fontSize: '0.8125rem', color: '#374151' }}>
+                                    {quarterOnlyOf(report)}
                                   </td>
                                   <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1154,7 +1319,7 @@ export function ConsolidatedData() {
                               {report.sales.length === 0 && (
                                 <tr>
                                   <td
-                                    colSpan={6}
+                                    colSpan={9}
                                     style={{
                                       padding: '28px',
                                       textAlign: 'center',
@@ -1337,11 +1502,32 @@ export function ConsolidatedData() {
                 placeholder="Search company…"
                 width="100%"
               />
+              <SearchAutocomplete
+                label="Location"
+                options={filterOptions.locations || []}
+                value={filters.location || 'All'}
+                allValue="All"
+                onChange={v => setFilters(f => ({ ...f, location: v === 'All' ? '' : v }))}
+                placeholder="Search location…"
+                width="100%"
+              />
               <FilterSelect
                 label="Customer"
                 value={filters.customer}
                 options={filterOptions.customers}
                 onChange={v => setFilters(f => ({ ...f, customer: v }))}
+                selectStyle={selectStyle}
+                labelStyle={labelStyle}
+              />
+              <FilterSelect
+                label="Segment"
+                value={filters.segment}
+                options={
+                  filterOptions.segments?.length
+                    ? filterOptions.segments
+                    : [...BUSINESS_SEGMENTS]
+                }
+                onChange={v => setFilters(f => ({ ...f, segment: v }))}
                 selectStyle={selectStyle}
                 labelStyle={labelStyle}
               />
@@ -1369,6 +1555,7 @@ export function ConsolidatedData() {
                 onChange={v => setFilters(f => ({ ...f, reportingQuarter: v, quarter: v }))}
                 selectStyle={selectStyle}
                 labelStyle={labelStyle}
+                formatOption={formatPeriodDisplay}
               />
               <div>
                 <label style={labelStyle}>Quantity Range</label>
@@ -1484,6 +1671,10 @@ export function ConsolidatedData() {
               }
             />
             <DetailRow label="Reporting Quarter" value={reportingQuarterOf(viewTarget.report)} />
+            <DetailRow label="Location" value={viewTarget.line.location || locationOf(viewTarget.report)} />
+            <DetailRow label="Segment" value={viewTarget.line.segment || segmentOf(viewTarget.report)} />
+            <DetailRow label="Financial Year" value={fiscalYearOf(viewTarget.report)} />
+            <DetailRow label="Quarter" value={quarterOnlyOf(viewTarget.report)} />
             <DetailRow
               label="Sender"
               value={
@@ -1509,6 +1700,8 @@ export function ConsolidatedData() {
           </div>
           <DetailRow label="Sr No" value={String(viewTarget.line.srNo)} />
           <DetailRow label="Customer" value={viewTarget.line.customerName} />
+          <DetailRow label="Location" value={viewTarget.line.location || locationOf(viewTarget.report)} />
+          <DetailRow label="Segment" value={viewTarget.line.segment || '—'} />
           <DetailRow label="Product" value={viewTarget.line.product} />
           <DetailRow label="Quantity" value={viewTarget.line.quantity} />
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
@@ -1629,6 +1822,7 @@ function FilterSelect({
   onChange,
   selectStyle,
   labelStyle,
+  formatOption,
 }: {
   label: string;
   value: string;
@@ -1636,6 +1830,7 @@ function FilterSelect({
   onChange: (v: string) => void;
   selectStyle: React.CSSProperties;
   labelStyle: React.CSSProperties;
+  formatOption?: (opt: string) => string;
 }) {
   return (
     <div>
@@ -1644,7 +1839,7 @@ function FilterSelect({
         <option value="">All</option>
         {options.map(opt => (
           <option key={opt} value={opt}>
-            {opt}
+            {formatOption ? formatOption(opt) : opt}
           </option>
         ))}
       </select>

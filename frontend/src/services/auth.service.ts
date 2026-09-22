@@ -1,5 +1,5 @@
 import { apiRequest } from '../api';
-import type { UserRole } from '../types';
+import type { OutlookSyncPermission, UserRole } from '../types';
 
 export interface LoginResult {
   role: UserRole;
@@ -7,6 +7,12 @@ export interface LoginResult {
   title: string;
   username: string;
   user_id?: number | null;
+  email?: string | null;
+  segments?: string[];
+  distributor_ids?: number[];
+  assigned_distributor_count?: number;
+  access_mode?: 'segment' | 'distributor';
+  outlook_sync_permission?: OutlookSyncPermission;
 }
 
 export const AuthService = {

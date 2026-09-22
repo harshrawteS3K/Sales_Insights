@@ -11,6 +11,14 @@ class UserRole(str, Enum):
     USER = "user"
 
 
+class OutlookSyncPermission(str, Enum):
+    """Persona permission for Outlook mailbox synchronization."""
+
+    NONE = "none"
+    OWN = "own"
+    ALL = "all"
+
+
 class ReportStatus(str, Enum):
     """Lifecycle status of a distributor sales report."""
 
@@ -51,6 +59,8 @@ class AuditAction(str, Enum):
     OPENED = "Opened"
     EXTRACTED = "Extract Emails"
     WARNING = "Warning"
+    AUTOMATED_OUTLOOK_SYNC = "Automated Outlook Sync"
+    MANUAL_OUTLOOK_SYNC = "Manual Outlook Sync"
 
 
 class AuditModule(str, Enum):
@@ -86,6 +96,7 @@ class EmailProcessStatus(str, Enum):
     MARKED_READ = "marked_read"
     FAILED = "failed"
     SKIPPED = "skipped"
+    INVALID_SUBJECT = "invalid_subject"
 
 
 class MasterDataType(str, Enum):

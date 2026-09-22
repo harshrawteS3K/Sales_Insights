@@ -141,11 +141,15 @@ def _app_with_handlers() -> FastAPI:
     return app
 
 
-def test_users_endpoints_require_super_admin():
+def test_users_endpoints_require_admin():
+    from app.database.session import get_db
+
     app = _app_with_handlers()
     app.include_router(users_endpoints.router, prefix="/api")
 
     class FakeUsers:
+        db = MagicMock()
+
         def list_users(self, **kwargs):
             return []
 
@@ -153,10 +157,11 @@ def test_users_endpoints_require_super_admin():
             return 0
 
     app.dependency_overrides[get_user_service] = lambda: FakeUsers()
+    app.dependency_overrides[get_db] = lambda: MagicMock()
     client = TestClient(app, raise_server_exceptions=False)
 
-    res = client.get("/api/users", headers={"X-User-Role": "admin", "X-User-Name": "Admin"})
-    assert res.status_code == 403
+    res_admin = client.get("/api/users", headers={"X-User-Role": "admin", "X-User-Name": "Admin"})
+    assert res_admin.status_code == 200
 
     res_user = client.get("/api/users", headers={"X-User-Role": "user", "X-User-Name": "User"})
     assert res_user.status_code == 403

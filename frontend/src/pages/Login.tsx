@@ -3,7 +3,6 @@ import APCOTEX_LOGO from '../assets/images/apcotexindustrieslogo.png';
 import { BLUE, TEAL, RED, BORDER } from '../constants/theme';
 import { AuthService } from '../services/auth.service';
 import { ApiError } from '../api';
-import type { UserRole } from '../types';
 
 const TEXT = '#1F2937';
 
@@ -42,7 +41,7 @@ function resolveLoginError(err: unknown): string {
 export function Login({
   onLogin,
 }: {
-  onLogin: (role: UserRole, name: string, title: string) => void;
+  onLogin: (user: import('../services/auth.service').LoginResult) => void;
 }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -59,7 +58,7 @@ export function Login({
     setLoading(true);
     try {
       const user = await AuthService.login(username.trim(), password);
-      onLogin(user.role, user.name, user.title);
+      onLogin(user);
     } catch (err) {
       setError(resolveLoginError(err));
     } finally {

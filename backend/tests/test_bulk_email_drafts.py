@@ -75,7 +75,12 @@ def _seed_distributor(
         reporting_month=quarter,
         rows=[(1, customer, "Paper", "P1", 10)],
     )
-    ReportService(db).ingest_excel(path, actor="tester")
+    ReportService(db).ingest_excel(
+        path,
+        actor="tester",
+        reporting_quarter=quarter,
+        distributor_company=company,
+    )
     dist = DistributorRepository(db).get_by_company(company)
     assert dist is not None
     if email:

@@ -2,28 +2,50 @@ import { Outlet, useOutletContext } from 'react-router';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
 import type { LayoutContext } from '../../types';
-import type { UserRole } from '../../types';
+import type { OutlookSyncPermission, UserRole } from '../../types';
 
 interface AppLayoutProps {
   userRole: UserRole | null;
   userName: string;
   userTitle: string;
   onLogout: () => void;
+  outlookSyncPermission?: OutlookSyncPermission;
 }
 
-export function AppLayout({ userRole, userName, userTitle, onLogout }: AppLayoutProps) {
+export function AppLayout({
+  userRole,
+  userName,
+  userTitle,
+  onLogout,
+  outlookSyncPermission = 'own',
+}: AppLayoutProps) {
   return (
     <div
       className="flex h-screen overflow-hidden"
       style={{ fontFamily: "'Inter', system-ui, sans-serif", background: '#F7FAFC' }}
     >
-      <Sidebar userName={userName} userTitle={userTitle} userRole={userRole} onLogout={onLogout} />
+      <Sidebar
+        userName={userName}
+        userTitle={userTitle}
+        userRole={userRole}
+        outlookSyncPermission={outlookSyncPermission}
+        onLogout={onLogout}
+      />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <TopBar userName={userName} />
         <main className="flex-1 overflow-y-auto" style={{ background: '#F7FAFC', position: 'relative' }}>
           <div style={{ minHeight: '100%', display: 'flex', flexDirection: 'column' }}>
             <div style={{ flex: 1 }}>
-              <Outlet context={{ userRole, userName, userTitle } satisfies LayoutContext} />
+              <Outlet
+                context={
+                  {
+                    userRole,
+                    userName,
+                    userTitle,
+                    outlookSyncPermission,
+                  } satisfies LayoutContext
+                }
+              />
             </div>
             <footer
               style={{

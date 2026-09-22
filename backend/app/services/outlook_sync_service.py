@@ -29,6 +29,32 @@ _TERMINAL_PROCESSED = {
     EmailProcessStatus.MARKED_READ.value,
 }
 
+# Graph mark-as-read must NOT run for these — leave mail unread so the user can fix & re-sync.
+_NO_GRAPH_MARK_READ_STATUSES = {
+    EmailProcessStatus.INVALID_SUBJECT.value,
+    "segment_unauthorized",
+    EmailProcessStatus.FAILED.value,
+}
+
+
+def _should_mark_graph_read(result: Dict[str, Any]) -> bool:
+    """Only clear Outlook unread after a successful/intentional terminal outcome."""
+    status = str(result.get("status") or "")
+    if status in _NO_GRAPH_MARK_READ_STATUSES:
+        return False
+    if int(result.get("attachments_downloaded") or 0) > 0:
+        return True
+    if status in {
+        "already_processed",
+        "skipped_no_excel",
+        EmailProcessStatus.DOWNLOADED.value,
+        EmailProcessStatus.PARSED.value,
+        EmailProcessStatus.INSERTED.value,
+        EmailProcessStatus.MARKED_READ.value,
+    }:
+        return True
+    return False
+
 
 def _parse_graph_datetime(value: Optional[str]) -> datetime:
     """Parse Graph ISO datetime into aware datetime."""
@@ -36,6 +62,57 @@ def _parse_graph_datetime(value: Optional[str]) -> datetime:
         return utc_now()
     normalized = value.replace("Z", "+00:00")
     return datetime.fromisoformat(normalized)
+
+
+def _sync_result_message(
+    *,
+    user_email: Optional[str],
+    emails_found: int,
+    emails_processed: int,
+    reports_created: int,
+    failures: int,
+    status: str,
+    details: Dict[str, Any],
+) -> str:
+    """Human-readable sync outcome for the UI (no false 'will be extracted' promises)."""
+    if status == SyncStatus.FAILED.value and emails_processed == 0 and failures:
+        return "Outlook sync failed while processing emails. Check job details."
+
+    if emails_found == 0 and user_email:
+        probe = details.get("inbox_unread_excel_probe")
+        others = details.get("other_senders_sample") or []
+        if probe is None:
+            return (
+                f"Sync complete. No unread Excel emails FROM {user_email} "
+                f"in the Sales Insights inbox — nothing to extract."
+            )
+        if int(probe) == 0:
+            return (
+                f"Sync complete. No unread Excel emails in the Sales Insights inbox "
+                f"(including none from {user_email}). Nothing to extract right now."
+            )
+        sample = ", ".join(others[:3]) if others else "other addresses"
+        return (
+            f"Sync complete. No unread Excel emails FROM {user_email}. "
+            f"The inbox has {probe} unread Excel email(s) from other senders "
+            f"({sample}) — those are not extracted for your account."
+        )
+
+    if emails_found == 0:
+        return "Sync complete. No unread Excel emails in the Sales Insights inbox."
+
+    recovered = int(details.get("recovered_count") or 0)
+    parts = [
+        f"Sync complete. Found {emails_found} email(s)",
+        f"processed {emails_processed}",
+    ]
+    if recovered:
+        parts.append(f"recovered {recovered} previously missed")
+    if reports_created:
+        parts.append(f"created {reports_created} report(s)")
+    if failures:
+        parts.append(f"{failures} failure(s)")
+    return "; ".join(parts) + "."
 
 
 class OutlookSyncService:
@@ -50,9 +127,23 @@ class OutlookSyncService:
         self.reports = ReportService(db)
         self.audit = AuditService(db)
 
-    def list_emails(self, *, skip: int = 0, limit: int = 200) -> List[EmailMessage]:
+    def list_emails(
+        self,
+        *,
+        skip: int = 0,
+        limit: int = 200,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
+        sender_email: Optional[str] = None,
+    ) -> List[EmailMessage]:
         """List Emails-tab work queue (excludes already consolidated)."""
-        return self.emails.list_extracted(skip=skip, limit=limit)
+        return self.emails.list_extracted(
+            skip=skip,
+            limit=limit,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
+            sender_email=sender_email,
+        )
 
     def to_frontend_emails(self, messages: List[EmailMessage]) -> List[FrontendEmailRecord]:
         """Map ORM emails to frontend EmailRecord shape."""
@@ -66,6 +157,7 @@ class OutlookSyncService:
             EmailProcessStatus.MARKED_READ.value: "Imported",
             EmailProcessStatus.FAILED.value: "Failed",
             EmailProcessStatus.SKIPPED.value: "Failed",
+            EmailProcessStatus.INVALID_SUBJECT.value: "Invalid Subject",
         }
 
         result: List[FrontendEmailRecord] = []
@@ -123,15 +215,16 @@ class OutlookSyncService:
                         exc,
                     )
 
-            dist_name = None
-            try:
-                from app.repositories.distributor_repository import DistributorRepository
+            dist_name = msg.parsed_distributor
+            if not dist_name:
+                try:
+                    from app.repositories.distributor_repository import DistributorRepository
 
-                dist = DistributorRepository(self.db).get_by_email(msg.sender_email)
-                if dist is not None:
-                    dist_name = dist.company or dist.name
-            except Exception:  # noqa: BLE001
-                dist_name = None
+                    dist = DistributorRepository(self.db).get_by_email(msg.sender_email)
+                    if dist is not None:
+                        dist_name = dist.company or dist.name
+                except Exception:  # noqa: BLE001
+                    dist_name = None
 
             status = msg.process_status or EmailProcessStatus.UNREAD.value
             result.append(
@@ -152,8 +245,14 @@ class OutlookSyncService:
                     statusLabel=status_label_map.get(status, "New"),
                     attachmentName=excel_name,
                     distributorName=dist_name,
+                    distributor=msg.parsed_distributor,
+                    location=msg.parsed_location,
+                    segment=msg.parsed_segment,
+                    quarter=msg.detected_quarter,
+                    subjectValid=bool(msg.subject_valid),
                     hasExcel=has_excel,
                     errorMessage=msg.error_message,
+                    mappingSource=getattr(msg, "mapping_source", None),
                 )
             )
         return result
@@ -262,53 +361,113 @@ class OutlookSyncService:
         """Return total sync job count."""
         return self.sync_jobs.count()
 
-    def sync(self, request: OutlookSyncRequest, *, actor: str = "system") -> SyncJob:
+    def sync_for_user(
+        self,
+        *,
+        job_id: Optional[int] = None,
+        user_id: Optional[int] = None,
+        user_email: Optional[str] = None,
+        user_role: str = "user",
+        request: Optional[OutlookSyncRequest] = None,
+        actor: str = "system",
+        sync_trigger: str = "manual",
+    ) -> SyncJob:
         """
-        Run a full Outlook sync.
+        Run Outlook sync for a specific logged-in user.
 
-        Each message ingest runs inside a SAVEPOINT so a failed ingest never leaves
-        retired reports / partial sales committed while the outer sync continues.
-        Mark-as-read runs only after the ingest savepoint succeeds and never rolls
-        back business data.
+        Filters Graph unread messages by sender email (`FROM == logged_in_user_email`)
+        and validates that parsed subject distributor is assigned to the user.
         """
-        mailbox = self.graph.resolve_mailbox(request.mailbox)
-        job = SyncJob(
-            status=SyncStatus.STARTED.value,
-            mailbox=mailbox,
-            started_at=utc_now(),
-            triggered_by=actor,
-            details={"mark_as_read": request.mark_as_read, "max_messages": request.max_messages},
+        sync_req = request or OutlookSyncRequest()
+        mailbox = self.graph.resolve_mailbox(sync_req.mailbox)
+        is_automated = (sync_trigger or "").strip().lower() == "automated"
+        audit_action = (
+            AuditAction.AUTOMATED_OUTLOOK_SYNC
+            if is_automated
+            else AuditAction.MANUAL_OUTLOOK_SYNC
         )
-        job = self.sync_jobs.create(job)
-        self.audit.log(
-            AuditTrailCreate(
-                user_name=actor,
-                action=AuditAction.SYNCED,
-                details=f"Started Outlook sync for mailbox {mailbox}",
-                entity_type="sync_job",
-                entity_id=str(job.id),
+        triggered_by_label = "System" if is_automated else actor
+
+        job = self.sync_jobs.get_by_id(job_id) if job_id else None
+        if not job:
+            job = SyncJob(
+                status=SyncStatus.STARTED.value,
+                mailbox=mailbox,
+                started_at=utc_now(),
+                triggered_by=triggered_by_label,
+                details={
+                    "mark_as_read": sync_req.mark_as_read,
+                    "max_messages": sync_req.max_messages,
+                    "user_email": user_email,
+                    "sync_trigger": sync_trigger,
+                },
             )
-        )
+            job = self.sync_jobs.create(job)
+        else:
+            job.status = SyncStatus.STARTED.value
+            job.started_at = utc_now()
+            if not job.triggered_by:
+                job.triggered_by = triggered_by_label
+            self.db.flush()
 
-        details: Dict[str, Any] = {"processed": [], "failures": [], "warnings": []}
-        reporting_quarter = (request.reporting_quarter or "").strip() or None
+        started_at = job.started_at or utc_now()
+
+        details: Dict[str, Any] = {
+            "processed": [],
+            "failures": [],
+            "warnings": [],
+            "user_email": user_email,
+            "sync_trigger": sync_trigger,
+            "triggered_by": triggered_by_label,
+        }
         try:
             messages = self.graph.list_unread_messages(
                 mailbox=mailbox,
-                top=request.max_messages,
+                top=sync_req.max_messages,
                 has_attachments=True,
+                sender_email=user_email,
             )
             job.emails_found = len(messages)
             details["emails_found"] = len(messages)
-            details["max_messages"] = request.max_messages
-            details["reporting_quarter"] = reporting_quarter
+            details["max_messages"] = sync_req.max_messages
+            details["sender_filter"] = user_email
+
+            # When sender-scoped sync finds nothing, probe the inbox so the UI can
+            # distinguish "mailbox idle" vs "mail exists but not from this user".
+            if user_email and not messages:
+                try:
+                    probe = self.graph.list_unread_messages(
+                        mailbox=mailbox,
+                        top=20,
+                        has_attachments=True,
+                        sender_email=None,
+                    )
+                    other_senders: List[str] = []
+                    for msg in probe:
+                        _, s_email = self.graph.extract_sender(msg)
+                        addr = (s_email or "").strip().lower()
+                        if addr and addr not in other_senders:
+                            other_senders.append(addr)
+                    details["inbox_unread_excel_probe"] = len(probe)
+                    details["other_senders_sample"] = other_senders[:8]
+                except Exception as probe_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Inbox probe after empty sender sync failed | job={} | err={}",
+                        job.id,
+                        probe_exc,
+                    )
+                    details["inbox_unread_excel_probe"] = None
+                    details["other_senders_sample"] = []
+
             self.db.flush()
             logger.info(
-                "Outlook sync listed unread | job={} | mailbox={} | found={} | max_messages={}",
+                "Outlook sync listed unread | job={} | user_email={} | mailbox={} | found={} | max_messages={} | inbox_probe={}",
                 job.id,
+                user_email,
                 mailbox,
                 len(messages),
-                request.max_messages,
+                sync_req.max_messages,
+                details.get("inbox_unread_excel_probe"),
             )
 
             for message in messages:
@@ -321,10 +480,11 @@ class OutlookSyncService:
                             mailbox=mailbox,
                             mark_as_read=False,
                             actor=actor,
-                            reporting_quarter=reporting_quarter,
+                            user_id=user_id,
+                            user_role=user_role,
                         )
                     # Ingest savepoint released successfully — business data is durable here.
-                    if request.mark_as_read:
+                    if sync_req.mark_as_read and _should_mark_graph_read(result):
                         email = self._email_for_mark_read(message, result)
                         if email is not None:
                             mark_ok = self._ensure_marked_read(
@@ -349,6 +509,14 @@ class OutlookSyncService:
                                 result["mark_as_read_error"] = err
                         else:
                             result["mark_as_read_ok"] = False
+                    elif sync_req.mark_as_read and not _should_mark_graph_read(result):
+                        result["mark_as_read_ok"] = False
+                        result["mark_as_read_skipped"] = str(result.get("status") or "")
+                        logger.info(
+                            "Skipped Graph mark-as-read | message_id={} | status={} | reason=not_ready_for_mark",
+                            message_id,
+                            result.get("status"),
+                        )
                     details["processed"].append(result)
                     job.emails_processed += 1
                     job.attachments_downloaded += int(result.get("attachments_downloaded", 0))
@@ -366,6 +534,26 @@ class OutlookSyncService:
                         exc,
                     )
 
+            # Recovery: prior worker bugs marked Graph read then rolled back DB rows.
+            # Also re-try invalid_subject rows now that comma subjects are accepted.
+            if user_email:
+                recovered = self._recover_sender_messages(
+                    mailbox=mailbox,
+                    user_email=user_email,
+                    already_seen={m.get("id") for m in messages if m.get("id")},
+                    max_messages=max(10, int(sync_req.max_messages or 5)),
+                    mark_as_read=sync_req.mark_as_read,
+                    actor=actor,
+                    user_id=user_id,
+                    user_role=user_role,
+                    details=details,
+                    job=job,
+                )
+                if recovered:
+                    details["recovered_count"] = recovered
+                    job.emails_found = int(job.emails_found or 0) + recovered
+                    details["emails_found"] = job.emails_found
+
             if job.failures and job.emails_processed:
                 job.status = SyncStatus.PARTIAL.value
             elif job.failures and not job.emails_processed:
@@ -373,6 +561,15 @@ class OutlookSyncService:
             else:
                 job.status = SyncStatus.COMPLETED.value
 
+            details["result_message"] = _sync_result_message(
+                user_email=user_email,
+                emails_found=job.emails_found,
+                emails_processed=job.emails_processed,
+                reports_created=job.reports_created,
+                failures=job.failures,
+                status=job.status,
+                details=details,
+            )
             job.completed_at = utc_now()
             job.details = details
             self.db.flush()
@@ -386,36 +583,46 @@ class OutlookSyncService:
                     else AuditStatus.SUCCESS.value
                 )
             )
+            success_count = int(job.emails_processed or 0)
+            failure_count = int(job.failures or 0)
+            if success_count == 0 and failure_count == 0:
+                audit_details = "No new emails found"
+            else:
+                audit_details = f"{success_count} new emails synchronized successfully"
             self.audit.log(
                 AuditTrailCreate(
-                    user_name=actor,
-                    action=AuditAction.EXTRACTED
-                    if job.status != SyncStatus.FAILED.value
-                    else AuditAction.FAILED,
-                    details=(
-                        f"Outlook sync {job.status}: processed {job.emails_processed} emails, "
-                        f"imported {job.reports_created} reports, "
-                        f"replaced/skipped {job.duplicates_skipped}, "
-                        f"failures {job.failures}"
-                    ),
+                    user_name=triggered_by_label,
+                    action=audit_action,
+                    details=audit_details,
                     entity_type="sync_job",
                     entity_id=str(job.id),
                     module="Emails",
                     status=status_badge,
+                    user_id=user_id,
                     extra_metadata={
+                        "start_time": started_at.isoformat() if started_at else None,
+                        "end_time": job.completed_at.isoformat() if job.completed_at else None,
+                        "triggered_by": triggered_by_label,
+                        "emails_processed": int(job.emails_processed or 0),
+                        "success_count": success_count,
+                        "failure_count": failure_count,
                         "emails_found": job.emails_found,
-                        "emails_processed": job.emails_processed,
-                        "reports_created": job.reports_created,
-                        "records_inserted": job.records_inserted,
-                        "duplicates_skipped": job.duplicates_skipped,
-                        "failures": job.failures,
+                        "sync_trigger": sync_trigger,
+                        "user_email": user_email,
                     },
                 )
             )
+            if is_automated and job.status != SyncStatus.FAILED.value:
+                try:
+                    from app.services.outlook_auto_sync_scheduler import record_auto_sync_success
+
+                    record_auto_sync_success(job.completed_at)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed recording auto-sync success timestamp")
             logger.info(
-                "Sync Completed | job={} | status={} | processed={} | failures={} | "
-                "warnings={} | records={}",
+                "Sync Completed | job={} | user_email={} | status={} | processed={} | failures={} | warnings={} | records={}",
                 job.id,
+                user_email,
                 job.status,
                 job.emails_processed,
                 job.failures,
@@ -426,25 +633,156 @@ class OutlookSyncService:
         except Exception as exc:
             job.status = SyncStatus.FAILED.value
             job.error_message = str(exc)
+            details["result_message"] = f"Outlook sync failed: {exc}"
             job.completed_at = utc_now()
             job.details = details
             self.db.flush()
             self.db.refresh(job)
             self.audit.log(
                 AuditTrailCreate(
-                    user_name=actor,
-                    action=AuditAction.FAILED,
+                    user_name=triggered_by_label,
+                    action=audit_action,
                     details=f"Outlook sync failed: {exc}",
                     entity_type="sync_job",
                     entity_id=str(job.id),
                     module="Emails",
                     status=AuditStatus.FAILED.value,
+                    user_id=user_id,
+                    extra_metadata={
+                        "start_time": started_at.isoformat() if started_at else None,
+                        "end_time": job.completed_at.isoformat() if job.completed_at else None,
+                        "triggered_by": triggered_by_label,
+                        "emails_processed": int(job.emails_processed or 0),
+                        "success_count": 0,
+                        "failure_count": int(job.failures or 0) + 1,
+                        "sync_trigger": sync_trigger,
+                        "user_email": user_email,
+                    },
                 )
             )
-            logger.exception("Outlook sync failed | job={} | stage=sync | error={}", job.id, exc)
+            logger.exception("Outlook sync failed | job={} | user_email={} | stage=sync | error={}", job.id, user_email, exc)
             if isinstance(exc, GraphAPIError):
                 raise
             raise GraphAPIError(f"Outlook sync failed: {exc}") from exc
+
+    def sync(self, request: OutlookSyncRequest, *, actor: str = "system") -> SyncJob:
+        """Run a full Outlook sync (legacy / backward compatibility entry point)."""
+        return self.sync_for_user(request=request, actor=actor)
+
+    @staticmethod
+    def _email_has_excel(email: EmailMessage) -> bool:
+        for att in email.attachments or []:
+            if getattr(att, "is_deleted", False):
+                continue
+            if att.is_excel or (att.file_name or "").lower().endswith((".xlsx", ".xlsm")):
+                return True
+        return False
+
+    def _email_needs_recovery(
+        self, message: Dict[str, Any], existing: Optional[EmailMessage]
+    ) -> bool:
+        """True when Graph has the message but our DB never finished a usable extract."""
+        if existing is None:
+            return True
+        if existing.process_status == EmailProcessStatus.INVALID_SUBJECT.value:
+            return True
+        if existing.process_status in {
+            EmailProcessStatus.UNREAD.value,
+            EmailProcessStatus.DOWNLOADED.value,
+            EmailProcessStatus.PARSED.value,
+            EmailProcessStatus.FAILED.value,
+        } and not self._email_has_excel(existing):
+            return True
+        return False
+
+    def _recover_sender_messages(
+        self,
+        *,
+        mailbox: str,
+        user_email: str,
+        already_seen: set,
+        max_messages: int,
+        mark_as_read: bool,
+        actor: str,
+        user_id: Optional[int],
+        user_role: Optional[str],
+        details: Dict[str, Any],
+        job: SyncJob,
+    ) -> int:
+        """
+        Re-ingest recent FROM-sender messages that Graph already shows as read
+        (or that exist in DB as invalid_subject) after a prior worker rollback.
+        """
+        try:
+            recent = self.graph.list_messages(
+                mailbox=mailbox,
+                top=max_messages,
+                has_attachments=True,
+                sender_email=user_email,
+                unread_only=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Sender recovery list failed | mailbox={} | sender={} | err={}",
+                mailbox,
+                user_email,
+                exc,
+            )
+            return 0
+
+        recovered = 0
+        for message in recent:
+            message_id = message.get("id")
+            if not message_id or message_id in already_seen:
+                continue
+            existing = self._find_existing_email(message)
+            if not self._email_needs_recovery(message, existing):
+                continue
+            try:
+                with self.db.begin_nested():
+                    result = self._process_message(
+                        message,
+                        mailbox=mailbox,
+                        mark_as_read=False,
+                        actor=actor,
+                        user_id=user_id,
+                        user_role=user_role,
+                    )
+                if mark_as_read and _should_mark_graph_read(result):
+                    email = self._email_for_mark_read(message, result)
+                    if email is not None:
+                        mark_ok = self._ensure_marked_read(
+                            email,
+                            graph_id=str(message_id),
+                            mailbox=mailbox,
+                            reason="recovery_post_ingest",
+                        )
+                        result["mark_as_read_ok"] = mark_ok
+                result["recovered"] = True
+                details.setdefault("processed", []).append(result)
+                job.emails_processed += 1
+                job.attachments_downloaded += int(result.get("attachments_downloaded", 0))
+                job.reports_created += int(result.get("reports_created", 0))
+                job.records_inserted += int(result.get("records_inserted", 0))
+                job.duplicates_skipped += int(result.get("duplicates_skipped", 0))
+                recovered += 1
+                logger.info(
+                    "Recovered sender message | message_id={} | email_id={} | status={}",
+                    message_id,
+                    result.get("email_id"),
+                    result.get("status"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                job.failures += 1
+                details.setdefault("failures", []).append(
+                    {"message_id": message_id, "error": str(exc), "recovered": True}
+                )
+                logger.exception(
+                    "Recovery processing failed | message_id={} | error={}",
+                    message_id,
+                    exc,
+                )
+        return recovered
 
     def _email_for_mark_read(
         self,
@@ -546,6 +884,8 @@ class OutlookSyncService:
         mark_as_read: bool,
         actor: str,
         reporting_quarter: Optional[str] = None,
+        user_id: Optional[int] = None,
+        user_role: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process a single Graph message end-to-end (idempotent)."""
         graph_id = message["id"]
@@ -635,6 +975,50 @@ class OutlookSyncService:
             if not email.internet_message_id and message.get("internetMessageId"):
                 email.internet_message_id = message.get("internetMessageId")
             self.db.flush()
+
+        from app.services.email_subject_service import EmailSubjectService
+
+        EmailSubjectService(self.db).apply_to_email(email, actor=actor)
+        if not email.subject_valid:
+            return {
+                "message_id": graph_id,
+                "email_id": email.id,
+                "status": EmailProcessStatus.INVALID_SUBJECT.value,
+                "attachments_downloaded": 0,
+                "reports_created": 0,
+                "records_inserted": 0,
+                "duplicates_skipped": 0,
+                "mark_as_read_ok": None,
+            }
+
+        # Segment Authorization Check for non-admin user
+        if email.parsed_segment and user_id and (user_role or "").lower() not in {"admin", "super_admin"}:
+            from app.repositories.user_segment_repository import UserSegmentRepository
+
+            assigned_segs = UserSegmentRepository(self.db).list_segments_for_user(user_id)
+            clean_assigned = [s.strip().casefold() for s in assigned_segs]
+            parsed_seg_clean = (email.parsed_segment or "").strip().casefold()
+
+            if parsed_seg_clean not in clean_assigned:
+                email.process_status = EmailProcessStatus.INVALID_SUBJECT.value
+                email.error_message = f"Segment '{email.parsed_segment}' is not assigned to user ID {user_id}"
+                self.db.flush()
+                logger.warning(
+                    "Segment authorization failed | email_id={} | segment={} | user_id={}",
+                    email.id,
+                    email.parsed_segment,
+                    user_id,
+                )
+                return {
+                    "message_id": graph_id,
+                    "email_id": email.id,
+                    "status": "segment_unauthorized",
+                    "attachments_downloaded": 0,
+                    "reports_created": 0,
+                    "records_inserted": 0,
+                    "duplicates_skipped": 0,
+                    "mark_as_read_ok": None,
+                }
 
         attachments = self.graph.list_attachments(graph_id, mailbox=mailbox)
         excel_attachments = [a for a in attachments if GraphClient.is_excel_attachment(a)]

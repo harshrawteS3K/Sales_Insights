@@ -84,6 +84,11 @@ class UserRepository(BaseRepository[User]):
 
     @staticmethod
     def _apply_identity_filters(query, *, role, is_active, search):
+        # Exclude automated dummy/test users from identity list
+        query = query.where(
+            ~User.username.ilike("matrix_user%"),
+            ~User.username.ilike("anup_test%"),
+        )
         if role:
             query = query.where(User.role == role.strip().lower())
         if is_active is not None:

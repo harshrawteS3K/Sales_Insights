@@ -87,6 +87,12 @@ class ERPParsePreviewResponse(BaseModel):
     attachment_count: int = 1
     attachment_names: List[str] = Field(default_factory=list)
     attachments_capped: bool = False
+    detected_quarter: Optional[str] = None
+    quarter_confidence: Optional[float] = None
+    subject_valid: bool = True
+    parsed_distributor: Optional[str] = None
+    parsed_location: Optional[str] = None
+    parsed_segment: Optional[str] = None
 
 
 class ERPEmailPreviewRequest(BaseModel):
@@ -100,8 +106,8 @@ class ERPImportRequest(BaseModel):
     """Approve import after AI preview."""
 
     email_id: int
-    distributor_id: int
-    reporting_quarter: str = Field(..., min_length=3, max_length=50)
+    distributor_id: Optional[int] = None
+    reporting_quarter: Optional[str] = Field(default=None, min_length=3, max_length=50)
     fiscal_year_start: Optional[int] = Field(default=None, ge=1990, le=2100)
     mapping: Optional[Union[List[ERPMappingItem], Dict[str, Any]]] = None
     rows: Optional[List[ERPPreviewRow]] = None

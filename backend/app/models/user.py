@@ -6,11 +6,13 @@ from sqlalchemy import Boolean, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, SoftDeleteMixin, TimestampMixin
-from app.enums import UserRole
+from app.enums import OutlookSyncPermission, UserRole
 
 if TYPE_CHECKING:
     from app.models.audit_trail import AuditTrail
     from app.models.report import Report
+    from app.models.user_distributor import UserDistributor
+    from app.models.user_segment import UserSegment
 
 
 class User(Base, TimestampMixin, SoftDeleteMixin):
@@ -49,6 +51,12 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     department: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    outlook_sync_permission: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=OutlookSyncPermission.OWN.value,
+        server_default=OutlookSyncPermission.OWN.value,
+    )
 
     reports: Mapped[List["Report"]] = relationship(
         "Report",
@@ -59,6 +67,18 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
         "AuditTrail",
         back_populates="user",
         foreign_keys="AuditTrail.user_id",
+    )
+    distributor_permissions: Mapped[List["UserDistributor"]] = relationship(
+        "UserDistributor",
+        foreign_keys="[UserDistributor.user_id]",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    segment_permissions: Mapped[List["UserSegment"]] = relationship(
+        "UserSegment",
+        foreign_keys="[UserSegment.user_id]",
+        back_populates="user",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

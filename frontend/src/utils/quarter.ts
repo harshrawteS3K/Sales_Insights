@@ -1,9 +1,23 @@
-/** APCOTEX reporting-quarter helpers (Q1=Apr–Jun … Q4=Jan–Mar). */
+/** Indian Financial Year helpers (Apr–Mar).
+
+Canonical label:  `FY 2025-26 • Q1`
+Display label:    `FY 2025–26 • Q1 (Apr–Jun)`
+
+| Display             | Months              |
+| ------------------- | ------------------- |
+| FY 2025–26 • Q1     | Apr 2025 – Jun 2025 |
+| FY 2025–26 • Q2     | Jul 2025 – Sep 2025 |
+| FY 2025–26 • Q3     | Oct 2025 – Dec 2025 |
+| FY 2025–26 • Q4     | Jan 2026 – Mar 2026 |
+*/
 
 export type ParsedQuarter = {
+  /** FY start year (e.g. 2025 for FY 2025–26). */
   year: number;
   quarter: number;
+  /** Canonical storage label. */
   label: string;
+  kind?: 'quarter' | 'year';
 };
 
 const QUARTER_RANGE: Record<number, string> = {
@@ -13,27 +27,93 @@ const QUARTER_RANGE: Record<number, string> = {
   4: 'Jan–Mar',
 };
 
-const QUARTER_RE = /^\s*Q([1-4])\s+(\d{4})\s*$/i;
+const FY_QUARTER_RE =
+  /^\s*FY\s*(\d{4})\s*[-–—/]\s*(\d{2}|\d{4})\s*[•·.\-]?\s*Q\s*([1-4])\s*$/i;
+const FY_ANNUAL_RE = /^\s*FY\s*(\d{4})\s*[-–—/]\s*(\d{2}|\d{4})\s*$/i;
+const LEGACY_Q_RE = /^\s*Q([1-4])\s+(\d{4})\s*$/i;
+const SUBJECT_Q_FY_RE =
+  /^\s*Q\s*([1-4])\s+FY\s*(\d{4})\s*[-–—/]\s*(\d{2}|\d{4})\s*$/i;
+const RANGE_PAREN_RE = /\s*\((?:Apr|Jul|Oct|Jan)[^)]*\)\s*$/i;
 
-/** Parse `"Q2 2026"` → `{ year: 2026, quarter: 2, label: "Q2 2026" }`. */
-export function parseQuarter(q: string): ParsedQuarter | null {
-  const match = QUARTER_RE.exec((q || '').trim());
-  if (!match) return null;
-  const quarter = Number(match[1]);
-  const year = Number(match[2]);
-  return { year, quarter, label: `Q${quarter} ${year}` };
+function fyEndOk(start: number, endRaw: string): boolean {
+  const expectedYy = String((start + 1) % 100).padStart(2, '0');
+  if (endRaw.length === 2) return endRaw === expectedYy;
+  if (endRaw.length === 4 && /^\d{4}$/.test(endRaw)) return Number(endRaw) === start + 1;
+  return false;
 }
 
-/** Human range for a quarter label or Q number. */
+export function fyShort(fyStart: number): string {
+  return `FY ${fyStart}-${String((fyStart + 1) % 100).padStart(2, '0')}`;
+}
+
+export function fyShortDisplay(fyStart: number): string {
+  return `FY ${fyStart}–${String((fyStart + 1) % 100).padStart(2, '0')}`;
+}
+
+export function fyQuarterLabel(fyStart: number, quarter: number): string {
+  return `${fyShort(fyStart)} • Q${quarter}`;
+}
+
+/** Parse FY / legacy quarter labels into `{ year: fyStart, quarter, label }`. */
+export function parseQuarter(q: string): ParsedQuarter | null {
+  let text = (q || '').trim();
+  if (!text) return null;
+  text = text.replace(RANGE_PAREN_RE, '').trim();
+
+  let m = FY_QUARTER_RE.exec(text);
+  if (m && fyEndOk(Number(m[1]), m[2])) {
+    const year = Number(m[1]);
+    const quarter = Number(m[3]);
+    return { year, quarter, label: fyQuarterLabel(year, quarter), kind: 'quarter' };
+  }
+
+  m = SUBJECT_Q_FY_RE.exec(text);
+  if (m && fyEndOk(Number(m[2]), m[3])) {
+    const year = Number(m[2]);
+    const quarter = Number(m[1]);
+    return { year, quarter, label: fyQuarterLabel(year, quarter), kind: 'quarter' };
+  }
+
+  m = FY_ANNUAL_RE.exec(text);
+  if (m && fyEndOk(Number(m[1]), m[2])) {
+    const year = Number(m[1]);
+    return { year, quarter: 0, label: fyShort(year), kind: 'year' };
+  }
+
+  m = LEGACY_Q_RE.exec(text);
+  if (m) {
+    const quarter = Number(m[1]);
+    const year = Number(m[2]);
+    return { year, quarter, label: fyQuarterLabel(year, quarter), kind: 'quarter' };
+  }
+
+  return null;
+}
+
+/** Human month range for a quarter label or Q number. */
 export function getQuarterRange(q: string | number): string {
   if (typeof q === 'number') {
     return QUARTER_RANGE[q] || '';
   }
   const parsed = parseQuarter(q);
-  if (parsed) return QUARTER_RANGE[parsed.quarter] || '';
+  if (parsed?.quarter) return QUARTER_RANGE[parsed.quarter] || '';
   const only = /^\s*Q([1-4])\s*$/i.exec(q || '');
   if (only) return QUARTER_RANGE[Number(only[1])] || '';
   return '';
+}
+
+/** UI display: `FY 2025–26 • Q1 (Apr–Jun)` */
+export function formatPeriodDisplay(label: string | null | undefined): string {
+  const raw = (label || '').trim();
+  if (!raw || raw === '—') return raw;
+  const parsed = parseQuarter(raw);
+  if (!parsed) return raw;
+  if (parsed.kind === 'year' || parsed.quarter === 0) {
+    return fyShortDisplay(parsed.year);
+  }
+  const range = QUARTER_RANGE[parsed.quarter] || '';
+  const base = `${fyShortDisplay(parsed.year)} • Q${parsed.quarter}`;
+  return range ? `${base} (${range})` : base;
 }
 
 export type TimelineReport = {
@@ -49,18 +129,20 @@ export type TimelineReport = {
 
 export type QuarterBucket<T> = {
   label: string;
+  /** Full UI label including range. */
+  displayLabel: string;
   year: number;
   quarter: number;
   range: string;
   reports: T[];
   distributorCount: number;
   totalQuantity: number;
-  /** Full filtered report count for this period (when known from API). */
   reportCountFull?: number;
 };
 
 export type YearBucket<T> = {
   year: number;
+  fyLabel: string;
   quarters: QuarterBucket<T>[];
   reportCount: number;
 };
@@ -90,8 +172,8 @@ function importedSortKey(report: TimelineReport): number {
 }
 
 /**
- * Group reports into Year → Quarter → Distributor rows.
- * Sort: year desc, quarter desc (Q4→Q1), imported desc within quarter.
+ * Group reports into FY → Quarter → Distributor rows.
+ * Sort: FY desc, quarter desc (Q4→Q1), imported desc within quarter.
  */
 export function buildYearQuarterTimeline<T extends TimelineReport>(
   reports: T[]
@@ -122,6 +204,7 @@ export function buildYearQuarterTimeline<T extends TimelineReport>(
       const totalQuantity = sorted.reduce((s, r) => s + sumReportQuantity(r), 0);
       return {
         label,
+        displayLabel: formatPeriodDisplay(label),
         year: parsed?.year ?? year,
         quarter: qNum,
         range: getQuarterRange(qNum || label),
@@ -138,6 +221,7 @@ export function buildYearQuarterTimeline<T extends TimelineReport>(
 
     return {
       year,
+      fyLabel: year ? fyShortDisplay(year) : 'Unknown',
       quarters: quarterEntries,
       reportCount: quarterEntries.reduce((s, q) => s + q.reports.length, 0),
     };
@@ -153,16 +237,18 @@ export type PeriodSummary = {
 
 /**
  * Overlay accurate full-filter period stats onto a page-local timeline.
- * Keeps page reports for listing, but never under-counts distributors/qty.
  */
 export function applyPeriodSummaries<T extends TimelineReport>(
   timeline: YearBucket<T>[],
   summaries: PeriodSummary[]
 ): YearBucket<T>[] {
   if (!summaries.length) return timeline;
-  const byLabel = new Map(
-    summaries.map(s => [s.label.trim().toLowerCase(), s] as const)
-  );
+  const byLabel = new Map<string, PeriodSummary>();
+  for (const s of summaries) {
+    const parsed = parseQuarter(s.label);
+    const key = (parsed?.label || s.label).trim().toLowerCase();
+    byLabel.set(key, s);
+  }
 
   return timeline.map(year => {
     const quarters = year.quarters.map(q => {
@@ -194,11 +280,18 @@ export function applyPeriodSummaries<T extends TimelineReport>(
 /** Flat overview from server period summaries (accurate; not page-local). */
 export function overviewFromPeriodSummaries(
   summaries: PeriodSummary[]
-): Array<Pick<QuarterBucket<TimelineReport>, 'label' | 'range' | 'distributorCount' | 'totalQuantity' | 'year' | 'quarter'>> {
+): Array<
+  Pick<
+    QuarterBucket<TimelineReport>,
+    'label' | 'displayLabel' | 'range' | 'distributorCount' | 'totalQuantity' | 'year' | 'quarter'
+  >
+> {
   const items = summaries.map(s => {
     const parsed = parseQuarter(s.label);
+    const label = parsed?.label ?? s.label;
     return {
-      label: parsed?.label ?? s.label,
+      label,
+      displayLabel: formatPeriodDisplay(label),
       year: parsed?.year ?? 0,
       quarter: parsed?.quarter ?? 0,
       range: getQuarterRange(parsed?.quarter || s.label),
@@ -220,4 +313,28 @@ export function formatMt(qty: number): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   });
+}
+
+/** Rewrite known quarter tokens inside free text (audit details, etc.). */
+export function formatPeriodsInText(text: string | null | undefined): string {
+  if (!text) return '';
+  let out = String(text);
+  // FY 2025-26 • Q1  /  FY 2025–26 Q1
+  out = out.replace(
+    /\bFY\s*(\d{4})\s*[-–—/]\s*(\d{2}|\d{4})\s*[•·.\-]?\s*Q\s*([1-4])\b/gi,
+    (full) => formatPeriodDisplay(full)
+  );
+  // Q2 FY 2025-26
+  out = out.replace(
+    /\bQ\s*([1-4])\s+FY\s*(\d{4})\s*[-–—/]\s*(\d{2}|\d{4})\b/gi,
+    (full) => formatPeriodDisplay(full)
+  );
+  // Legacy Q1 2025
+  out = out.replace(/\bQ([1-4])\s+(\d{4})\b/gi, (full) => formatPeriodDisplay(full));
+  // Annual FY 2025-26
+  out = out.replace(
+    /\bFY\s*(\d{4})\s*[-–—/]\s*(\d{2}|\d{4})\b(?!\s*[•·.\-]?Q)/gi,
+    (full) => formatPeriodDisplay(full)
+  );
+  return out;
 }

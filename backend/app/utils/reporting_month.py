@@ -1,4 +1,4 @@
-"""Reporting month / quarter normalization helpers."""
+"""Reporting month / quarter normalization helpers (Indian FY)."""
 
 from __future__ import annotations
 
@@ -6,22 +6,26 @@ import re
 from datetime import date, datetime
 from typing import Optional
 
+from app.utils.period_calendar import format_period_display, parse_quarter_label
 
 _ISO_DT = re.compile(
     r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?"
 )
 
-# Strict: "Q1 2026" / "q1  2026" — space(s) between quarter and year only
-_QUARTER_STRICT = re.compile(r"^Q([1-4])\s+(\d{4})$", flags=re.IGNORECASE)
+# Rejected invalid shapes
+_BAD_Q_DASH = re.compile(r"^Q[1-4]\s*[-/]\s*\d{4}$", flags=re.IGNORECASE)
+_BAD_Q5 = re.compile(r"^Q[5-9]", flags=re.IGNORECASE)
+_BAD_YEAR_Q = re.compile(r"^\d{4}\s*Q[1-4]\b", flags=re.IGNORECASE)
+_BAD_QUARTER_WORD = re.compile(r"^quarter\s*\d", flags=re.IGNORECASE)
 
 
 def normalize_reporting_month(value: object) -> str:
     """
     Normalize Reporting Quarter / Month to a stable business key string.
 
-    Quarters (strict):
-      - ``Q1 2026``, ``q3 2026`` → ``Q3 2026``
-      - Rejects: ``Q1-2026``, ``2026 Q1``, ``Quarter1``, ``Q5 2026``
+    Quarters → canonical Indian FY label:
+      - ``Q1 2025``, ``FY 2025-26 • Q1`` → ``FY 2025-26 • Q1``
+      - ``FY 2025-26`` (annual) → ``FY 2025-26``
 
     Months (legacy):
       - ``July 2026``, Excel date cells → ``July 2026``
@@ -49,21 +53,28 @@ def normalize_reporting_month(value: object) -> str:
     if not text or text.lower() in {"nan", "none", "null", "nat"}:
         return ""
 
-    # Collapse internal whitespace for quarter matching
     collapsed = re.sub(r"\s+", " ", text).strip()
-    quarter = _QUARTER_STRICT.match(collapsed)
-    if quarter:
-        return f"Q{quarter.group(1)} {quarter.group(2)}"
 
-    # Reject explicit invalid quarter shapes (Prompt 1A)
-    if re.match(r"^Q[1-4]\s*[-/]\s*\d{4}$", collapsed, flags=re.IGNORECASE):
-        return ""  # Q1-2026 / Q1/2026
-    if re.match(r"^Q[5-9]", collapsed, flags=re.IGNORECASE):
-        return ""  # Q5 …
-    if re.match(r"^\d{4}\s*Q[1-4]\b", collapsed, flags=re.IGNORECASE):
-        return ""  # 2026 Q1
-    if re.match(r"^quarter\s*\d", collapsed, flags=re.IGNORECASE):
-        return ""  # Quarter1
+    if _BAD_Q_DASH.match(collapsed):
+        return ""
+    if _BAD_Q5.match(collapsed):
+        return ""
+    if _BAD_YEAR_Q.match(collapsed):
+        return ""
+    if _BAD_QUARTER_WORD.match(collapsed):
+        return ""
+
+    # Strip display range paren before parsing
+    for_parse = re.sub(
+        r"\s*\((?:Apr|Jul|Oct|Jan)[^)]*\)\s*$",
+        "",
+        collapsed,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    spec = parse_quarter_label(for_parse)
+    if spec and spec.year is not None and spec.kind in {"quarter", "year"}:
+        return spec.label
 
     match = _ISO_DT.match(text)
     if match:
@@ -83,10 +94,25 @@ def normalize_reporting_month(value: object) -> str:
     return text
 
 
+def display_reporting_period(value: object) -> str:
+    """UI display for a reporting period key."""
+    key = normalize_reporting_month(value)
+    if not key:
+        return ""
+    return format_period_display(key)
+
+
 def months_equivalent(a: Optional[str], b: Optional[str]) -> bool:
     """True when two reporting-month strings resolve to the same business key."""
     na = normalize_reporting_month(a)
     nb = normalize_reporting_month(b)
     if not na or not nb:
         return False
-    return na.casefold() == nb.casefold()
+    if na.casefold() == nb.casefold():
+        return True
+    # Compare via period specs (legacy vs FY label)
+    sa = parse_quarter_label(na)
+    sb = parse_quarter_label(nb)
+    if sa and sb and sa.label and sb.label:
+        return sa.label.casefold() == sb.label.casefold()
+    return False

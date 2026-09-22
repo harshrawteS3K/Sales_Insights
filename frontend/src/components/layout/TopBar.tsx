@@ -2,17 +2,17 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { Search, ChevronDown } from 'lucide-react';
 import { BLUE, BORDER } from '../../constants/theme';
+import { getSession } from '../../api';
 
 const quickLinks = [
   { name: 'Distributor Email Extraction', path: '/emails',            category: 'Emails'         },
   { name: 'Consolidated Sales Data',      path: '/consolidated-data', category: 'Data'           },
   { name: 'Distributor Management',       path: '/distributors',      category: 'Data'           },
   { name: 'ERP Header Dictionary',        path: '/admin/header-dictionary', category: 'Admin'   },
-  { name: 'Sales Trend Analysis',         path: '/visualizations',   category: 'Visualizations' },
-  { name: 'Distributor Performance',      path: '/visualizations',   category: 'Visualizations' },
-  { name: 'Quarterly Sales Dashboard',    path: '/visualizations',   category: 'Visualizations' },
-  { name: 'Product-wise Sales',           path: '/visualizations',   category: 'Visualizations' },
-  { name: 'Region-wise Analytics',        path: '/visualizations',   category: 'Visualizations' },
+  { name: 'Sales Insights Analytics',     path: '/visualizations',   category: 'Visualizations' },
+  { name: 'Monthly Sales Trend',          path: '/visualizations',   category: 'Visualizations' },
+  { name: 'Top Customers',                path: '/visualizations',   category: 'Visualizations' },
+  { name: 'Product Contribution',         path: '/visualizations',   category: 'Visualizations' },
 ];
 
 export function TopBar({ userName = 'Debabrata C' }: { userName?: string }) {
@@ -20,12 +20,14 @@ export function TopBar({ userName = 'Debabrata C' }: { userName?: string }) {
   const [search, setSearch] = useState('');
   const [showResults, setShowResults] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
+  const hideEmails = getSession()?.outlook_sync_permission === 'none';
 
   const filteredReports = search.trim()
     ? quickLinks.filter(
         item =>
-          item.name.toLowerCase().includes(search.toLowerCase()) ||
-          item.category.toLowerCase().includes(search.toLowerCase())
+          !(hideEmails && item.path === '/emails') &&
+          (item.name.toLowerCase().includes(search.toLowerCase()) ||
+            item.category.toLowerCase().includes(search.toLowerCase()))
       )
     : [];
 

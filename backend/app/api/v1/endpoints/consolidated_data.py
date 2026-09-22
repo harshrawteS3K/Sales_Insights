@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
-from app.dependencies.rbac import RequireAdmin, RequireUser
+from app.dependencies.rbac import RequireAdmin, RequireUser, distributor_companies_scope_for_user, segment_scope_for_user
 from app.dependencies.services import ConsolidatedDataServiceDep, DistributorServiceDep
 from app.schemas.common import MessageResponse
 from app.schemas.distributor import DistributorInfo
@@ -32,10 +32,13 @@ router = APIRouter(prefix="/consolidated-data", tags=["Consolidated Data"])
 )
 def get_filter_options(
     service: ConsolidatedDataServiceDep,
-    _: RequireUser,
+    current: RequireUser,
+    db: Annotated[Session, Depends(get_db)],
 ) -> ConsolidatedFilterOptions:
     """Return companies, customers, segments, products, periods, quarters from DB."""
-    return service.filter_options()
+    allowed = segment_scope_for_user(current, db)
+    companies = distributor_companies_scope_for_user(current, db)
+    return service.filter_options(allowed_segments=allowed, allowed_companies=companies)
 
 
 @router.get(
@@ -46,7 +49,7 @@ def get_filter_options(
 def get_quarterly_summary(
     _: RequireUser,
     db: Annotated[Session, Depends(get_db)],
-    quarter: Optional[str] = Query(None, description="Quarter label e.g. Q1 2026"),
+    quarter: Optional[str] = Query(None, description="FY quarter label e.g. FY 2025-26 • Q1"),
     company: Optional[str] = Query(
         None, description="Distributor Company (optional; All when omitted)"
     ),
@@ -66,7 +69,7 @@ def get_quarterly_report(
     current: RequireUser,
     db: Annotated[Session, Depends(get_db)],
     company: str = Query(..., min_length=1, description="Distributor Company"),
-    quarter: Optional[str] = Query(None, description="Quarter label e.g. Q1 2026"),
+    quarter: Optional[str] = Query(None, description="FY quarter label e.g. FY 2025-26 • Q1"),
     page: int = Query(1, ge=1, description="1-based page number"),
     page_size: int = Query(10, ge=1, le=100, description="Rows per page"),
     search: Optional[str] = Query(
@@ -126,12 +129,14 @@ def get_quarterly_report(
 def get_sales_records(
     service: ConsolidatedDataServiceDep,
     current: RequireUser,
+    db: Annotated[Session, Depends(get_db)],
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=5000),
     search: Optional[str] = Query(None, description="Case-insensitive partial match"),
     distributor: Optional[str] = Query(None),
     customer: Optional[str] = Query(None),
     segment: Optional[str] = Query(None),
+    location: Optional[str] = Query(None),
     product: Optional[str] = Query(None),
     company: Optional[str] = Query(None),
     period: Optional[str] = Query(
@@ -144,7 +149,7 @@ def get_sales_records(
         None, description="Reporting Quarter", alias="reportingQuarter"
     ),
     quarter: Optional[str] = Query(
-        None, description="Quarter label e.g. Q1 2026 (or legacy Q2 token)"
+        None, description="FY quarter label e.g. FY 2025-26 • Q1",
     ),
     quantity_min: Optional[float] = Query(None),
     quantity_max: Optional[float] = Query(None),
@@ -161,6 +166,8 @@ def get_sales_records(
     ),
 ) -> ConsolidatedRecordsPage:
     """GET /api/consolidated-data/records — filtered, paginated, report-grouped."""
+    allowed = segment_scope_for_user(current, db)
+    companies = distributor_companies_scope_for_user(current, db)
     return service.list_records(
         skip=skip,
         limit=limit,
@@ -168,6 +175,7 @@ def get_sales_records(
         distributor=distributor,
         customer=customer,
         segment=segment,
+        location=location,
         product=product,
         company=company,
         period=period,
@@ -182,6 +190,8 @@ def get_sales_records(
         actor=current.name,
         audit_search=audit,
         page_by=page_by,
+        allowed_segments=allowed,
+        allowed_companies=companies,
     )
 
 
@@ -196,6 +206,19 @@ def get_distributor_details(
 ) -> Dict[str, DistributorInfo]:
     """GET /api/consolidated-data/distributors — frontend distributor detail map."""
     return service.details_map()
+
+
+@router.delete(
+    "/all",
+    response_model=DeleteResult,
+    summary="Soft-delete all consolidated reports and sales (Admin)",
+)
+def wipe_all_consolidated(
+    service: ConsolidatedDataServiceDep,
+    current: RequireAdmin,
+) -> DeleteResult:
+    """DELETE /api/consolidated-data/all — clear Consolidated tab data."""
+    return service.wipe_all_reports(actor=current.name)
 
 
 @router.get(

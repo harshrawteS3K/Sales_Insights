@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 
 from app.core.logging import get_logger
 from app.utils.files import ensure_dir
+from app.utils.period_calendar import format_period_display
 
 logger = get_logger(__name__)
 
@@ -37,24 +38,25 @@ class EmailPackageService:
         excel_filename: str,
     ) -> bytes:
         """Return RFC822 .eml bytes with prefilled To/CC/Subject/Body + attachment."""
+        period_display = format_period_display(reporting_quarter) or reporting_quarter
         msg = EmailMessage(policy=policy.SMTP)
         msg["To"] = to_email
         if cc_email:
             msg["Cc"] = cc_email
-        msg["Subject"] = f"APCOTEX Quarterly Sales Template – {reporting_quarter}"
+        msg["Subject"] = f"APCOTEX Quarterly Sales Template – {period_display}"
         msg["X-Unsent"] = "1"  # Outlook opens as editable draft
 
         greeting = (contact_person or "Partner").strip() or "Partner"
         body = (
             f"Dear {greeting},\n\n"
-            f"Please find attached the APCOTEX Quarterly Sales Template for {reporting_quarter}.\n\n"
+            f"Please find attached the APCOTEX Quarterly Sales Template for {period_display}.\n\n"
             "Kindly fill in the sales quantity details for your mapped customers and "
             "share the completed file by replying to this email.\n\n"
-            "Quarter Mapping:\n"
-            "Q1 = Apr–Jun\n"
-            "Q2 = Jul–Sep\n"
-            "Q3 = Oct–Dec\n"
-            "Q4 = Jan–Mar\n\n"
+            "Indian Financial Year (Apr–Mar):\n"
+            "FY • Q1 = Apr–Jun\n"
+            "FY • Q2 = Jul–Sep\n"
+            "FY • Q3 = Oct–Dec\n"
+            "FY • Q4 = Jan–Mar\n\n"
             "Regards,\n"
             "APCOTEX Team\n"
         )

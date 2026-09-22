@@ -9,6 +9,7 @@ import type {
   QuarterlyReportResponse,
   QuarterlySummaryResponse,
 } from '../../types';
+import { formatPeriodDisplay } from '../../utils/quarter';
 
 type Props = {
   quarters: string[];
@@ -99,7 +100,7 @@ export function QuarterlyView({ quarters, companies }: Props) {
             {quarters.length === 0 && <option value="">No quarters available</option>}
             {quarters.map(q => (
               <option key={q} value={q}>
-                {q}
+                {formatPeriodDisplay(q)}
               </option>
             ))}
           </select>
@@ -135,7 +136,7 @@ export function QuarterlyView({ quarters, companies }: Props) {
             fontSize: '0.875rem',
           }}
         >
-          No ACTIVE quarterly reports found for {quarter || 'this quarter'}.
+          No ACTIVE quarterly reports found for {formatPeriodDisplay(quarter) || 'this quarter'}.
         </div>
       )}
 
@@ -215,7 +216,7 @@ export function QuarterlyView({ quarters, companies }: Props) {
                         </div>
                       )}
                     </td>
-                    <td style={tdStyle}>{row.quarter}</td>
+                    <td style={tdStyle}>{formatPeriodDisplay(row.quarter)}</td>
                     <td style={tdStyle}>{row.totalQuantityDisplay}</td>
                     <td style={tdStyle}>{row.productsSold}</td>
                     <td style={tdStyle}>{row.reportsIncluded}</td>
@@ -349,7 +350,7 @@ function QuarterlyReportPanel({
           <div style={{ fontSize: '1.0625rem', fontWeight: 700, color: '#111827' }}>
             {report.company}
             <span style={{ color: '#9CA3AF', fontWeight: 500 }}> · </span>
-            <span style={{ color: '#374151' }}>{report.period.label}</span>
+            <span style={{ color: '#374151' }}>{formatPeriodDisplay(report.period.label)}</span>
           </div>
           <div style={{ marginTop: 6, fontSize: '0.8125rem', color: '#6B7280' }}>
             Virtual quarterly report · ACTIVE quarterly reports only · Not stored

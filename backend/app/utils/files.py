@@ -99,7 +99,8 @@ def get_upload_subdir(kind: str) -> Path:
         "master": Path(settings.upload_dir) / "master",
         "reports": Path(settings.upload_dir) / "reports",
         "attachments": Path(settings.upload_dir) / "attachments",
+        "temp_imports": Path(settings.upload_dir) / "temp_imports",
+        "imports": Path(settings.upload_dir) / "imports",
     }
-    if kind not in mapping:
-        raise ValidationAppError(f"Unknown upload kind: {kind}")
-    return ensure_dir(mapping[kind])
+    target = mapping.get(kind, Path(settings.upload_dir) / kind)
+    return ensure_dir(target)

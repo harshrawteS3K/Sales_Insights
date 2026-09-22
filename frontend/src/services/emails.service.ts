@@ -64,6 +64,12 @@ export type ERPPreviewResponse = {
   attachment_count?: number;
   attachment_names?: string[];
   attachments_capped?: boolean;
+  detected_quarter?: string | null;
+  quarter_confidence?: number | null;
+  subject_valid?: boolean;
+  parsed_distributor?: string | null;
+  parsed_location?: string | null;
+  parsed_segment?: string | null;
 };
 
 export type ERPImportResult = {
@@ -85,14 +91,112 @@ export const EmailsService = {
     return apiRequest<EmailRecord[]>('/emails');
   },
 
-  triggerSync: async (reporting_quarter?: string): Promise<{ success: boolean; message: string }> => {
+  triggerSync: async (): Promise<{
+    success: boolean;
+    message: string;
+    job?: {
+      id: number;
+      status: string;
+      emails_found: number;
+      emails_processed: number;
+      reports_created: number;
+      failures: number;
+      error_message?: string | null;
+      details?: Record<string, unknown> | null;
+    };
+  }> => {
     return apiRequest('/outlook/sync', {
       method: 'POST',
       body: {
         max_messages: 5,
-        ...(reporting_quarter ? { reporting_quarter } : {}),
       },
     });
+  },
+
+  getAutoSyncStatus: async (): Promise<{
+    status: string;
+    frequency: string;
+    last_successful_sync?: string | null;
+    next_scheduled_sync?: string | null;
+  }> => {
+    const res = await apiRequest<{
+      success: boolean;
+      data: {
+        status: string;
+        frequency: string;
+        last_successful_sync?: string | null;
+        next_scheduled_sync?: string | null;
+      };
+    }>('/outlook/sync/status');
+    return res.data;
+  },
+
+  getSyncJob: async (
+    jobId: number,
+  ): Promise<{
+    id: number;
+    status: string;
+    emails_found: number;
+    emails_processed: number;
+    reports_created: number;
+    failures: number;
+    error_message?: string | null;
+    details?: Record<string, unknown> | null;
+  }> => {
+    const res = await apiRequest<{
+      success: boolean;
+      data: {
+        id: number;
+        status: string;
+        emails_found: number;
+        emails_processed: number;
+        reports_created: number;
+        failures: number;
+        error_message?: string | null;
+        details?: Record<string, unknown> | null;
+      };
+    }>(`/outlook/sync/jobs/${jobId}`);
+    return res.data;
+  },
+
+  waitForSyncJob: async (
+    jobId: number,
+    opts?: { timeoutMs?: number; intervalMs?: number },
+  ): Promise<{
+    id: number;
+    status: string;
+    emails_found: number;
+    emails_processed: number;
+    reports_created: number;
+    failures: number;
+    error_message?: string | null;
+    details?: Record<string, unknown> | null;
+  }> => {
+    const timeoutMs = opts?.timeoutMs ?? 90_000;
+    const intervalMs = opts?.intervalMs ?? 1500;
+    const terminal = new Set(['completed', 'failed', 'partial']);
+    const started = Date.now();
+    let last = await EmailsService.getSyncJob(jobId);
+    while (!terminal.has(String(last.status || '').toLowerCase())) {
+      if (Date.now() - started > timeoutMs) {
+        return last;
+      }
+      await new Promise(r => setTimeout(r, intervalMs));
+      last = await EmailsService.getSyncJob(jobId);
+    }
+    return last;
+  },
+
+  getSyncQueueStatus: async (): Promise<{
+    success: boolean;
+    data: {
+      is_busy: boolean;
+      active_job_id?: number | null;
+      active_user_email?: string | null;
+      queue_length: number;
+    };
+  }> => {
+    return apiRequest('/outlook/sync/queue');
   },
 
   getOutlookOpenLink: async (
@@ -140,8 +244,8 @@ export const EmailsService = {
 
   importErp: async (payload: {
     email_id: number;
-    distributor_id: number;
-    reporting_quarter: string;
+    distributor_id?: number;
+    reporting_quarter?: string;
     fiscal_year_start?: number;
     mapping?: ERPMappingItem[] | Record<string, unknown>;
     rows?: Array<{

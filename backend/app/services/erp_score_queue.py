@@ -125,6 +125,7 @@ def _score_email(email_id: int, *, allow_llm: bool = True) -> None:
             return
 
         scores: List[float] = []
+        sources: List[str] = []
         failed_names: List[str] = []
         parser = ERPParserService()
 
@@ -140,12 +141,14 @@ def _score_email(email_id: int, *, allow_llm: bool = True) -> None:
                 preview = parser.preview(path, allow_llm_fallback=allow_llm)
                 overall = float((preview.get("confidence") or {}).get("overall") or 0)
                 scores.append(overall)
+                src = str(preview.get("mapping_source") or "python").lower()
+                sources.append(src)
                 logger.info(
                     "ERP score attachment | email_id={} | file={} | confidence={} | source={}",
                     email_id,
                     excel.file_name,
                     int(round(overall)),
-                    preview.get("mapping_source"),
+                    src,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -166,9 +169,50 @@ def _score_email(email_id: int, *, allow_llm: bool = True) -> None:
             db.commit()
             return
 
+        email.mapping_source = "llm" if any(s == "llm" for s in sources) else (sources[0] if sources else "python")
+
+        # Detect reporting quarter from primary workbook only when subject has no period
+        try:
+            from app.erp_parser.quarter_detector import detect_reporting_quarter
+            from app.services.audit_service import AuditService
+            from app.schemas.audit import AuditTrailCreate
+
+            primary = excels[0]
+            if primary.file_path and not (email.detected_quarter or "").strip():
+                qhit = detect_reporting_quarter(
+                    Path(primary.file_path),
+                    allow_llm_fallback=allow_llm,
+                )
+                label = (qhit or {}).get("reporting_quarter")
+                if label:
+                    email.detected_quarter = str(label)
+                    AuditService(db).log(
+                        AuditTrailCreate(
+                            user_name="system",
+                            action="Quarter Detected",
+                            details=(
+                                f"Quarter detected for email_id={email_id} | quarter={label} | "
+                                f"confidence={qhit.get('confidence')}"
+                            ),
+                            entity_type="email",
+                            entity_id=str(email_id),
+                            module="Email Extraction",
+                            status="Success",
+                            extra_metadata={
+                                "segment": email.parsed_segment,
+                                "reporting_quarter": label,
+                                "confidence": qhit.get("confidence"),
+                                "source": qhit.get("source"),
+                            },
+                        )
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Quarter detect skipped | email_id={} | err={}", email_id, exc)
+
         # Email-level accuracy = worst workbook so batch only runs when all are ready
         email.confidence_score = int(round(min(scores)))
-        email.process_status = EmailProcessStatus.PARSED.value
+        if email.process_status != EmailProcessStatus.INVALID_SUBJECT.value:
+            email.process_status = EmailProcessStatus.PARSED.value
         if failed_names:
             email.error_message = (
                 f"Scored {len(scores)}/{len(excels)} workbook(s); "
@@ -177,10 +221,11 @@ def _score_email(email_id: int, *, allow_llm: bool = True) -> None:
         else:
             email.error_message = None
         logger.info(
-            "ERP score complete | email_id={} | workbooks={} | min_confidence={} | scores={}",
+            "ERP score complete | email_id={} | workbooks={} | min_confidence={} | source={} | scores={}",
             email_id,
             len(scores),
             email.confidence_score,
+            email.mapping_source,
             [int(round(s)) for s in scores],
         )
         db.commit()

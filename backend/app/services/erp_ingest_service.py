@@ -62,8 +62,26 @@ class ERPIngestService:
         self.reports = ReportService(db)
         self.audit = AuditService(db)
 
+    def resolve_distributor_from_subject(self, email: Any) -> Optional[Dict[str, Any]]:
+        """Resolve distributor from parsed email subject (business identity)."""
+        if not getattr(email, "subject_valid", False) or not email.parsed_distributor:
+            return None
+        dist = self.distributors.get_or_create_by_company(
+            email.parsed_distributor,
+            representative_name=email.parsed_distributor,
+        )
+        if not dist.is_active or dist.is_deleted:
+            return None
+        return {
+            "id": dist.id,
+            "company": dist.company or dist.name,
+            "name": dist.name,
+            "email": dist.email,
+            "match": "subject",
+        }
+
     def resolve_distributors_for_sender(self, sender_email: str) -> List[Dict[str, Any]]:
-        """Match distributor(s) by sender email (never from Excel)."""
+        """Match distributor(s) by sender email (legacy fallback)."""
         email = (sender_email or "").strip().lower()
         if not email:
             return []
@@ -153,6 +171,8 @@ class ERPIngestService:
         *,
         company: str,
         quarter: str,
+        segment: str = "",
+        location: str = "",
     ) -> Dict[str, List[ParsedSalesRow]]:
         from collections import defaultdict
 
@@ -188,14 +208,22 @@ class ERPIngestService:
                 existing.quantity = Decimal(str(existing.quantity)) + Decimal(str(qty_val))
                 existing.quantity_display = str(existing.quantity)
                 existing.row_hash = build_sales_row_hash(
-                    company, existing.customer_name, "", existing.product, existing.quantity, period
+                    company,
+                    existing.customer_name,
+                    existing.segment or segment,
+                    existing.product,
+                    existing.quantity,
+                    period,
                 )
                 continue
+            seg = (segment or "").strip()
+            loc = (location or "").strip()
             by_period[period].append(
                 ParsedSalesRow(
                     distributor=company,
                     customer_name=customer,
-                    segment="",
+                    segment=seg,
+                    location=loc,
                     product=product,
                     quantity=qty_val,
                     quantity_display=qty_disp,
@@ -203,11 +231,39 @@ class ERPIngestService:
                     unit="MT",
                     company=company,
                     row_hash=build_sales_row_hash(
-                        company, customer, "", product, qty_val, period
+                        company, customer, seg, product, qty_val, period
                     ),
                 )
             )
         return by_period
+
+    def _resolve_reporting_quarter(
+        self,
+        email: Any,
+        preview: Dict[str, Any],
+        *,
+        override: Optional[str] = None,
+    ) -> str:
+        """Pick reporting quarter: explicit override → email cache → AI preview."""
+        explicit = (override or "").strip()
+        if explicit:
+            return explicit
+        cached = (getattr(email, "detected_quarter", None) or "").strip()
+        if cached:
+            return cached
+        detected = (preview.get("detected_quarter") or "").strip()
+        if detected:
+            return detected
+        from_rows = [
+            str(r.get("period") or r.get("reporting_quarter") or "").strip()
+            for r in (preview.get("rows") or [])
+        ]
+        from_rows = [q for q in from_rows if q]
+        if from_rows:
+            return from_rows[0]
+        raise ValidationAppError(
+            "Could not detect reporting quarter from workbook. Open Preview to retry."
+        )
 
     def _persist_preview_rows(
         self,
@@ -219,13 +275,21 @@ class ERPIngestService:
         distributor_id: int,
         company: str,
         quarter: str,
+        segment: str,
+        location: str,
         actor: str,
         fiscal_year_start: Optional[int],
         overall: float,
     ) -> Tuple[int, bool, Any, List[str], int]:
         """Persist one workbook's rows. Returns inserted, dup, last_report, quarters, reports."""
         path = Path(att.file_path)
-        by_period = self._rows_by_period(use_rows, company=company, quarter=quarter)
+        by_period = self._rows_by_period(
+            use_rows,
+            company=company,
+            quarter=quarter,
+            segment=segment,
+            location=location,
+        )
         if not by_period:
             raise ValidationAppError(
                 f"No valid rows to import after validation ({att.file_name})"
@@ -270,7 +334,16 @@ class ERPIngestService:
         fiscal_year_start: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Parse the email Excel for AI preview (no import)."""
+        from app.services.email_subject_service import EmailSubjectService
+
         email, att = self._excel_attachment(email_id)
+        EmailSubjectService(self.db).apply_to_email(email, actor=actor, skip_if_valid=True)
+        if not email.subject_valid:
+            raise ValidationAppError(
+                email.error_message
+                or "Invalid email subject. Expected format: Distributor | Location | Segment",
+                details={"email_id": email_id, "subject": email.subject},
+            )
         path = Path(att.file_path)
 
         if mapping_override:
@@ -324,8 +397,36 @@ class ERPIngestService:
                 )
             )
 
-        matches = self.resolve_distributors_for_sender(email.sender_email)
+        subject_match = self.resolve_distributor_from_subject(email)
+        sender_matches = self.resolve_distributors_for_sender(email.sender_email)
+        matches = [subject_match] if subject_match else sender_matches
         all_excels = self._list_excel_attachments(email)
+        detected_q = (preview.get("detected_quarter") or email.detected_quarter or "").strip()
+        # Subject period wins; only fill from workbook when empty
+        if detected_q and not (email.detected_quarter or "").strip():
+            email.detected_quarter = detected_q
+            self.db.flush()
+            self.audit.log(
+                AuditTrailCreate(
+                    user_name=actor,
+                    action="Quarter Detected",
+                    details=(
+                        f"Quarter detected for email_id={email_id} | quarter={detected_q} | "
+                        f"confidence={preview.get('quarter_confidence')}"
+                    ),
+                    entity_type="email",
+                    entity_id=str(email_id),
+                    module="Email Extraction",
+                    status="Success",
+                    extra_metadata={
+                        "segment": email.parsed_segment,
+                        "reporting_quarter": detected_q,
+                        "confidence": preview.get("quarter_confidence"),
+                    },
+                )
+            )
+        elif (email.detected_quarter or "").strip():
+            preview["detected_quarter"] = email.detected_quarter
         preview["email_id"] = email.id
         preview["workbook_name"] = att.file_name
         preview["subject"] = email.subject
@@ -335,7 +436,17 @@ class ERPIngestService:
         preview["all_distributors"] = self.list_active_distributors()
         preview["distributor_id"] = matches[0]["id"] if len(matches) == 1 else None
         preview["distributor_unknown"] = len(matches) == 0
-        preview["import_allowed"] = float((preview.get("confidence") or {}).get("overall") or 0) >= MIN_IMPORT_ACCURACY
+        preview["subject_valid"] = bool(email.subject_valid)
+        preview["parsed_distributor"] = email.parsed_distributor
+        preview["parsed_location"] = email.parsed_location
+        preview["parsed_segment"] = email.parsed_segment
+        preview["detected_quarter"] = detected_q or preview.get("detected_quarter")
+        preview["import_allowed"] = (
+            float((preview.get("confidence") or {}).get("overall") or 0) >= MIN_IMPORT_ACCURACY
+            and bool(email.subject_valid)
+            and preview["distributor_id"] is not None
+            and bool(preview.get("detected_quarter") or preview.get("monthly_pivot"))
+        )
         preview["attachment_count"] = len(all_excels)
         preview["attachment_names"] = [a.file_name for a in all_excels]
         preview["attachments_capped"] = len(
@@ -350,6 +461,9 @@ class ERPIngestService:
             conf = (preview.get("confidence") or {}).get("overall")
             if conf is not None:
                 email.confidence_score = int(round(float(conf)))
+            src = preview.get("mapping_source")
+            if src:
+                email.mapping_source = str(src)
             email.error_message = None
             self.db.flush()
 
@@ -599,8 +713,8 @@ class ERPIngestService:
         self,
         *,
         email_id: int,
-        distributor_id: int,
-        reporting_quarter: str,
+        distributor_id: Optional[int] = None,
+        reporting_quarter: Optional[str] = None,
         actor: str,
         mapping: Optional[Any] = None,
         rows: Optional[List[Dict[str, Any]]] = None,
@@ -612,20 +726,32 @@ class ERPIngestService:
         email. Manual ``mapping`` / client ``rows`` apply only to the primary
         (first) workbook; remaining workbooks are re-parsed server-side.
         """
+        from app.services.email_subject_service import EmailSubjectService
+
         email = self.emails.get_or_raise(email_id)
+        EmailSubjectService(self.db).require_valid_subject(email)
         attachments = self._list_excel_attachments(email)
         if not attachments:
             raise ValidationAppError("No Excel attachment found for this email")
 
-        quarter = (reporting_quarter or "").strip()
-        if not quarter and not fiscal_year_start:
-            raise ValidationAppError("reporting_quarter is required (e.g. Q3 2026)")
+        subject_dist = self.resolve_distributor_from_subject(email)
+        resolved_id = distributor_id or (subject_dist["id"] if subject_dist else None)
+        if resolved_id is None:
+            raise ValidationAppError(
+                "Distributor could not be resolved from email subject. "
+                "Use format: Distributor | Location | Segment"
+            )
 
-        dist = self.distributors.get_or_raise(distributor_id)
+        dist = self.distributors.get_or_raise(resolved_id)
         if not dist.is_active or dist.is_deleted:
             raise ValidationAppError("Distributor is inactive")
 
         company = (dist.company or dist.name or "").strip()
+        from app.constants.business_segments import normalize_business_segment
+
+        segment = normalize_business_segment(email.parsed_segment)
+        location = (email.parsed_location or "").strip()
+        quarter = (reporting_quarter or "").strip()
         total_inserted = 0
         any_dup = False
         last_report = None
@@ -669,6 +795,13 @@ class ERPIngestService:
                         reporting_quarter=quarter or None,
                     )
                     use_rows = preview.get("rows") or []
+                if not quarter:
+                    quarter = self._resolve_reporting_quarter(
+                        email, preview, override=reporting_quarter
+                    )
+                    if not email.detected_quarter:
+                        email.detected_quarter = quarter
+                        self.db.flush()
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "ERP import parse failed | email_id={} | file={} | err={}",
@@ -702,9 +835,11 @@ class ERPIngestService:
                     att=att,
                     preview=preview,
                     use_rows=use_rows,
-                    distributor_id=distributor_id,
+                    distributor_id=resolved_id,
                     company=company,
                     quarter=quarter,
+                    segment=segment,
+                    location=location,
                     actor=actor,
                     fiscal_year_start=fiscal_year_start,
                     overall=overall,
@@ -756,10 +891,11 @@ class ERPIngestService:
         self.audit.log(
             AuditTrailCreate(
                 user_name=actor,
-                action=AuditAction.PROCESSED,
+                action="Imported Report",
                 details=(
                     f"ERP Report Imported | email_id={email_id} | "
-                    f"distributor={company} | quarters={unique_quarters} | "
+                    f"distributor={company} | segment={segment} | location={location} | "
+                    f"quarters={unique_quarters} | "
                     f"workbooks={workbooks_imported} | rows={total_inserted} | "
                     f"skipped={len(workbook_skips)}"
                 ),
@@ -770,8 +906,10 @@ class ERPIngestService:
                 report_name=", ".join(workbooks_imported[:3]),
                 extra_metadata={
                     "email_id": email_id,
-                    "distributor_id": distributor_id,
+                    "distributor_id": resolved_id,
                     "distributor": company,
+                    "segment": segment,
+                    "location": location,
                     "quarters_imported": unique_quarters,
                     "workbooks": workbooks_imported,
                     "workbook_skips": workbook_skips,
@@ -786,7 +924,7 @@ class ERPIngestService:
             "records_inserted": total_inserted,
             "duplicate": any_dup,
             "quality_score": int(round(overall_quality)),
-            "distributor_id": distributor_id,
+            "distributor_id": resolved_id,
             "reporting_quarter": (
                 ", ".join(unique_quarters)
                 if len(unique_quarters) > 1

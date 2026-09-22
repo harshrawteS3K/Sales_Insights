@@ -281,7 +281,7 @@ class TemplateGenerationService:
 
         quarter = normalize_reporting_month(reporting_quarter) or reporting_quarter.strip()
         if not quarter:
-            raise ValidationAppError("reporting_quarter is required (e.g. Q2 2026)")
+            raise ValidationAppError("reporting_quarter is required (e.g. FY 2025-26 • Q2)")
 
         company_label = (dist.company or dist.name or "Distributor").strip()
         label = sanitize_filename_part(company_label)

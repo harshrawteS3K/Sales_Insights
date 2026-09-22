@@ -14,16 +14,16 @@ import {
 import APCOTEX_LOGO from '../../assets/images/apcotexindustrieslogo.png';
 import { BLUE, TEAL, RED, BORDER } from '../../constants/theme';
 import { isAdminRole, isSuperAdminRole } from '../../utils/rbac';
-import type { UserRole } from '../../types';
+import type { OutlookSyncPermission, UserRole } from '../../types';
 
 const mainNavItems = [
   { path: '/',                  label: 'Dashboard',         icon: LayoutDashboard, exact: true },
-  { path: '/emails',            label: 'Emails',            icon: Mail             },
+  { path: '/emails',            label: 'Emails',            icon: Mail, emailsOnly: true },
   { path: '/consolidated-data', label: 'Consolidated Data', icon: Table2           },
-  { path: '/visualizations',    label: 'Visualizations',    icon: BarChart3        },
-  { path: '/distributors',      label: 'Distributors',      icon: Building2, adminOnly: true },
+  { path: '/visualizations',    label: 'Visualizations & Analytics', icon: BarChart3        },
+  { path: '/distributors',      label: 'Distributors',      icon: Building2 },
   { path: '/audit-trail',       label: 'Audit Trail',       icon: ScrollText, adminOnly: true },
-  { path: '/user-management',   label: 'User Management',   icon: Users, superAdminOnly: true },
+  { path: '/user-management',   label: 'Persona Management',  icon: Users, adminOnly: true },
 ];
 
 const adminNavItems = [
@@ -39,17 +39,20 @@ export function Sidebar({
   userName = 'Debabrata C',
   userTitle = 'CMO',
   userRole,
+  outlookSyncPermission = 'own',
   onLogout,
 }: {
   userName?: string;
   userTitle?: string;
   userRole?: UserRole | null;
+  outlookSyncPermission?: OutlookSyncPermission | null;
   onLogout?: () => void;
 }) {
   const navigate = useNavigate();
   const location = useLocation();
 
   const filteredNavItems = mainNavItems.filter(item => {
+    if ('emailsOnly' in item && item.emailsOnly && outlookSyncPermission === 'none') return false;
     if ('superAdminOnly' in item && item.superAdminOnly && !isSuperAdminRole(userRole)) return false;
     if ('adminOnly' in item && item.adminOnly && !isAdminRole(userRole)) return false;
     return true;
@@ -167,25 +170,32 @@ export function Sidebar({
       </nav>
 
       <div style={{ borderTop: `1px solid ${BORDER}`, flexShrink: 0 }}>
-        <button
-          onClick={() => navigate('/settings')}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            width: '100%',
-            padding: '8px 20px',
-            background: 'transparent',
-            border: 'none',
-            borderLeft: '2px solid transparent',
-            color: '#6B7280',
-            cursor: 'pointer',
-            fontSize: '0.875rem',
-          }}
-        >
-          <Settings size={17} strokeWidth={1.5} />
-          Settings
-        </button>
+        {isAdminRole(userRole) && (
+          <button
+            onClick={() => navigate('/settings')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              width: '100%',
+              padding: '8px 20px',
+              background: location.pathname.startsWith('/settings')
+                ? 'rgba(31,95,168,0.06)'
+                : 'transparent',
+              border: 'none',
+              borderLeft: location.pathname.startsWith('/settings')
+                ? `2px solid ${TEAL}`
+                : '2px solid transparent',
+              color: location.pathname.startsWith('/settings') ? BLUE : '#6B7280',
+              cursor: 'pointer',
+              fontSize: '0.875rem',
+              fontWeight: location.pathname.startsWith('/settings') ? 600 : 400,
+            }}
+          >
+            <Settings size={17} strokeWidth={1.5} />
+            Settings
+          </button>
+        )}
 
         <div style={{ borderTop: `1px solid ${BORDER}` }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 20px' }}>

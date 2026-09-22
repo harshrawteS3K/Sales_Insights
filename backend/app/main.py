@@ -102,7 +102,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             "SECURITY: AUTH_MODE=trusted_headers in production requires AUTH_TRUSTED_SECRET"
         )
 
+    from app.services.outlook_auto_sync_scheduler import (
+        start_outlook_auto_sync_scheduler,
+        stop_outlook_auto_sync_scheduler,
+    )
+
+    start_outlook_auto_sync_scheduler()
     yield
+    stop_outlook_auto_sync_scheduler()
     logger.info("Shutting down {}", settings.app_name)
 
 

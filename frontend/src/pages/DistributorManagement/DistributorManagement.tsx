@@ -14,7 +14,6 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { Navigate } from 'react-router';
 import { useLayoutContext } from '../../hooks/useLayoutContext';
 import { StatusBanner } from '../../components/common/StatusBanner';
 import { DistributorService } from '../../services/distributor.service';
@@ -22,6 +21,9 @@ import { ApiError } from '../../api';
 import { BLUE, BORDER, RED, TEAL } from '../../constants/theme';
 import { isAdminRole } from '../../utils/rbac';
 import type { Distributor, DistributorCreatePayload } from '../../types';
+import { DistributorPerformance } from './DistributorPerformance';
+
+type MainTab = 'directory' | 'performance';
 
 const inputStyle: CSSProperties = {
   width: '100%',
@@ -131,6 +133,8 @@ function toPayload(form: FormState): DistributorCreatePayload {
 
 export function DistributorManagement() {
   const { userRole } = useLayoutContext();
+  const isAdmin = isAdminRole(userRole);
+  const [mainTab, setMainTab] = useState<MainTab>(isAdmin ? 'directory' : 'performance');
   const [rows, setRows] = useState<Distributor[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -162,7 +166,7 @@ export function DistributorManagement() {
   );
 
   const load = useCallback(async () => {
-    if (!isAdminRole(userRole)) return;
+    if (!isAdmin) return;
     setLoading(true);
     setError(null);
     try {
@@ -175,15 +179,13 @@ export function DistributorManagement() {
     } finally {
       setLoading(false);
     }
-  }, [query, userRole]);
+  }, [query, isAdmin]);
 
   useEffect(() => {
-    load();
-  }, [load]);
-
-  if (!isAdminRole(userRole)) {
-    return <Navigate to="/" replace />;
-  }
+    if (mainTab === 'directory' && isAdmin) {
+      void load();
+    }
+  }, [load, mainTab, isAdmin]);
 
   const closeDialog = () => {
     if (busy) return;
@@ -303,15 +305,65 @@ export function DistributorManagement() {
         fontFamily: "'Inter', system-ui, sans-serif",
       }}
     >
-      <div style={{ marginBottom: 24 }}>
+      <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: '0 0 6px' }}>
-          Distributor Management
+          Distributors
         </h1>
         <p style={{ margin: 0, color: '#6B7280', fontSize: '0.875rem' }}>
-          Manage distributor contacts and imported sales history.
+          Directory management and segment performance benchmarking.
         </p>
       </div>
 
+      <div
+        style={{
+          display: 'flex',
+          gap: 0,
+          borderBottom: `1px solid ${BORDER}`,
+          marginBottom: 20,
+        }}
+      >
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => setMainTab('directory')}
+            style={{
+              padding: '10px 18px',
+              border: 'none',
+              borderBottom: mainTab === 'directory' ? `2px solid ${BLUE}` : '2px solid transparent',
+              background: 'transparent',
+              color: mainTab === 'directory' ? BLUE : '#6B7280',
+              fontWeight: 600,
+              fontSize: '0.875rem',
+              cursor: 'pointer',
+              marginBottom: -1,
+            }}
+          >
+            Distributor Directory
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setMainTab('performance')}
+          style={{
+            padding: '10px 18px',
+            border: 'none',
+            borderBottom: mainTab === 'performance' ? `2px solid ${BLUE}` : '2px solid transparent',
+            background: 'transparent',
+            color: mainTab === 'performance' ? BLUE : '#6B7280',
+            fontWeight: 600,
+            fontSize: '0.875rem',
+            cursor: 'pointer',
+            marginBottom: -1,
+          }}
+        >
+          Distributor Performance
+        </button>
+      </div>
+
+      {mainTab === 'performance' && <DistributorPerformance />}
+
+      {mainTab === 'directory' && isAdmin && (
+        <>
       <StatusBanner loading={loading && rows.length === 0} error={error} onRetry={load} />
 
       <div
@@ -687,6 +739,8 @@ export function DistributorManagement() {
             )}
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

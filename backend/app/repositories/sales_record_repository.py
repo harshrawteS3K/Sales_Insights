@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import distinct, func, or_, select, update
+from sqlalchemy import distinct, false, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.distributor import Distributor
@@ -89,6 +89,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         customer: Optional[str] = None,
         segment: Optional[str] = None,
         product: Optional[str] = None,
+        location: Optional[str] = None,
         company: Optional[str] = None,
         period: Optional[str] = None,
         quarter: Optional[str] = None,
@@ -97,8 +98,28 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         imported_from: Optional[date] = None,
         imported_to: Optional[date] = None,
         distributor_id: Optional[int] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ):
         """Apply dynamic filters (all optional, combinable)."""
+        if allowed_segments is not None:
+            if not allowed_segments:
+                query = query.where(false())
+            else:
+                lowered = [s.casefold() for s in allowed_segments if (s or "").strip()]
+                query = query.where(func.lower(SalesRecord.segment).in_(lowered))
+        if allowed_companies is not None:
+            if not allowed_companies:
+                query = query.where(false())
+            else:
+                lowered_c = [c.casefold() for c in allowed_companies if (c or "").strip()]
+                query = query.where(
+                    or_(
+                        func.lower(company_expr()).in_(lowered_c),
+                        func.lower(func.coalesce(Distributor.company, "")).in_(lowered_c),
+                        func.lower(func.coalesce(Distributor.name, "")).in_(lowered_c),
+                    )
+                )
         if distributor_id:
             query = query.where(SalesRecord.distributor_id == distributor_id)
         if distributor and distributor.lower() != "all":
@@ -117,13 +138,15 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             query = query.where(func.lower(SalesRecord.segment) == segment.strip().lower())
         if product and product.lower() != "all":
             query = query.where(func.lower(SalesRecord.product) == product.strip().lower())
+        if location and location.lower() != "all":
+            query = query.where(func.lower(SalesRecord.location) == location.strip().lower())
         if company and company.lower() != "all":
             term = company.strip().lower()
             query = query.where(func.lower(company_expr()) == term)
         if period and period.lower() != "all":
             query = query.where(reporting_month_expr() == period)
         if quarter and quarter.lower() != "all":
-            # Prefer structured quarter labels (Q1 2026); fall back to legacy substring
+            # Prefer structured FY quarter labels; fall back to legacy substring
             from app.utils.period_calendar import parse_quarter_label
 
             spec = parse_quarter_label(quarter.strip())
@@ -156,6 +179,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
                     func.lower(SalesRecord.customer_name).like(term),
                     func.lower(SalesRecord.segment).like(term),
                     func.lower(SalesRecord.product).like(term),
+                    func.lower(func.coalesce(SalesRecord.location, "")).like(term),
                     func.lower(func.coalesce(SalesRecord.period, "")).like(term),
                     func.lower(func.coalesce(Report.reporting_month, "")).like(term),
                 )
@@ -174,6 +198,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         distributor: Optional[str] = None,
         customer: Optional[str] = None,
         segment: Optional[str] = None,
+        location: Optional[str] = None,
         company: Optional[str] = None,
         quarter: Optional[str] = None,
         quantity_min: Optional[float] = None,
@@ -182,6 +207,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         imported_to: Optional[date] = None,
         sort_by: str = "id",
         sort_dir: str = "asc",
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[SalesRecord]:
         """List sales records with distributor eagerly loaded and dynamic filters."""
         query = self._base_query()
@@ -192,6 +219,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             customer=customer,
             segment=segment,
             product=product,
+            location=location,
             company=company,
             period=period,
             quarter=quarter,
@@ -200,6 +228,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             imported_from=imported_from,
             imported_to=imported_to,
             distributor_id=distributor_id,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         sort_map = {
             "id": SalesRecord.id,
@@ -207,6 +237,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             "customerName": SalesRecord.customer_name,
             "segment": SalesRecord.segment,
             "product": SalesRecord.product,
+            "location": SalesRecord.location,
             "quantity": SalesRecord.quantity,
             "period": SalesRecord.period,
             "reportingMonth": SalesRecord.period,
@@ -239,6 +270,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         customer: Optional[str] = None,
         segment: Optional[str] = None,
         product: Optional[str] = None,
+        location: Optional[str] = None,
         company: Optional[str] = None,
         period: Optional[str] = None,
         quarter: Optional[str] = None,
@@ -247,6 +279,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         imported_from: Optional[date] = None,
         imported_to: Optional[date] = None,
         distributor_id: Optional[int] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> int:
         """Count rows matching the same filters as list_with_distributor."""
         query = (
@@ -266,6 +300,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             customer=customer,
             segment=segment,
             product=product,
+            location=location,
             company=company,
             period=period,
             quarter=quarter,
@@ -274,6 +309,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             imported_from=imported_from,
             imported_to=imported_to,
             distributor_id=distributor_id,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         return int(self.db.scalar(query) or 0)
 
@@ -285,6 +322,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         customer: Optional[str] = None,
         segment: Optional[str] = None,
         product: Optional[str] = None,
+        location: Optional[str] = None,
         company: Optional[str] = None,
         period: Optional[str] = None,
         quarter: Optional[str] = None,
@@ -293,6 +331,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         imported_from: Optional[date] = None,
         imported_to: Optional[date] = None,
         distributor_id: Optional[int] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> int:
         """Count distinct ACTIVE reports matching the same filters as list."""
         query = (
@@ -312,6 +352,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             customer=customer,
             segment=segment,
             product=product,
+            location=location,
             company=company,
             period=period,
             quarter=quarter,
@@ -320,6 +361,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             imported_from=imported_from,
             imported_to=imported_to,
             distributor_id=distributor_id,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         return int(self.db.scalar(query) or 0)
 
@@ -333,6 +376,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         customer: Optional[str] = None,
         segment: Optional[str] = None,
         product: Optional[str] = None,
+        location: Optional[str] = None,
         company: Optional[str] = None,
         period: Optional[str] = None,
         quarter: Optional[str] = None,
@@ -341,6 +385,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         imported_from: Optional[date] = None,
         imported_to: Optional[date] = None,
         distributor_id: Optional[int] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[int]:
         """
         Paginate by complete reports (newest reporting period first).
@@ -370,6 +416,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             customer=customer,
             segment=segment,
             product=product,
+            location=location,
             company=company,
             period=period,
             quarter=quarter,
@@ -378,6 +425,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             imported_from=imported_from,
             imported_to=imported_to,
             distributor_id=distributor_id,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         query = query.order_by(
             func.max(period_col).desc().nulls_last(),
@@ -427,6 +476,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         customer: Optional[str] = None,
         segment: Optional[str] = None,
         product: Optional[str] = None,
+        location: Optional[str] = None,
         company: Optional[str] = None,
         period: Optional[str] = None,
         quarter: Optional[str] = None,
@@ -435,6 +485,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         imported_from: Optional[date] = None,
         imported_to: Optional[date] = None,
         distributor_id: Optional[int] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Accurate per-period rollups for the full filtered set (not the current page).
@@ -469,6 +521,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             customer=customer,
             segment=segment,
             product=product,
+            location=location,
             company=company,
             period=period,
             quarter=quarter,
@@ -477,6 +530,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             imported_from=imported_from,
             imported_to=imported_to,
             distributor_id=distributor_id,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         out: List[Dict[str, Any]] = []
         for row in self.db.execute(query).all():
@@ -596,6 +651,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             "customer_name": SalesRecord.customer_name,
             "segment": SalesRecord.segment,
             "product": SalesRecord.product,
+            "location": SalesRecord.location,
             "distributor": Distributor.name,
             "company": Distributor.company,
         }
@@ -666,7 +722,12 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         self.db.flush()
         return len(records)
 
-    def total_quantity(self) -> Decimal:
+    def total_quantity(
+        self,
+        *,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
+    ) -> Decimal:
         """Sum of quantities from ACTIVE reports + ACTIVE distributors only."""
         query = (
             select(func.coalesce(func.sum(SalesRecord.quantity), 0))
@@ -674,6 +735,11 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .where(*self._active_distributor_sales_where())
+        )
+        query = self._apply_filters(
+            query,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         return Decimal(str(self.db.scalar(query) or 0))
 
@@ -694,6 +760,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         period: Optional[str] = None,
         product: Optional[str] = None,
         distributor: Optional[str] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Aggregate quantity by product (ACTIVE reports + distributors only)."""
         query = (
@@ -708,7 +776,14 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             .group_by(SalesRecord.product)
             .order_by(func.sum(SalesRecord.quantity).desc())
         )
-        query = self._apply_viz_filters(query, period=period, product=product, distributor=distributor)
+        query = self._apply_viz_filters(
+            query,
+            period=period,
+            product=product,
+            distributor=distributor,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
+        )
         rows = self.db.execute(query).all()
         return [{"product": row.product, "qty": float(row.qty)} for row in rows]
 
@@ -718,6 +793,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         period: Optional[str] = None,
         product: Optional[str] = None,
         distributor: Optional[str] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Aggregate quantity per Distributor Company (ACTIVE reports only)."""
         entity = company_expr().label("name")
@@ -739,7 +816,14 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             .group_by(entity)
             .order_by(func.sum(SalesRecord.quantity).desc())
         )
-        query = self._apply_viz_filters(query, period=period, product=product, distributor=distributor)
+        query = self._apply_viz_filters(
+            query,
+            period=period,
+            product=product,
+            distributor=distributor,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
+        )
         rows = self.db.execute(query).all()
         results: List[Dict[str, Any]] = []
         for row in rows:
@@ -772,6 +856,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         *,
         product: Optional[str] = None,
         distributor: Optional[str] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Quantity by reporting quarter from ACTIVE reports.
@@ -795,7 +881,13 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             )
             .group_by(month_expr)
         )
-        query = self._apply_viz_filters(query, product=product, distributor=distributor)
+        query = self._apply_viz_filters(
+            query,
+            product=product,
+            distributor=distributor,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
+        )
         rows = self.db.execute(query).all()
         results = [
             {
@@ -814,6 +906,8 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         product: Optional[str] = None,
         distributor: Optional[str] = None,
         distributor_limit: int = 20,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Heatmap matrix: distributors × months → quantity (ACTIVE reports).
@@ -822,7 +916,12 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         """
         month_expr = func.coalesce(Report.reporting_month, SalesRecord.period)
         # Limit to top distributor companies by total qty (keeps heatmap readable)
-        top = self.distributor_totals(product=product, distributor=distributor)
+        top = self.distributor_totals(
+            product=product,
+            distributor=distributor,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
+        )
         top_names = [r["name"] for r in top[: max(1, distributor_limit)]]
         if not top_names:
             return {"months": [], "distributors": [], "cells": []}
@@ -846,7 +945,13 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             )
             .group_by(entity, month_expr)
         )
-        query = self._apply_viz_filters(query, product=product, distributor=distributor)
+        query = self._apply_viz_filters(
+            query,
+            product=product,
+            distributor=distributor,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
+        )
         rows = self.db.execute(query).all()
         cells = [
             {"distributor": row.distributor, "month": str(row.month), "qty": float(row.qty)}
@@ -865,8 +970,28 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         period: Optional[str] = None,
         product: Optional[str] = None,
         distributor: Optional[str] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ):
         """Optional exact filters for visualization endpoints."""
+        if allowed_segments is not None:
+            if not allowed_segments:
+                query = query.where(false())
+            else:
+                lowered = [s.casefold() for s in allowed_segments if (s or "").strip()]
+                query = query.where(func.lower(SalesRecord.segment).in_(lowered))
+        if allowed_companies is not None:
+            if not allowed_companies:
+                query = query.where(false())
+            else:
+                lowered_c = [c.casefold() for c in allowed_companies if (c or "").strip()]
+                query = query.where(
+                    or_(
+                        func.lower(company_expr()).in_(lowered_c),
+                        func.lower(func.coalesce(Distributor.company, "")).in_(lowered_c),
+                        func.lower(func.coalesce(Distributor.name, "")).in_(lowered_c),
+                    )
+                )
         if period and period.lower() != "all":
             query = query.where(reporting_month_expr() == period)
         if product and product.lower() != "all":
@@ -1213,7 +1338,7 @@ _MONTH_ORDER = {
 
 
 def _sort_reporting_months(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Sort period labels (``Q1 2026`` or ``March 2024``) chronologically when possible."""
+    """Sort period labels (``FY 2025-26 • Q1`` or ``March 2024``) chronologically when possible."""
     import re
 
     from app.utils.period_calendar import quarter_of_month

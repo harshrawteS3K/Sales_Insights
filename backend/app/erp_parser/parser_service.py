@@ -765,6 +765,20 @@ class ERPParserService:
             allow_llm_fallback=allow_llm_fallback,
         )
         breakdown = result.confidence_breakdown or {}
+        quarter_hit = None
+        try:
+            from app.erp_parser.quarter_detector import detect_reporting_quarter
+
+            quarter_hit = detect_reporting_quarter(
+                path,
+                allow_llm_fallback=allow_llm_fallback,
+            )
+        except Exception:  # noqa: BLE001
+            quarter_hit = None
+
+        detected_quarter = (quarter_hit or {}).get("reporting_quarter")
+        quarter_confidence = float((quarter_hit or {}).get("confidence") or 0)
+
         return {
             "sheet_name": result.sheet_name,
             "sheet_score": result.sheet_score,
@@ -788,4 +802,6 @@ class ERPParserService:
             "errors": result.row_errors,
             "monthly_pivot": bool(breakdown.get("monthly_pivot")),
             "fiscal_year_start": breakdown.get("fiscal_year_start"),
+            "detected_quarter": detected_quarter,
+            "quarter_confidence": quarter_confidence,
         }

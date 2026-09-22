@@ -37,7 +37,12 @@ class ConsolidatedDataService:
         self.reports = ReportRepository(db)
         self.audit = AuditService(db)
 
-    def filter_options(self) -> ConsolidatedFilterOptions:
+    def filter_options(
+        self,
+        *,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
+    ) -> ConsolidatedFilterOptions:
         """Load all filter dropdown values via SELECT DISTINCT (no hardcoding)."""
         from app.services.business_aggregation_service import BusinessAggregationService
         from app.services.business_aggregation_service import QUANTITY_UNIT
@@ -45,14 +50,31 @@ class ConsolidatedDataService:
         months = self.sales.distinct_column_values("period")
         companies = self.sales.distinct_distributors_with_sales()
         quarters = BusinessAggregationService(self.db).available_quarters()
+        from app.constants.business_segments import BUSINESS_SEGMENTS
+
+        segments_from_db = self.sales.distinct_column_values("segment")
+        # Always expose the five business segments at the top of the filter list
+        seen = {s.casefold() for s in BUSINESS_SEGMENTS}
+        segments = list(BUSINESS_SEGMENTS)
+        for s in segments_from_db:
+            if s and s.casefold() not in seen:
+                segments.append(s)
+                seen.add(s.casefold())
+        if allowed_segments is not None:
+            allowed = {s.casefold() for s in allowed_segments}
+            segments = [s for s in segments if s.casefold() in allowed]
+        if allowed_companies is not None:
+            allowed_c = {c.casefold() for c in allowed_companies}
+            companies = [c for c in companies if c.casefold() in allowed_c]
         return ConsolidatedFilterOptions(
             # Primary reporting entity = Distributor Company
             distributors=companies,
             customers=self.sales.distinct_column_values("customer"),
-            segments=self.sales.distinct_column_values("segment"),
+            segments=segments,
+            locations=self.sales.distinct_column_values("location"),
             products=self.sales.distinct_column_values("product"),
             companies=companies,
-            reportingQuarters=months,
+            reportingQuarters=quarters or months,
             reportingMonths=months,
             periods=months,
             quarters=quarters or months,
@@ -68,6 +90,7 @@ class ConsolidatedDataService:
         distributor: Optional[str] = None,
         customer: Optional[str] = None,
         segment: Optional[str] = None,
+        location: Optional[str] = None,
         product: Optional[str] = None,
         company: Optional[str] = None,
         period: Optional[str] = None,
@@ -82,6 +105,8 @@ class ConsolidatedDataService:
         actor: Optional[str] = None,
         audit_search: bool = False,
         page_by: str = "reports",
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> ConsolidatedRecordsPage:
         """
         Server-side filtered sales, returned as report groups.
@@ -99,6 +124,7 @@ class ConsolidatedDataService:
             distributor=distributor,
             customer=customer,
             segment=segment,
+            location=location,
             product=product,
             company=company,
             period=month,
@@ -107,6 +133,8 @@ class ConsolidatedDataService:
             quantity_max=quantity_max,
             imported_from=imported_from,
             imported_to=imported_to,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         total = self.sales.count_filtered(**filter_kwargs)
         total_reports = self.sales.count_matching_reports(**filter_kwargs)
@@ -143,7 +171,7 @@ class ConsolidatedDataService:
             groups = self._group_by_report(records, base_idx=skip)
 
         if actor and audit_search and (
-            search or distributor or customer or segment or product or company or month or quarter
+            search or distributor or customer or segment or location or product or company or month or quarter
         ):
             parts = []
             if search:
@@ -152,6 +180,7 @@ class ConsolidatedDataService:
                 ("distributor", distributor),
                 ("customer", customer),
                 ("segment", segment),
+                ("location", location),
                 ("product", product),
                 ("company", company),
                 ("reporting_month", month),
@@ -264,6 +293,46 @@ class ConsolidatedDataService:
             deletedCount=deleted,
         )
 
+    def wipe_all_reports(self, *, actor: str) -> DeleteResult:
+        """Soft-delete every active report and its sales rows (Admin reset)."""
+        from datetime import datetime, timezone
+
+        from sqlalchemy import update
+
+        from app.models.report import Report
+        from app.models.sales_record import SalesRecord
+
+        now = datetime.now(timezone.utc)
+        sales_result = self.db.execute(
+            update(SalesRecord)
+            .where(SalesRecord.is_deleted.is_(False))
+            .values(is_deleted=True, deleted_at=now)
+        )
+        reports_result = self.db.execute(
+            update(Report)
+            .where(Report.is_deleted.is_(False))
+            .values(is_deleted=True, deleted_at=now)
+        )
+        sales_count = int(sales_result.rowcount or 0)
+        report_count = int(reports_result.rowcount or 0)
+        self.db.flush()
+        self.audit.log(
+            AuditTrailCreate(
+                user_name=actor,
+                action=AuditAction.DELETED,
+                details=(
+                    f"Wiped all consolidated data | reports={report_count} | "
+                    f"sales_rows={sales_count}"
+                ),
+                entity_type="consolidated_data",
+                entity_id="wipe_all",
+            )
+        )
+        return DeleteResult(
+            message=f"Deleted {report_count} reports and {sales_count} sales rows",
+            deletedCount=sales_count,
+        )
+
     def log_export(self, *, actor: str, total: int, filters_summary: str = "") -> None:
         """Audit export of filtered consolidated data."""
         self.audit.log(
@@ -329,6 +398,7 @@ class ConsolidatedDataService:
                     distributor=dist.name if dist else "",
                     company=(dist.company if dist else None) or None,
                     distributorId=dist.id if dist else (getattr(report, "distributor_id", None) if report else None),
+                    location=(getattr(record, "location", None) or "").strip() or None,
                     reportingQuarter=reporting_month,
                     reportingMonth=reporting_month,
                     senderName=getattr(report, "sender_name", None) if report else None,
@@ -351,9 +421,15 @@ class ConsolidatedDataService:
                 srNo=record.sr_no or (base_idx + i + 1),
                 customerName=record.customer_name,
                 segment=record.segment,
+                location=(getattr(record, "location", None) or "").strip(),
                 product=record.product,
                 quantity=record.quantity_display or format_quantity(record.quantity),
             )
             groups[report_id].sales.append(line)
             groups[report_id].recordCount = len(groups[report_id].sales)
+            # Prefer first non-empty location as report-level label
+            if not groups[report_id].location:
+                loc = (getattr(record, "location", None) or "").strip()
+                if loc:
+                    groups[report_id].location = loc
         return list(groups.values())

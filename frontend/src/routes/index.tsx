@@ -13,7 +13,8 @@ import { MarketResearchCompanion } from '../pages/MarketResearch/MarketResearchC
 import { DistributorManagement } from '../pages/DistributorManagement/DistributorManagement';
 import { HeaderDictionaryPage } from '../pages/Admin/HeaderDictionaryPage';
 import { PlaceholderPage } from '../pages/Settings/PlaceholderPage';
-import type { UserRole } from '../types';
+import { SettingsPage } from '../pages/Settings/SettingsPage';
+import type { OutlookSyncPermission, UserRole } from '../types';
 
 /**
  * Creates the browser router with app layout shell and children pages.
@@ -23,7 +24,8 @@ export const createAppRouter = (
   userRole: UserRole | null,
   userName: string,
   userTitle: string,
-  onLogout: () => void
+  onLogout: () => void,
+  outlookSyncPermission: OutlookSyncPermission = 'own',
 ) => {
   return createBrowserRouter([
     {
@@ -34,11 +36,14 @@ export const createAppRouter = (
           userName={userName}
           userTitle={userTitle}
           onLogout={onLogout}
+          outlookSyncPermission={outlookSyncPermission}
         />
       ),
       children: [
         { index: true, Component: SalesDashboard },
-        { path: 'emails', Component: EmailsModule },
+        ...(outlookSyncPermission === 'none'
+          ? []
+          : [{ path: 'emails', Component: EmailsModule }]),
         { path: 'consolidated-data', Component: ConsolidatedData },
         { path: 'visualizations', Component: Visualizations },
         { path: 'distributors', Component: DistributorManagement },
@@ -48,7 +53,7 @@ export const createAppRouter = (
         { path: 'existing-reports', Component: ExistingReports },
         { path: 'market-research-dashboard', Component: MarketResearchDashboard },
         { path: 'market-research-companion', Component: MarketResearchCompanion },
-        { path: 'settings', Component: PlaceholderPage },
+        { path: 'settings', Component: SettingsPage },
         { path: 'experiments', Component: PlaceholderPage },
         { path: 'products', Component: PlaceholderPage },
       ],

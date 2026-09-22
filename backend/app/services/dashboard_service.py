@@ -42,11 +42,26 @@ class DashboardService:
         self.emails = EmailMessageRepository(db)
         self.sync_jobs = SyncJobRepository(db)
 
-    def summary(self) -> DashboardSummary:
+    def summary(
+        self,
+        *,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
+    ) -> DashboardSummary:
         """Build high-level dashboard summary."""
-        total_qty = float(self.sales.total_quantity())
+        total_qty = float(
+            self.sales.total_quantity(
+                allowed_segments=allowed_segments,
+                allowed_companies=allowed_companies,
+            )
+        )
         # Distributors that actually contribute active sales (matches Consolidated / charts)
-        total_distributors = len(self.sales.distributor_totals())
+        total_distributors = len(
+            self.sales.distributor_totals(
+                allowed_segments=allowed_segments,
+                allowed_companies=allowed_companies,
+            )
+        )
         total_reports = self.sales.count_contributing_reports()
         total_sales = self.sales.count_active_with_parents()
         total_emails = self.emails.count()
@@ -58,7 +73,10 @@ class DashboardService:
             if latest_sync
             else None
         )
-        product_qtys = self.sales.product_quantities()
+        product_qtys = self.sales.product_quantities(
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
+        )
         top_product = product_qtys[0]["product"] if product_qtys else "-"
 
         kpis = [
@@ -86,12 +104,16 @@ class DashboardService:
         period: Optional[str] = None,
         product: Optional[str] = None,
         distributor: Optional[str] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[ProductQty]:
         """GET /api/visualizations/products."""
         rows = self.sales.product_quantities(
             period=_norm_filter(period),
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         return [ProductQty(**row) for row in rows]
 
@@ -101,12 +123,16 @@ class DashboardService:
         period: Optional[str] = None,
         product: Optional[str] = None,
         distributor: Optional[str] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[DistributorTotal]:
         """GET /api/visualizations/distributors."""
         rows = self.sales.distributor_totals(
             period=_norm_filter(period),
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         return [DistributorTotal(**row) for row in rows]
 
@@ -117,6 +143,8 @@ class DashboardService:
         product: Optional[str] = None,
         distributor: Optional[str] = None,
         top_n: int = 7,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Mix data for products (donut / treemap).
@@ -127,6 +155,8 @@ class DashboardService:
             period=_norm_filter(period),
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         if not rows:
             return []
@@ -167,12 +197,16 @@ class DashboardService:
         product: Optional[str] = None,
         distributor: Optional[str] = None,
         top_n: int = 10,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Top N products by quantity with remaining aggregated as Others."""
         rows = self.sales.product_quantities(
             period=_norm_filter(period),
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         if not rows:
             return []
@@ -193,6 +227,8 @@ class DashboardService:
         products: Optional[List[str]] = None,
         top_products: int = 4,
         distributor_limit: int = 15,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Distributor × product pivot — Top products × Top companies (scale-safe)."""
         p = _norm_filter(period)
@@ -201,7 +237,7 @@ class DashboardService:
         if products:
             focus = list(products)[: max(1, min(int(top_products or 4), 12))]
         else:
-            ranked = self.sales.product_quantities(period=p, product=prod, distributor=dist)
+            ranked = self.sales.product_quantities(period=p, product=prod, distributor=dist, allowed_segments=allowed_segments, allowed_companies=allowed_companies)
             n = max(1, min(int(top_products or 4), 12))
             focus = [r["product"] for r in ranked[:n]]
         if not focus:
@@ -221,12 +257,16 @@ class DashboardService:
         product: Optional[str] = None,
         distributor: Optional[str] = None,
         limit: int = 10,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Top N distributor companies by quantity (+ Others for remainder)."""
         rows = self.sales.distributor_totals(
             period=_norm_filter(period),
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         n = max(1, min(int(limit or 10), 50))
         top = rows[:n]
@@ -243,12 +283,16 @@ class DashboardService:
         product: Optional[str] = None,
         distributor: Optional[str] = None,
         top_n: int = 8,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Donut: distributor share of total quantity (Top N + Others)."""
         rows = self.sales.distributor_totals(
             period=_norm_filter(period),
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         if not rows:
             return []
@@ -283,11 +327,15 @@ class DashboardService:
         *,
         product: Optional[str] = None,
         distributor: Optional[str] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Line chart: month → total quantity."""
         return self.sales.monthly_sales_trend(
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
 
     def distributor_month_heatmap(
@@ -296,12 +344,16 @@ class DashboardService:
         product: Optional[str] = None,
         distributor: Optional[str] = None,
         distributor_limit: int = 15,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Heatmap: distributor × month → quantity."""
         return self.sales.distributor_month_matrix(
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
             distributor_limit=distributor_limit,
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
 
     def products_kpi(
@@ -310,12 +362,16 @@ class DashboardService:
         period: Optional[str] = None,
         product: Optional[str] = None,
         distributor: Optional[str] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[KpiItem]:
         """Products tab KPIs (ACTIVE data; respects filters)."""
         product_qtys = self.sales.product_quantities(
             period=_norm_filter(period),
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         total_qty = sum(float(r["qty"]) for r in product_qtys)
         top_product = product_qtys[0]["product"] if product_qtys else "-"
@@ -324,6 +380,8 @@ class DashboardService:
                 period=_norm_filter(period),
                 product=_norm_filter(product),
                 distributor=_norm_filter(distributor),
+                allowed_segments=allowed_segments,
+                allowed_companies=allowed_companies,
             )
         )
         return [
@@ -339,12 +397,16 @@ class DashboardService:
         period: Optional[str] = None,
         product: Optional[str] = None,
         distributor: Optional[str] = None,
+        allowed_segments: Optional[List[str]] = None,
+        allowed_companies: Optional[List[str]] = None,
     ) -> List[KpiItem]:
         """Distributors tab KPIs (ACTIVE data; respects filters)."""
         totals = self.sales.distributor_totals(
             period=_norm_filter(period),
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
+            allowed_segments=allowed_segments,
+            allowed_companies=allowed_companies,
         )
         total_qty = sum(float(item["qty"]) for item in totals)
         count = len(totals)
@@ -363,6 +425,8 @@ class DashboardService:
                             period=_norm_filter(period),
                             product=_norm_filter(product),
                             distributor=_norm_filter(distributor),
+                            allowed_segments=allowed_segments,
+                            allowed_companies=allowed_companies,
                         )
                     )
                 ),

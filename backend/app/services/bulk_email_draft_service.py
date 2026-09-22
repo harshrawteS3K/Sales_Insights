@@ -147,7 +147,7 @@ def start_bulk_email_drafts(
 
     quarter = normalize_reporting_month(reporting_quarter) or (reporting_quarter or "").strip()
     if not quarter:
-        raise ValidationAppError("reporting_quarter is required (e.g. Q3 2026)")
+        raise ValidationAppError("reporting_quarter is required (e.g. FY 2025-26 • Q3)")
 
     global _running_job_id
     with _lock:

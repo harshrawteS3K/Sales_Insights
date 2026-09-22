@@ -14,6 +14,7 @@ class SalesRecordBase(BaseModel):
     sr_no: Optional[int] = None
     customer_name: str
     segment: str
+    location: str = ""
     product: str
     quantity: Decimal
     quantity_display: Optional[str] = None
@@ -46,6 +47,7 @@ class SalesLineItem(BaseModel):
     srNo: int
     customerName: str
     segment: str
+    location: str = ""
     product: str
     quantity: str
 
@@ -57,6 +59,7 @@ class ReportSalesGroup(BaseModel):
     distributor: str
     company: Optional[str] = None
     distributorId: Optional[int] = None
+    location: Optional[str] = None
     # DB column remains reporting_month; API exposes reporting_quarter as primary.
     reportingQuarter: Optional[str] = None
     reportingMonth: Optional[str] = None  # backward-compat alias of reportingQuarter
@@ -94,6 +97,7 @@ class FrontendSalesRecord(BaseModel):
     company: Optional[str] = None
     customerName: str
     segment: str
+    location: str = ""
     product: str
     quantity: str
     reportingQuarter: Optional[str] = None
@@ -123,6 +127,7 @@ class ConsolidatedFilterOptions(BaseModel):
     distributors: List[str] = Field(default_factory=list)
     customers: List[str] = Field(default_factory=list)
     segments: List[str] = Field(default_factory=list)
+    locations: List[str] = Field(default_factory=list)
     products: List[str] = Field(default_factory=list)
     companies: List[str] = Field(default_factory=list)
     reportingQuarters: List[str] = Field(default_factory=list)
@@ -309,6 +314,7 @@ class ParsedSalesRow(BaseModel):
     distributor: str
     customer_name: str
     segment: str
+    location: str = ""
     product: str
     quantity: Decimal
     quantity_display: str

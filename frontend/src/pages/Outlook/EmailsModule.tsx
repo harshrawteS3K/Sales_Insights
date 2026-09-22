@@ -19,8 +19,7 @@ import {
 } from '../../services/emails.service';
 import { ApiError, getSession } from '../../api';
 import { isAdminRole } from '../../utils/rbac';
-
-const QUARTERS = ['Q1 2026', 'Q2 2026', 'Q3 2026', 'Q4 2026', 'Q1 2027', 'Q2 2027'];
+import { formatPeriodDisplay, fyQuarterLabel } from '../../utils/quarter';
 
 const MAP_OPTIONS = ['Customer Name', 'Product', 'Sales Quantity', 'Ignored'] as const;
 
@@ -36,10 +35,37 @@ type BatchItemResult = {
   rows?: number;
 };
 
-function confColor(score: number): string {
-  if (score >= 90) return '#059669';
-  if (score >= 75) return '#B45309';
-  return RED;
+function formatSyncClock(iso?: string | null): string {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toLocaleString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+  } catch {
+    return '—';
+  }
+}
+
+function formatSyncTimeOnly(iso?: string | null): string {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toLocaleString('en-IN', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+  } catch {
+    return '—';
+  }
 }
 
 /** Single Accuracy badge (mapping quality for the full workbook). */
@@ -108,6 +134,12 @@ export function EmailsModule() {
   const isAdmin = isAdminRole(getSession()?.role);
   const [extracting, setExtracting] = useState(false);
   const [emails, setEmails] = useState<EmailRecord[]>([]);
+  const [autoSyncStatus, setAutoSyncStatus] = useState<{
+    status: string;
+    frequency: string;
+    last_successful_sync?: string | null;
+    next_scheduled_sync?: string | null;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
@@ -118,7 +150,6 @@ export function EmailsModule() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [mappings, setMappings] = useState<ERPMappingItem[]>([]);
   const [distributorId, setDistributorId] = useState<number | ''>('');
-  const [quarter, setQuarter] = useState('Q3 2026');
   const [fiscalYearStart, setFiscalYearStart] = useState(2025);
   const [importDone, setImportDone] = useState<string | null>(null);
   const [selectedEmailId, setSelectedEmailId] = useState<number | null>(null);
@@ -140,8 +171,18 @@ export function EmailsModule() {
     );
   };
 
+  const refreshAutoSyncStatus = async () => {
+    try {
+      const status = await EmailsService.getAutoSyncStatus();
+      setAutoSyncStatus(status);
+    } catch {
+      /* ignore status card errors */
+    }
+  };
+
   useEffect(() => {
     refreshEmails().catch(() => undefined);
+    refreshAutoSyncStatus().catch(() => undefined);
   }, []);
 
   // While any email is still scoring (confidence 0), poll so Accuracy updates without manual refresh.
@@ -159,16 +200,34 @@ export function EmailsModule() {
     setError(null);
     setSyncMessage(null);
     try {
-      if (isAdmin) {
-        const sync = await EmailsService.triggerSync();
-        setSyncMessage(
-          sync.message ||
-            `Outlook sync completed (max ${BATCH_LIMIT} unread). Review Accuracy, then Proceed to consolidation.`,
-        );
-      } else {
-        setSyncMessage('Signed in as user — loading history only (admin required to sync).');
+      const session = getSession();
+      const sync = await EmailsService.triggerSync();
+      const asEmail = session?.email ? ` for ${session.email}` : '';
+      setSyncMessage(sync.message || `Outlook sync started${asEmail}…`);
+
+      const jobId = sync.job?.id;
+      if (jobId) {
+        const finalJob = await EmailsService.waitForSyncJob(jobId);
+        const details = (finalJob.details || {}) as Record<string, unknown>;
+        const status = String(finalJob.status || '').toLowerCase();
+        let resultMsg =
+          (typeof details.result_message === 'string' && details.result_message) || null;
+        if (!resultMsg) {
+          if (status === 'started' || status === 'queued') {
+            resultMsg =
+              `Sync is still running (job #${finalJob.id}). Refresh the email list in a moment — ` +
+              `do not assume 0 extracted until status is completed.`;
+          } else if (finalJob.error_message) {
+            resultMsg = `Outlook sync failed: ${finalJob.error_message}`;
+          } else {
+            resultMsg = `Sync ${finalJob.status}: found ${finalJob.emails_found}, processed ${finalJob.emails_processed}.`;
+          }
+        }
+        setSyncMessage(resultMsg);
       }
+
       await refreshEmails();
+      await refreshAutoSyncStatus();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to sync / load emails');
     } finally {
@@ -243,10 +302,18 @@ export function EmailsModule() {
   };
 
   const overall = preview?.confidence?.overall ?? 0;
+  const detectedQuarter =
+    preview?.detected_quarter ||
+    previewEmail?.quarter ||
+    preview?.rows?.find(r => r.period || r.reporting_quarter)?.period ||
+    preview?.rows?.find(r => r.period || r.reporting_quarter)?.reporting_quarter ||
+    '';
+
   const canImport =
     overall >= 75 &&
     Boolean(distributorId) &&
-    (preview?.monthly_pivot ? Boolean(fiscalYearStart) : Boolean(quarter)) &&
+    Boolean(preview?.subject_valid !== false) &&
+    (preview?.monthly_pivot ? Boolean(fiscalYearStart) : Boolean(detectedQuarter)) &&
     !previewBusy;
 
   const approveImport = async () => {
@@ -258,16 +325,16 @@ export function EmailsModule() {
         email_id: previewEmail.id,
         distributor_id: Number(distributorId),
         reporting_quarter: preview.monthly_pivot
-          ? `Q1 ${fiscalYearStart}`
-          : quarter,
+          ? fyQuarterLabel(fiscalYearStart, 1)
+          : detectedQuarter || undefined,
         fiscal_year_start: preview.monthly_pivot ? fiscalYearStart : undefined,
         mapping: mappings,
         rows: preview.rows,
       });
       const qLabel =
         result.quarters_imported?.length
-          ? result.quarters_imported.join(', ')
-          : result.reporting_quarter;
+          ? result.quarters_imported.map(formatPeriodDisplay).join(', ')
+          : formatPeriodDisplay(result.reporting_quarter || '');
       setImportDone(
         `Imported ${result.records_inserted} rows` +
           (result.workbooks_imported && result.workbooks_imported.length > 1
@@ -288,9 +355,13 @@ export function EmailsModule() {
       .filter(
         e =>
           e.hasExcel &&
+          e.subjectValid !== false &&
           (e.statusLabel || '').toLowerCase() !== 'imported' &&
           (e.statusLabel || '').toLowerCase() !== 'failed' &&
-          (e.confidenceScore || 0) >= MIN_IMPORT_ACCURACY,
+          (e.statusLabel || '').toLowerCase() !== 'invalid subject' &&
+          (e.confidenceScore || 0) >= MIN_IMPORT_ACCURACY &&
+          Boolean(e.distributor || e.distributorName) &&
+          Boolean(e.quarter),
       )
       .slice(0, BATCH_LIMIT);
   }, [emails]);
@@ -316,16 +387,18 @@ export function EmailsModule() {
 
   const resolveReportingQuarter = (
     data: ERPPreviewResponse,
-  ): { reporting_quarter: string; fiscal_year_start?: number } => {
+    email: EmailRecord,
+  ): { reporting_quarter?: string; fiscal_year_start?: number } => {
     if (data.monthly_pivot) {
       const fy = Number(data.fiscal_year_start || fiscalYearStart || 2025);
-      return { reporting_quarter: `Q1 ${fy}`, fiscal_year_start: fy };
+      return { reporting_quarter: fyQuarterLabel(fy, 1), fiscal_year_start: fy };
     }
-    const fromRow = (data.rows || [])
-      .map(r => (r.period || r.reporting_quarter || '').trim())
-      .find(Boolean);
-    if (fromRow) return { reporting_quarter: fromRow };
-    return { reporting_quarter: quarter.trim() || 'Q1 2026' };
+    const detected =
+      (data.detected_quarter || email.quarter || '').trim() ||
+      (data.rows || [])
+        .map(r => (r.period || r.reporting_quarter || '').trim())
+        .find(Boolean);
+    return detected ? { reporting_quarter: detected } : {};
   };
 
   const runBatchConsolidate = async () => {
@@ -391,7 +464,17 @@ export function EmailsModule() {
             continue;
           }
           if (data.fiscal_year_start) setFiscalYearStart(Number(data.fiscal_year_start));
-          const periodArgs = resolveReportingQuarter(data);
+          const periodArgs = resolveReportingQuarter(data, email);
+          if (!periodArgs.reporting_quarter && !data.monthly_pivot) {
+            results.push({
+              emailId: email.id,
+              subject: email.subject,
+              status: 'skipped',
+              detail: 'Quarter not detected — use Preview',
+            });
+            setBatchResults([...results]);
+            continue;
+          }
           const result = await EmailsService.importErp({
             email_id: email.id,
             distributor_id: distId,
@@ -402,8 +485,8 @@ export function EmailsModule() {
           totalRows += result.records_inserted || 0;
           const qLabel =
             result.quarters_imported?.length
-              ? result.quarters_imported.join(', ')
-              : result.reporting_quarter;
+              ? result.quarters_imported.map(formatPeriodDisplay).join(', ')
+              : formatPeriodDisplay(result.reporting_quarter || '');
           const wbCount = result.workbooks_imported?.length || 1;
           const skipN = result.workbook_skips?.length || 0;
           results.push({
@@ -519,6 +602,59 @@ export function EmailsModule() {
           background: 'white',
           border: `1px solid ${BORDER}`,
           borderRadius: 12,
+          padding: '16px 20px',
+          marginBottom: 16,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 16,
+          flexWrap: 'wrap',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span
+            style={{
+              width: 10,
+              height: 10,
+              borderRadius: '50%',
+              background: autoSyncStatus?.status === 'Running' ? '#10B981' : '#9CA3AF',
+              flexShrink: 0,
+            }}
+          />
+          <div>
+            <div style={{ fontWeight: 700, color: '#111827', fontSize: '0.875rem' }}>
+              {autoSyncStatus?.status === 'Running' ? 'Auto Sync Running' : 'Auto Sync Stopped'}
+            </div>
+            <div style={{ fontSize: '0.75rem', color: '#6B7280', marginTop: 2 }}>
+              {autoSyncStatus?.frequency || 'Every 30 Minutes'}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', fontSize: '0.8125rem' }}>
+          <div>
+            <div style={{ color: '#9CA3AF', fontSize: '0.6875rem', fontWeight: 600, textTransform: 'uppercase' }}>
+              Last Sync
+            </div>
+            <div style={{ color: '#374151', fontWeight: 600, marginTop: 2 }}>
+              {formatSyncClock(autoSyncStatus?.last_successful_sync)}
+            </div>
+          </div>
+          <div>
+            <div style={{ color: '#9CA3AF', fontSize: '0.6875rem', fontWeight: 600, textTransform: 'uppercase' }}>
+              Next Sync
+            </div>
+            <div style={{ color: '#374151', fontWeight: 600, marginTop: 2 }}>
+              {formatSyncTimeOnly(autoSyncStatus?.next_scheduled_sync)}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        style={{
+          background: 'white',
+          border: `1px solid ${BORDER}`,
+          borderRadius: 12,
           padding: '24px 28px',
           marginBottom: 24,
           display: 'flex',
@@ -544,8 +680,28 @@ export function EmailsModule() {
           <div>
             <div style={{ fontWeight: 700, color: '#111827' }}>Outlook Sync</div>
             <div style={{ fontSize: '0.8125rem', color: '#6B7280' }}>
-              Pulls up to {BATCH_LIMIT} unread Excel emails per sync. Import with Proceed (batch of{' '}
-              {BATCH_LIMIT}).
+              {getSession()?.outlook_sync_permission === 'all' ? (
+                <>
+                  Syncs the complete shared Sales Insights mailbox (all unread Excel emails).
+                </>
+              ) : (
+                <>
+                  Syncs the shared Sales Insights mailbox for <strong>your sender email</strong> only
+                  {getSession()?.email ? (
+                    <>
+                      {' '}
+                      (<span style={{ color: BLUE, fontWeight: 600 }}>{getSession()?.email}</span>)
+                    </>
+                  ) : null}
+                  .
+                </>
+              )}{' '}
+              Subject must be{' '}
+              <code style={{ fontSize: '0.75rem', background: '#F3F4F6', padding: '1px 6px', borderRadius: 4 }}>
+                DISTRIBUTOR | LOCATION | SEGMENT | PERIOD
+              </code>
+              . Extracts up to {BATCH_LIMIT} unread Excel emails per manual sync. Auto-sync runs every 30
+              minutes into the Email Queue (NEW) — Proceed to Consolidation remains required.
             </div>
           </div>
         </div>
@@ -594,7 +750,16 @@ export function EmailsModule() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
               <thead>
                 <tr style={{ background: '#F9FAFB', borderBottom: `1px solid ${BORDER}` }}>
-                  {['Sender', 'Subject', 'Received', 'Excel', 'Accuracy', 'Actions'].map(h => (
+                  {[
+                    'Distributor',
+                    'Location',
+                    'Segment',
+                    'Period',
+                    'Status',
+                    'Extraction',
+                    'Accuracy',
+                    'Actions',
+                  ].map(h => (
                     <th
                       key={h}
                       style={{
@@ -627,17 +792,74 @@ export function EmailsModule() {
                       }}
                     >
                       <td style={{ padding: '12px 14px', color: '#374151' }}>
-                        <div>{email.senderName}</div>
-                        <div style={{ fontSize: '0.75rem', color: '#9CA3AF' }}>{email.senderEmail}</div>
-                      </td>
-                      <td style={{ padding: '12px 14px', color: '#374151', maxWidth: 240 }}>
-                        {email.subject}
-                      </td>
-                      <td style={{ padding: '12px 14px', color: '#6B7280', whiteSpace: 'nowrap' }}>
-                        {email.dateReceived}
+                        {email.distributor || email.distributorName || '—'}
                       </td>
                       <td style={{ padding: '12px 14px', color: '#374151' }}>
-                        {email.attachmentName || '—'}
+                        {email.location || '—'}
+                      </td>
+                      <td style={{ padding: '12px 14px', color: '#374151' }}>
+                        {email.segment || '—'}
+                      </td>
+                      <td style={{ padding: '12px 14px', color: '#6B7280', whiteSpace: 'nowrap' }}>
+                        {email.quarter ? formatPeriodDisplay(email.quarter) : '—'}
+                      </td>
+                      <td style={{ padding: '12px 14px', color: '#374151' }}>
+                        {(email.statusLabel || '').toLowerCase() === 'invalid subject' ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 280 }}>
+                            <span
+                              style={{
+                                display: 'inline-flex',
+                                alignSelf: 'flex-start',
+                                padding: '3px 8px',
+                                borderRadius: 6,
+                                fontSize: '0.6875rem',
+                                fontWeight: 700,
+                                color: '#B45309',
+                                background: 'rgba(245,158,11,0.12)',
+                              }}
+                            >
+                              Invalid Subject
+                            </span>
+                            <span style={{ fontSize: '0.75rem', color: '#92400E', lineHeight: 1.4 }}>
+                              {email.errorMessage ||
+                                'Expected: DISTRIBUTOR | LOCATION | SEGMENT | PERIOD'}
+                            </span>
+                            <span style={{ fontSize: '0.6875rem', color: '#6B7280' }}>
+                              Subject: {email.subject || '—'}
+                            </span>
+                          </div>
+                        ) : (
+                          email.statusLabel || 'New'
+                        )}
+                      </td>
+                      <td style={{ padding: '12px 14px' }}>
+                        {(() => {
+                          const src = (email.mappingSource || '').toLowerCase();
+                          if (!src) {
+                            return <span style={{ color: '#94A3B8', fontSize: '0.75rem' }}>—</span>;
+                          }
+                          const isLlm = src === 'llm';
+                          const isManual = src === 'manual';
+                          return (
+                            <span
+                              style={{
+                                display: 'inline-flex',
+                                padding: '3px 8px',
+                                borderRadius: 6,
+                                fontSize: '0.6875rem',
+                                fontWeight: 700,
+                                color: isLlm ? '#7C3AED' : isManual ? '#0369A1' : '#059669',
+                                background: isLlm
+                                  ? 'rgba(124,58,237,0.12)'
+                                  : isManual
+                                    ? 'rgba(3,105,161,0.1)'
+                                    : 'rgba(5,150,105,0.1)',
+                              }}
+                            >
+                              {isLlm ? 'LLM' : isManual ? 'Manual' : 'Deterministic'}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td style={{ padding: '12px 14px' }}>
                         <div
@@ -664,7 +886,7 @@ export function EmailsModule() {
                           <button
                             type="button"
                             style={{ ...btnSecondary, padding: '5px 8px', fontSize: '0.75rem' }}
-                            disabled={!email.hasExcel || !isAdmin}
+                            disabled={!email.hasExcel}
                             onClick={() => void openPreview(email)}
                           >
                             <Eye size={12} /> Preview
@@ -908,7 +1130,7 @@ export function EmailsModule() {
                   </div>
                   <div style={{ flex: '0 1 180px' }}>
                     <label style={labelStyle}>
-                      {preview.monthly_pivot ? 'Fiscal Year Start (Apr)' : 'Reporting Quarter'}
+                      {preview.monthly_pivot ? 'Fiscal Year Start (Apr)' : 'Detected Quarter (AI)'}
                     </label>
                     {preview.monthly_pivot ? (
                       <select
@@ -935,22 +1157,23 @@ export function EmailsModule() {
                       >
                         {[2024, 2025, 2026, 2027].map(y => (
                           <option key={y} value={y}>
-                            FY {y}-{String(y + 1).slice(-2)} (Q1–Q4 {y})
+                            FY {y}–{String((y + 1) % 100).padStart(2, '0')} (Apr–Mar)
                           </option>
                         ))}
                       </select>
                     ) : (
-                      <select
-                        value={quarter}
-                        onChange={e => setQuarter(e.target.value)}
-                        style={selectStyle}
+                      <div
+                        style={{
+                          padding: '9px 12px',
+                          border: `1px solid ${BORDER}`,
+                          borderRadius: 8,
+                          fontSize: '0.875rem',
+                          background: '#F9FAFB',
+                          color: detectedQuarter ? '#111827' : RED,
+                        }}
                       >
-                        {QUARTERS.map(q => (
-                          <option key={q} value={q}>
-                            {q}
-                          </option>
-                        ))}
-                      </select>
+                        {detectedQuarter ? formatPeriodDisplay(detectedQuarter) : 'Detecting…'}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -966,8 +1189,8 @@ export function EmailsModule() {
                       fontSize: '0.8125rem',
                     }}
                   >
-                    Monthly columns are split into quarterly totals (Q1=Apr–Jun … Q4=Jan–Mar) for
-                    Consolidated Data.
+                    Monthly columns are split into Indian FY quarters
+                    (FY • Q1=Apr–Jun … Q4=Jan–Mar) for Consolidated Data.
                   </div>
                 )}
 
@@ -989,7 +1212,11 @@ export function EmailsModule() {
                       {preview.rows.map((r, i) => (
                         <tr key={`${r.customer_name}-${r.period || ''}-${i}`} style={{ borderBottom: `1px solid ${BORDER}` }}>
                           <td style={td}>{i + 1}</td>
-                          {preview.monthly_pivot && <td style={td}>{r.period || '—'}</td>}
+                          {preview.monthly_pivot && (
+                            <td style={td}>
+                              {r.period ? formatPeriodDisplay(r.period) : '—'}
+                            </td>
+                          )}
                           <td style={td}>{r.customer_name}</td>
                           <td style={td}>{r.product}</td>
                           <td style={{ ...td, textAlign: 'right' }}>{r.sales_quantity}</td>

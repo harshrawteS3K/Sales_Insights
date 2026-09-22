@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from app.models.distributor_customer_mapping import DistributorCustomerMapping
     from app.models.report import Report
     from app.models.sales_record import SalesRecord
+    from app.models.user_distributor import UserDistributor
 
 
 class Distributor(Base, TimestampMixin, SoftDeleteMixin):
@@ -73,6 +74,12 @@ class Distributor(Base, TimestampMixin, SoftDeleteMixin):
     )
     customer_mappings: Mapped[List["DistributorCustomerMapping"]] = relationship(
         "DistributorCustomerMapping",
+        back_populates="distributor",
+        cascade="all, delete-orphan",
+    )
+    user_assignments: Mapped[List["UserDistributor"]] = relationship(
+        "UserDistributor",
+        foreign_keys="[UserDistributor.distributor_id]",
         back_populates="distributor",
         cascade="all, delete-orphan",
     )

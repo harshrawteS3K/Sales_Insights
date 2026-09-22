@@ -102,10 +102,27 @@ class LLMSheetResolver:
         timeout: Optional[float] = None,
     ) -> None:
         settings = get_settings()
-        self.api_key = (api_key if api_key is not None else settings.openai_api_key) or ""
-        self.model = (model if model is not None else settings.openai_model) or "gpt-5.4-mini"
+        try:
+            from app.database.session import SessionLocal
+            from app.services.llm_settings_service import resolve_runtime_llm
+
+            _db = SessionLocal()
+            try:
+                rt = resolve_runtime_llm(_db)
+            finally:
+                _db.close()
+        except Exception:  # noqa: BLE001
+            rt = {
+                "enabled": bool((settings.openai_api_key or "").strip()),
+                "api_key": (settings.openai_api_key or "").strip(),
+                "model": settings.openai_model or "gpt-4o-mini",
+                "timeout": float(settings.openai_timeout_seconds or 30),
+            }
+        self._llm_enabled = bool(rt.get("enabled"))
+        self.api_key = (api_key if api_key is not None else rt.get("api_key")) or ""
+        self.model = (model if model is not None else rt.get("model")) or "gpt-4o-mini"
         self.timeout = float(
-            timeout if timeout is not None else settings.openai_timeout_seconds
+            timeout if timeout is not None else rt.get("timeout") or settings.openai_timeout_seconds or 30
         )
 
     def pick_sheet(
@@ -115,6 +132,8 @@ class LLMSheetResolver:
         candidates: Optional[Sequence[str]] = None,
     ) -> Tuple[str, float]:
         """Return ``(sheet_name, confidence)``."""
+        if not self._llm_enabled:
+            raise LLMSheetResolverError("LLM is disabled in Admin Settings")
         if not self.api_key:
             raise LLMSheetResolverError("OPENAI_API_KEY is not configured")
 
@@ -159,6 +178,25 @@ class LLMSheetResolver:
             (((payload.get("choices") or [{}])[0].get("message") or {}).get("content"))
             or ""
         )
+        usage = payload.get("usage") if isinstance(payload, dict) else None
+        try:
+            from app.database.session import SessionLocal
+            from app.services.llm_settings_service import LlmSettingsService
+
+            _db = SessionLocal()
+            try:
+                LlmSettingsService(_db).record_usage(
+                    purpose="sheet_detect",
+                    usage=usage if isinstance(usage, dict) else {},
+                    model=self.model,
+                    provider="openai",
+                )
+                _db.commit()
+            finally:
+                _db.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to persist LLM usage | purpose=sheet_detect | err={}", exc)
+
         parsed = parse_llm_sheet_json(content, names)
         logger.info(
             "LLM sheet pick | sheet={} | confidence={} | reason={}",

@@ -8,6 +8,7 @@ import { ApiError } from '../../api';
 import { BLUE, BORDER } from '../../constants/theme';
 import { isAdminRole } from '../../utils/rbac';
 import type { AuditTrailQuery, AuditTrailRow } from '../../types';
+import { formatPeriodsInText } from '../../utils/quarter';
 
 const PAGE_SIZE = 25;
 const MODULES = [
@@ -277,7 +278,7 @@ export function AuditTrail() {
                   <td style={tdStyle}>{row.role || '—'}</td>
                   <td style={tdStyle}>{row.module || '—'}</td>
                   <td style={tdStyle}>{row.action}</td>
-                  <td style={{ ...tdStyle, maxWidth: 320 }}>{row.description}</td>
+                  <td style={{ ...tdStyle, maxWidth: 320 }}>{formatPeriodsInText(row.description)}</td>
                   <td style={tdStyle}>
                     <StatusBadge status={row.status} />
                   </td>
@@ -421,7 +422,7 @@ function DetailDrawer({ row, onClose }: { row: AuditTrailRow; onClose: () => voi
           <div style={detailLabel}>Status</div>
           <StatusBadge status={row.status} />
         </div>
-        <Detail label="Description" value={row.description} />
+        <Detail label="Description" value={formatPeriodsInText(row.description)} />
         <Detail label="Entity Type" value={row.entityType || '—'} />
         <Detail label="Entity ID" value={row.entityId || '—'} />
         <Detail label="Report Name" value={row.reportName || '—'} />

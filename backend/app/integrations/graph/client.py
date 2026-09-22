@@ -238,25 +238,49 @@ class GraphClient:
         mailbox: Optional[str] = None,
         top: int = 50,
         has_attachments: bool = True,
+        sender_email: Optional[str] = None,
         page_size: int = 50,
     ) -> List[Dict[str, Any]]:
+        """Return unread messages (optional sender filter)."""
+        return self.list_messages(
+            mailbox=mailbox,
+            top=top,
+            has_attachments=has_attachments,
+            sender_email=sender_email,
+            page_size=page_size,
+            unread_only=True,
+        )
+
+    def list_messages(
+        self,
+        *,
+        mailbox: Optional[str] = None,
+        top: int = 50,
+        has_attachments: bool = True,
+        sender_email: Optional[str] = None,
+        page_size: int = 50,
+        unread_only: Optional[bool] = True,
+    ) -> List[Dict[str, Any]]:
         """
-        Return unread messages from the configured mailbox.
+        Return mailbox messages, optionally filtered by unread and/or sender_email.
 
-        Follows ``@odata.nextLink`` until all matching unread messages are
-        retrieved or ``top`` (client-side cap) is reached.
-
-        Microsoft Graph requires that when ``$filter`` and ``$orderby`` are used
-        together, every ``$orderby`` property also appears in ``$filter`` (and
-        before other filter properties). Otherwise Graph returns InefficientFilter.
+        Follows ``@odata.nextLink`` until matching messages are retrieved or ``top``
+        (client-side cap) is reached.
         """
         user_path = self._user_path(mailbox)
         limit = max(int(top), 1)
         per_page = min(max(int(page_size), 1), 200)
         # receivedDateTime MUST lead $filter when ordering by receivedDateTime.
-        filters = ["receivedDateTime ge 1970-01-01T00:00:00Z", "isRead eq false"]
+        filters = ["receivedDateTime ge 1970-01-01T00:00:00Z"]
+        if unread_only is True:
+            filters.append("isRead eq false")
+        elif unread_only is False:
+            filters.append("isRead eq true")
         if has_attachments:
             filters.append("hasAttachments eq true")
+        if sender_email and sender_email.strip():
+            filters.append(f"from/emailAddress/address eq '{sender_email.strip().lower()}'")
+
         params = {
             "$filter": " and ".join(filters),
             "$top": per_page,
@@ -267,9 +291,11 @@ class GraphClient:
             ),
         }
         logger.info(
-            "Graph Connected | Listing unread messages (paginated) | mailbox={} | "
-            "max_messages={} | page_size={} | filter={}",
+            "Graph Connected | Listing messages (paginated) | mailbox={} | "
+            "sender_email={} | unread_only={} | max_messages={} | page_size={} | filter={}",
             mailbox or self.mailbox,
+            sender_email,
+            unread_only,
             limit,
             per_page,
             params["$filter"],
@@ -278,22 +304,49 @@ class GraphClient:
         messages: List[Dict[str, Any]] = []
         pages = 0
         next_url: Optional[str] = None
-        payload = self._request("GET", f"{user_path}/messages", params=params)
+
+        try:
+            payload = self._request("GET", f"{user_path}/messages", params=params)
+        except Exception as exc:  # noqa: BLE001
+            # Fallback without OData nested filter if Graph OData engine rejects nested from/emailAddress filter
+            if sender_email and "from/emailAddress/address" in params.get("$filter", ""):
+                logger.warning(
+                    "Graph OData sender filter failed; falling back to in-memory sender filtering | err={}",
+                    exc,
+                )
+                params["$filter"] = params["$filter"].replace(
+                    f" and from/emailAddress/address eq '{sender_email.strip().lower()}'",
+                    "",
+                )
+                payload = self._request("GET", f"{user_path}/messages", params=params)
+            else:
+                raise
+
+        target_sender = sender_email.strip().lower() if sender_email and sender_email.strip() else None
 
         while payload is not None:
             pages += 1
-            batch = list((payload or {}).get("value") or [])
+            raw_batch = list((payload or {}).get("value") or [])
+            batch = []
+            for msg in raw_batch:
+                if target_sender:
+                    _, s_email = self.extract_sender(msg)
+                    if s_email.strip().lower() != target_sender:
+                        continue
+                batch.append(msg)
+
             messages.extend(batch)
             logger.info(
-                "Graph unread page | page={} | batch={} | total_so_far={}",
+                "Graph messages page | page={} | raw_batch={} | matched_batch={} | total_so_far={}",
                 pages,
+                len(raw_batch),
                 len(batch),
                 len(messages),
             )
             if len(messages) >= limit:
                 messages = messages[:limit]
                 logger.info(
-                    "Unread fetch capped by max_messages | cap={} | pages={}",
+                    "Message fetch capped by max_messages | cap={} | pages={}",
                     limit,
                     pages,
                 )
@@ -301,26 +354,27 @@ class GraphClient:
             next_url = (payload or {}).get("@odata.nextLink")
             if not next_url:
                 break
-            # nextLink is an absolute URL that already embeds $skiptoken / query.
             payload = self._request("GET", next_url)
 
         logger.info(
-            "Unread Messages Retrieved | count={} | pages_processed={} | max_messages={}",
+            "Messages Retrieved | count={} | sender_filter={} | unread_only={} | pages_processed={} | max_messages={}",
             len(messages),
+            target_sender,
+            unread_only,
             pages,
             limit,
         )
         for msg in messages:
-            sender_name, sender_email = self.extract_sender(msg)
+            sender_name, s_email = self.extract_sender(msg)
             logger.info(
-                "Unread message | id={} | subject={} | sender={} <{}> | received={} | hasAttachments={} | internetMessageId={}",
+                "Mailbox message | id={} | subject={} | sender={} <{}> | received={} | isRead={} | hasAttachments={}",
                 msg.get("id"),
                 msg.get("subject"),
                 sender_name,
-                sender_email,
+                s_email,
                 msg.get("receivedDateTime"),
+                msg.get("isRead"),
                 msg.get("hasAttachments"),
-                msg.get("internetMessageId"),
             )
         return messages
 

@@ -20,6 +20,9 @@ class RequestUser:
     role: UserRole
     name: str
     user_id: Optional[int] = None
+    segments: Optional[list[str]] = None
+    email: Optional[str] = None
+    distributor_ids: Optional[list[int]] = None
 
 
 def _parse_role(raw: Optional[str]) -> UserRole:
@@ -105,7 +108,25 @@ def _user_from_jwt(request: Request) -> RequestUser:
     )
     uid = claims.get("uid") or claims.get("user_id") or claims.get("sub")
     user_id = int(uid) if isinstance(uid, int) or (isinstance(uid, str) and uid.isdigit()) else None
-    return RequestUser(role=_parse_role(str(role_raw) if role_raw else None), name=str(name), user_id=user_id)
+    segments_raw = claims.get("segments")
+    segments: Optional[list[str]] = None
+    if isinstance(segments_raw, list):
+        segments = [str(s) for s in segments_raw]
+    elif isinstance(segments_raw, str) and segments_raw.strip():
+        segments = [s.strip() for s in segments_raw.split(",") if s.strip()]
+    return RequestUser(
+        role=_parse_role(str(role_raw) if role_raw else None),
+        name=str(name),
+        user_id=user_id,
+        segments=segments,
+    )
+
+
+def _parse_segments_header(raw: Optional[str]) -> Optional[list[str]]:
+    if not raw:
+        return None
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    return parts or None
 
 
 def _user_from_headers(
@@ -113,15 +134,23 @@ def _user_from_headers(
     x_user_role: Optional[str],
     x_user_name: Optional[str],
     x_user_id: Optional[str],
+    x_user_segments: Optional[str] = None,
+    x_user_email: Optional[str] = None,
 ) -> RequestUser:
     role_header = x_user_role or request.headers.get(settings.rbac_role_header)
     name_header = x_user_name or request.headers.get(settings.rbac_user_header)
     id_header = x_user_id or request.headers.get(settings.rbac_user_id_header)
+    seg_header = x_user_segments or request.headers.get("X-User-Segments")
+    email_header = x_user_email or request.headers.get("X-User-Email")
 
     role = _parse_role(role_header)
     name = (name_header or "anonymous").strip()
     user_id = int(id_header) if id_header and id_header.isdigit() else None
-    return RequestUser(role=role, name=name, user_id=user_id)
+    segments = _parse_segments_header(seg_header)
+    email = (email_header or "").strip() or None
+    return RequestUser(
+        role=role, name=name, user_id=user_id, segments=segments, email=email
+    )
 
 
 async def get_current_user(
@@ -129,6 +158,8 @@ async def get_current_user(
     x_user_role: Annotated[Optional[str], Header(alias="X-User-Role")] = None,
     x_user_name: Annotated[Optional[str], Header(alias="X-User-Name")] = None,
     x_user_id: Annotated[Optional[str], Header(alias="X-User-Id")] = None,
+    x_user_segments: Annotated[Optional[str], Header(alias="X-User-Segments")] = None,
+    x_user_email: Annotated[Optional[str], Header(alias="X-User-Email")] = None,
 ) -> RequestUser:
     """
     Resolve the current caller based on AUTH_MODE.
@@ -149,7 +180,31 @@ async def get_current_user(
             _verify_trusted_gateway(request)
         elif mode not in {"headers", "header", "dev"}:
             logger.warning("Unknown AUTH_MODE={!r} — falling back to headers", mode)
-        user = _user_from_headers(request, x_user_role, x_user_name, x_user_id)
+        user = _user_from_headers(
+            request, x_user_role, x_user_name, x_user_id, x_user_segments, x_user_email
+        )
+
+        # Hydrate segments/email from DB when not sent on headers (persona users)
+        if user.user_id and (not user.segments or not user.email):
+            try:
+                from app.database.session import SessionLocal
+                from app.services.segment_access_service import SegmentAccessService
+                from app.repositories.user_repository import UserRepository
+
+                db = SessionLocal()
+                try:
+                    if not user.segments:
+                        user.segments = SegmentAccessService(db).segments_for_user(user)
+                    if not user.email:
+                        row = UserRepository(db).get_by_id(user.user_id)
+                        if row:
+                            user.email = row.email
+                finally:
+                    db.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Segment hydrate failed | user_id={} | err={}", user.user_id, exc)
+        elif user.role in {UserRole.ADMIN, UserRole.SUPER_ADMIN} and not user.segments:
+            user.segments = ["*"]
 
         # Production guard: never silently accept spoofed elevated roles without gateway/JWT.
         if (
@@ -211,3 +266,40 @@ RequireUser = Annotated[
     Depends(require_roles(UserRole.ADMIN, UserRole.USER, UserRole.SUPER_ADMIN)),
 ]
 CurrentUser = Annotated[RequestUser, Depends(get_current_user)]
+
+
+def segment_scope_for_user(user: RequestUser, db) -> Optional[list[str]]:
+    """Resolved segment list for backend data filters (``None`` = all)."""
+    from app.services.access_control_service import AccessControlService
+
+    scope = AccessControlService(db).resolve_scope(user)
+    if scope.unrestricted:
+        return None
+    if scope.access_mode == "distributor":
+        # Distributor mode does not filter by segment
+        return None
+    return scope.allowed_segments
+
+
+def distributor_companies_scope_for_user(user: RequestUser, db) -> Optional[list[str]]:
+    """
+    Resolved distributor company list for backend filters.
+
+    ``None`` = unrestricted (admin / super admin / segment mode).
+    ``[]`` = no distributor access.
+    """
+    from app.services.access_control_service import AccessControlService
+
+    scope = AccessControlService(db).resolve_scope(user)
+    if scope.unrestricted:
+        return None
+    if scope.access_mode != "distributor":
+        return None
+    return scope.allowed_companies or []
+
+
+def data_scope_for_user(user: RequestUser, db):
+    """Full DataScope for the current user under global Access Control Mode."""
+    from app.services.access_control_service import AccessControlService
+
+    return AccessControlService(db).resolve_scope(user)
