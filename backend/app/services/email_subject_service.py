@@ -46,6 +46,7 @@ class EmailSubjectService:
             email.parsed_distributor = None
             email.parsed_location = None
             email.parsed_segment = None
+            email.parsed_unit = None
             email.subject_valid = False
             if email.process_status not in {
                 EmailProcessStatus.INSERTED.value,
@@ -79,6 +80,7 @@ class EmailSubjectService:
         # Optional 4th part: Q2 FY 2025-26 / FY 2025-26 — prefer over workbook detection later
         if parsed.get("period"):
             email.detected_quarter = parsed["period"]
+        email.parsed_unit = parsed.get("unit") or "MT"
         email.subject_valid = True
         if email.process_status == EmailProcessStatus.INVALID_SUBJECT.value:
             email.process_status = EmailProcessStatus.UNREAD.value

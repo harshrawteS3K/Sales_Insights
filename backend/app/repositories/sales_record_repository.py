@@ -98,6 +98,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         imported_from: Optional[date] = None,
         imported_to: Optional[date] = None,
         distributor_id: Optional[int] = None,
+        month_keys: Optional[List[str]] = None,
         allowed_segments: Optional[List[str]] = None,
         allowed_companies: Optional[List[str]] = None,
     ):
@@ -139,7 +140,20 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         if product and product.lower() != "all":
             query = query.where(func.lower(SalesRecord.product) == product.strip().lower())
         if location and location.lower() != "all":
-            query = query.where(func.lower(SalesRecord.location) == location.strip().lower())
+            term = location.strip().lower()
+            effective_location = func.lower(
+                func.coalesce(
+                    func.nullif(func.trim(SalesRecord.location), ""),
+                    func.nullif(func.trim(Distributor.region), ""),
+                    "",
+                )
+            )
+            query = query.where(effective_location == term)
+        if month_keys is not None:
+            if not month_keys:
+                query = query.where(false())
+            else:
+                query = query.where(reporting_month_expr().in_(month_keys))
         if company and company.lower() != "all":
             term = company.strip().lower()
             query = query.where(func.lower(company_expr()) == term)

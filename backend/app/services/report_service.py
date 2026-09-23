@@ -32,6 +32,11 @@ from app.utils.validation_summary import build_validation_summary
 
 logger = get_logger(__name__)
 
+DUPLICATE_SUBMISSION_MESSAGE = (
+    "Duplicate submission detected. This sales data already exists for the "
+    "selected Financial Year and Quarter."
+)
+
 
 class ReportService:
     """Business logic for reports and sales Excel ingestion."""
@@ -396,14 +401,27 @@ class ReportService:
             period = (row.period or reporting_month or "").strip()
             if not customer or not product or not period:
                 continue
-            key = (customer.casefold(), product.casefold(), period.casefold())
+            source_month = (getattr(row, "source_month", None) or "").strip()
+            key = (
+                customer.casefold(),
+                product.casefold(),
+                period.casefold(),
+                (getattr(row, "location", "") or "").casefold(),
+                source_month.casefold(),
+            )
             qty = row.quantity if isinstance(row.quantity, Decimal) else Decimal(str(row.quantity))
             if key in buckets:
                 existing = buckets[key]
                 existing.quantity = Decimal(str(existing.quantity)) + qty
                 existing.quantity_display = format_quantity(existing.quantity)
                 existing.row_hash = build_sales_row_hash(
-                    company, existing.customer_name, "", existing.product, existing.quantity, period
+                    company,
+                    existing.customer_name,
+                    "",
+                    existing.product,
+                    existing.quantity,
+                    period,
+                    existing.source_month or "",
                 )
             else:
                 row.distributor = company
@@ -414,7 +432,7 @@ class ReportService:
                 row.quantity = qty
                 row.quantity_display = format_quantity(qty)
                 row.row_hash = build_sales_row_hash(
-                    company, customer, "", product, qty, period
+                    company, customer, "", product, qty, period, source_month
                 )
                 buckets[key] = row
                 order.append(key)
@@ -892,6 +910,62 @@ class ReportService:
             distributor_id=distributor_id,
         )
 
+    def _append_approved_rows(
+        self,
+        report: Report,
+        parsed_rows: List[ParsedSalesRow],
+        *,
+        distributor_id: int,
+        company: str,
+        reporting_month: str,
+        actor: str,
+        quality_score: int,
+    ) -> Tuple[Report, int, bool, int]:
+        """Add new business rows onto the active quarter report. Do not replace it."""
+        entities = SalesRecordMapper.to_orm_many(
+            parsed_rows,
+            report_id=report.id,
+            distributor_id_by_name={company: distributor_id},
+        )
+        if not entities:
+            raise ValidationAppError(DUPLICATE_SUBMISSION_MESSAGE)
+        inserted = self.sales.bulk_insert(entities)
+        try:
+            from app.services.distributor_service import DistributorService
+
+            DistributorService(self.db).learn_customers_from_import(
+                distributor_id=distributor_id,
+                customer_names=[r.customer_name for r in parsed_rows],
+                source_report_id=report.id,
+                reporting_quarter=reporting_month,
+                actor=actor,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Customer mapping learn failed during quarter append")
+        self.reports.update(
+            report,
+            {
+                "status": ReportStatus.PROCESSED.value,
+                "record_count": int(report.record_count or 0) + inserted,
+                "confidence_score": quality_score,
+                "error_message": None,
+            },
+        )
+        self.audit.log(
+            AuditTrailCreate(
+                user_name=actor,
+                action=AuditAction.PROCESSED,
+                details=(
+                    f"ERP quarter append | report_id={report.id} | "
+                    f"distributor_id={distributor_id} | period={reporting_month} | "
+                    f"rows_added={inserted}"
+                ),
+                entity_type="report",
+                entity_id=str(report.id),
+            )
+        )
+        return report, inserted, False, quality_score
+
     def persist_approved_rows(
         self,
         file_path: Path,
@@ -921,12 +995,7 @@ class ReportService:
         quarter_scoped_hash = sha256_bytes(f"{content_hash}|{reporting_quarter.strip()}".encode("utf-8"))
         existing_file = self.reports.get_by_content_hash(quarter_scoped_hash)
         if existing_file:
-            if mark_duplicate_as_error:
-                raise ConflictError(
-                    "Duplicate report: this Excel file has already been processed",
-                    details={"existing_report_id": existing_file.id},
-                )
-            return existing_file, 0, True, existing_file.confidence_score or quality_score
+            raise ValidationAppError(DUPLICATE_SUBMISSION_MESSAGE)
 
         dist = self.distributors.get_or_raise(distributor_id)
         company = (dist.company or dist.name or "").strip()
@@ -946,16 +1015,20 @@ class ReportService:
         acquire_report_replace_lock(
             self.db, distributor_id, reporting_month, company=company
         )
-        # Multi-file distributors: only retire the same Excel, not other product files
-        previous_ids = self._retire_matching_file_reports(
-            distributor_id=distributor_id,
-            reporting_month=reporting_month,
-            distributor_name=company,
-            actor=actor,
-            file_name=file_path.name,
-            company=company,
+        existing_report = self.reports.get_active_by_business_key(
+            distributor_id, reporting_month
         )
-        previous_report_id = previous_ids[0] if previous_ids else None
+        if existing_report is not None:
+            return self._append_approved_rows(
+                existing_report,
+                parsed_rows,
+                distributor_id=distributor_id,
+                company=company,
+                reporting_month=reporting_month,
+                actor=actor,
+                quality_score=quality_score,
+            )
+        previous_report_id = None
 
         sender_meta = {
             "sender_name": None,

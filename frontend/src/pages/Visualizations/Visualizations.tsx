@@ -205,24 +205,21 @@ export function Visualizations() {
 
           <ChartCard
             title="Sales Trend"
-            subtitle="Sales Quantity (MT) by quarter for the selected period"
+            subtitle="Sales Quantity (MT) by month for the selected period"
             style={{ marginBottom: 20 }}
           >
             <div style={{ width: '100%', height: 300 }}>
               <ResponsiveContainer>
-                <LineChart data={data.monthly_trend} margin={{ top: 8, right: 16, left: 0, bottom: 36 }}>
+                <LineChart data={data.monthly_trend} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                  <XAxis
-                    dataKey="month"
-                    tick={{ fontSize: 11, fill: '#6B7280' }}
-                    tickFormatter={value => formatPeriodDisplay(String(value))}
-                    interval={0}
-                    angle={-20}
-                    textAnchor="end"
-                    height={48}
-                  />
+                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#6B7280' }} />
                   <YAxis tick={{ fontSize: 11, fill: '#6B7280' }} />
-                  <Tooltip />
+                  <Tooltip
+                    formatter={(value: number) => [`${value} MT`, 'Sales']}
+                    labelFormatter={(_label, payload) =>
+                      String(payload?.[0]?.payload?.tooltip || _label || '')
+                    }
+                  />
                   <Legend />
                   <Line
                     type="monotone"
@@ -411,7 +408,7 @@ export function Visualizations() {
                       >
                         <td style={{ padding: '10px 12px', color: '#374151' }}>{row.customer}</td>
                         <td style={{ padding: '10px 12px', color: '#374151' }}>{row.product}</td>
-                        <td style={{ padding: '10px 12px', color: '#374151' }}>{row.location || ''}</td>
+                        <td style={{ padding: '10px 12px', color: '#374151' }}>{row.location || 'Â'}</td>
                         <td style={{ padding: '10px 12px', color: '#6B7280' }}>
                           {formatPeriodDisplay(row.month)}
                         </td>

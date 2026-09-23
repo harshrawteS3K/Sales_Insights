@@ -210,15 +210,17 @@ def extract_product_month_matrix_rows(
     """
     Expand product×month cross-tab into Customer / Product / Qty rows.
 
-    Month columns under each product are summed into FY quarters (Apr–Jun = Q1, …).
+    Each month column stays its own row. ``period`` is the FY quarter.
+    ``source_month`` keeps the calendar month for the sales trend chart.
     Quantities are taken exactly as written in Excel (no unit conversion).
     """
     from decimal import Decimal
 
     from app.erp_parser.fiscal_quarters import (
-        group_month_indexes_by_quarter,
+        month_key_to_quarter,
         quarter_label,
         resolve_fy_start_year,
+        source_month_label,
     )
     from app.utils.quantity import format_quantity, parse_quantity
 
@@ -279,67 +281,45 @@ def extract_product_month_matrix_rows(
                 (int(c), str(lab), str(key))
                 for c, lab, key in (group.get("month_columns") or [])
             ]
-            by_q = group_month_indexes_by_quarter(month_meta)
 
-            def _sum_cols(cols: List[int]) -> Tuple[Decimal, bool]:
-                total = Decimal("0")
-                any_parsed = False
-                for c in cols:
-                    raw = _at(row, c)
-                    if raw is None or _cell(raw) == "":
-                        continue
-                    try:
-                        v, _ = parse_quantity(raw)
-                    except ValueError:
-                        continue
-                    total += v
-                    any_parsed = True
-                return total, any_parsed
-
-            if not by_q:
-                cols = [c for c, _l, _k in month_meta]
-                total, any_parsed = _sum_cols(cols)
-                if not any_parsed or total == 0:
+            emitted_month = False
+            for col, lab, key in month_meta:
+                q_num = month_key_to_quarter(key)
+                raw = _at(row, col)
+                if raw is None or _cell(raw) == "":
+                    continue
+                try:
+                    total, _ = parse_quantity(raw)
+                except ValueError:
+                    continue
+                if total == 0:
                     continue
                 if total < 0:
                     skipped_invalid += 1
+                    errors.append(f"Row {abs_idx}: negative quantity for {product}")
                     continue
-                period = (reporting_quarter or "").strip() or None
+                if q_num:
+                    period = quarter_label(fy_start, q_num)
+                else:
+                    period = (reporting_quarter or "").strip()
                 payload: Dict[str, Any] = {
                     "customer_name": customer,
                     "product": product,
                     "sales_quantity": total,
                     "sales_quantity_display": format_quantity(total),
                 }
+                src = source_month_label(key, fy_start, lab) if q_num else None
+                if src:
+                    payload["source_month"] = src
                 if period:
                     payload["period"] = period
                     payload["reporting_quarter"] = period
                 rows.append(payload)
                 qty_ok += 1
                 emitted += 1
+                emitted_month = True
+            if not emitted_month:
                 continue
-
-            for q_num, cols in sorted(by_q.items()):
-                total, any_parsed = _sum_cols(cols)
-                if not any_parsed or total == 0:
-                    continue
-                if total < 0:
-                    skipped_invalid += 1
-                    errors.append(f"Row {abs_idx}: negative quantity for {product} Q{q_num}")
-                    continue
-                period = quarter_label(fy_start, q_num)
-                rows.append(
-                    {
-                        "customer_name": customer,
-                        "product": product,
-                        "sales_quantity": total,
-                        "sales_quantity_display": format_quantity(total),
-                        "period": period,
-                        "reporting_quarter": period,
-                    }
-                )
-                qty_ok += 1
-                emitted += 1
 
         if emitted == 0:
             skipped_blank += 1

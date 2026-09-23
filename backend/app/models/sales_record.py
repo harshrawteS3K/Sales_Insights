@@ -40,8 +40,11 @@ class SalesRecord(Base, TimestampMixin, SoftDeleteMixin):
     quantity_display: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     # Denormalized copy of report.reporting_month / Reporting Quarter
     period: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    # Calendar month for the sales trend chart (e.g. April 2026). Period stays FY quarter.
+    source_month: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     location: Mapped[str] = mapped_column(String(150), nullable=False, default="", server_default="")
     unit: Mapped[str] = mapped_column(String(20), default="KG", server_default="KG", nullable=False)
+    original_unit: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     row_hash: Mapped[str] = mapped_column(String(128), nullable=False)
 
     report_id: Mapped[int] = mapped_column(

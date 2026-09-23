@@ -32,6 +32,9 @@ def build_sales_row_hash(
     product: str,
     quantity: Decimal | float | str,
     period: str,
+    source_month: str = "",
 ) -> str:
     """Build a stable hash for duplicate sales-row detection."""
-    return sha256_text(distributor, customer_name, segment, product, quantity, period)
+    return sha256_text(
+        distributor, customer_name, segment, product, quantity, period, source_month
+    )

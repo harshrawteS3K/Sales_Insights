@@ -319,7 +319,9 @@ class ParsedSalesRow(BaseModel):
     quantity: Decimal
     quantity_display: str
     period: Optional[str] = None  # denormalized reporting quarter
+    source_month: Optional[str] = None
     unit: str = "MT"
+    original_unit: Optional[str] = None
     company: Optional[str] = None
     row_hash: str = ""
     errors: List[str] = Field(default_factory=list)

@@ -71,6 +71,7 @@ class EmailMessage(Base, TimestampMixin, SoftDeleteMixin):
     parsed_location: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
     parsed_segment: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
     detected_quarter: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    parsed_unit: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     subject_valid: Mapped[bool] = mapped_column(
         Boolean,
         default=False,

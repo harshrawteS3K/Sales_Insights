@@ -81,6 +81,8 @@ class DistributorRepository(BaseRepository[Distributor]):
             raise ValueError("Distributor Company is required")
 
         existing = self.get_by_company(company_norm)
+        if existing is None and company_norm:
+            existing = self.get_by_name(company_norm)
         if existing:
             updates: Dict[str, object] = {}
             cleaned_company = normalize_company_name(existing.company)

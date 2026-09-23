@@ -23,13 +23,25 @@ from app.utils.period_calendar import (
     fy_annual_label,
     fy_quarter_label,
     fy_short,
+    month_label,
+    parse_month_label,
     parse_quarter_label,
 )
 
-EXPECTED_SUBJECT_FORMAT = "DISTRIBUTOR NAME | LOCATION | SEGMENT | PERIOD"
-EXPECTED_SUBJECT_EXAMPLE = "Chaudhury | South | Rubber | Q2 FY 2025-26"
-EXPECTED_SUBJECT_EXAMPLE_YEAR = "Chaudhury | South | Rubber | FY 2025-26"
-EXPECTED_SUBJECT_EXAMPLE_MONTH = "Reda | South | Construction | APRIL 2026"
+EXPECTED_SUBJECT_FORMAT = "DISTRIBUTOR NAME | LOCATION | SEGMENT | PERIOD | UNIT"
+EXPECTED_SUBJECT_EXAMPLE = "Chaudhury | South | Rubber | Q2 FY 2025-26 | MT"
+EXPECTED_SUBJECT_EXAMPLE_YEAR = "Chaudhury | South | Rubber | FY 2025-26 | KG"
+EXPECTED_SUBJECT_EXAMPLE_MONTH = "Reda | South | Construction | APRIL 2026 | KG"
+
+_UNIT_CANONICAL = {
+    "KG": "KG",
+    "KGS": "KG",
+    "MT": "MT",
+    "TON": "TON",
+    "TONS": "TON",
+    "TONNE": "TON",
+    "TONNES": "TON",
+}
 
 # Pipe (or spaced hyphen / em/en-dash) only — commas are NOT valid separators.
 _SUBJECT_SPLIT_RE = re.compile(r"\s*(?:\||\s-\s|–|—)\s*")
@@ -78,6 +90,32 @@ def _fy_end_ok(start: int, end_raw: str) -> bool:
     return False
 
 
+def normalize_subject_unit(raw: Optional[str]) -> str:
+    """Canonical subject unit: KG, MT, or TON. Blank defaults to MT."""
+    text = re.sub(r"\s+", " ", (raw or "").strip()).upper()
+    if not text:
+        return "MT"
+    if text not in _UNIT_CANONICAL:
+        raise ValidationAppError(
+            "Invalid unit in subject. Use KG, MT, TON, or TONS. "
+            f"Example: {EXPECTED_SUBJECT_EXAMPLE_MONTH}",
+            details={"unit": raw, "expected": "KG | MT | TON | TONS"},
+        )
+    return _UNIT_CANONICAL[text]
+
+
+def source_month_from_period_token(raw: Optional[str]) -> Optional[str]:
+    """``APRIL 2026`` → ``April 2026``. Quarter and annual tokens return None."""
+    text = re.sub(r"\s+", " ", (raw or "").strip())
+    if not text:
+        return None
+    hit = parse_month_label(text)
+    if not hit:
+        return None
+    month, year = hit
+    return month_label(month, year)
+
+
 def normalize_subject_period(raw: Optional[str]) -> Optional[str]:
     """
     Normalize optional 4th subject part into a canonical FY period label.
@@ -88,8 +126,8 @@ def normalize_subject_period(raw: Optional[str]) -> Optional[str]:
     if not text:
         return None
 
-    # Monthly subject (APRIL 2026) → Indian FY quarter. Month is not retained.
-    from app.utils.period_calendar import parse_month_label, quarter_of_month, fy_start_for_calendar_month
+    # Monthly subject (APRIL 2026) → Indian FY quarter. Month is kept separately.
+    from app.utils.period_calendar import quarter_of_month, fy_start_for_calendar_month
 
     month_hit = parse_month_label(text)
     if month_hit:
@@ -140,10 +178,12 @@ def normalize_subject_period(raw: Optional[str]) -> Optional[str]:
 
 def parse_email_subject(subject: Optional[str]) -> Dict[str, Optional[str]]:
     """
-    Parse ``DISTRIBUTOR NAME | LOCATION | SEGMENT`` or with optional ``| PERIOD``.
+    Parse ``DISTRIBUTOR | LOCATION | SEGMENT | PERIOD | UNIT``.
 
-    PERIOD examples: ``Q2 FY 2025-26``, ``FY 2025-26``.
-    Returns keys: distributor, location, segment, period, financial_year, quarter.
+    PERIOD examples: ``APRIL 2026``, ``Q2 FY 2026-27``, ``FY 2026-27``.
+    UNIT examples: ``KG``, ``MT``, ``TON``, ``TONS``. Unit is optional for older subjects.
+    Returns distributor, location, segment, period, financial_year, quarter,
+    source_month, and unit.
     """
     raw = (subject or "").strip()
     if not raw:
@@ -168,10 +208,10 @@ def parse_email_subject(subject: Optional[str]) -> Dict[str, Optional[str]]:
         )
 
     parts = [_title_value(p) for p in _SUBJECT_SPLIT_RE.split(raw) if p.strip()]
-    if len(parts) not in (3, 4):
+    if len(parts) not in (3, 4, 5):
         raise ValidationAppError(
-            f"Invalid email subject. Expected 3 or 4 parts: {EXPECTED_SUBJECT_FORMAT} "
-            f"(examples: {EXPECTED_SUBJECT_EXAMPLE} · {EXPECTED_SUBJECT_EXAMPLE_YEAR})",
+            f"Invalid email subject. Expected 3 to 5 parts: {EXPECTED_SUBJECT_FORMAT} "
+            f"(examples: {EXPECTED_SUBJECT_EXAMPLE_MONTH} · {EXPECTED_SUBJECT_EXAMPLE})",
             details={
                 "subject": subject,
                 "parts_found": len(parts),
@@ -181,7 +221,8 @@ def parse_email_subject(subject: Optional[str]) -> Dict[str, Optional[str]]:
         )
 
     distributor, location, segment_raw = parts[0], parts[1], parts[2]
-    period_raw = parts[3] if len(parts) == 4 else None
+    period_raw = parts[3] if len(parts) >= 4 else None
+    unit_raw = parts[4] if len(parts) == 5 else None
     segment = normalize_business_segment(segment_raw)
     if not distributor or not location or not segment:
         raise ValidationAppError(
@@ -195,10 +236,14 @@ def parse_email_subject(subject: Optional[str]) -> Dict[str, Optional[str]]:
         )
 
     # Period token should not be title-cased (breaks FY parsing) — re-read raw part
+    raw_parts = [p.strip() for p in _SUBJECT_SPLIT_RE.split(raw) if p.strip()]
     period = None
+    source_month = None
     if period_raw:
-        raw_parts = [p.strip() for p in _SUBJECT_SPLIT_RE.split(raw) if p.strip()]
-        period = normalize_subject_period(raw_parts[3] if len(raw_parts) == 4 else period_raw)
+        period_token = raw_parts[3] if len(raw_parts) >= 4 else period_raw
+        source_month = source_month_from_period_token(period_token)
+        period = normalize_subject_period(period_token)
+    unit = normalize_subject_unit(raw_parts[4] if len(raw_parts) == 5 else unit_raw)
 
     financial_year: Optional[str] = None
     quarter: Optional[str] = None
@@ -216,6 +261,8 @@ def parse_email_subject(subject: Optional[str]) -> Dict[str, Optional[str]]:
         "period": period,
         "financial_year": financial_year,
         "quarter": quarter,
+        "source_month": source_month,
+        "unit": unit,
     }
 
 

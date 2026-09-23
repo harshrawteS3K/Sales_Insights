@@ -51,8 +51,58 @@ def current_fy_start_year(today: Optional[date] = None) -> int:
     return d.year if d.month >= 4 else d.year - 1
 
 
+_MONTH_NUMBER: Dict[str, int] = {
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
+}
+
+
 def month_key_to_quarter(month_key: str) -> Optional[int]:
     return MONTH_TO_FY_QUARTER.get((month_key or "").strip().lower())
+
+
+def month_number_from_key(month_key: str) -> Optional[int]:
+    return _MONTH_NUMBER.get((month_key or "").strip().lower())
+
+
+def source_month_label(month_key: str, fy_start: int, header: str = "") -> Optional[str]:
+    """Calendar month label such as ``April 2026`` for chart aggregation."""
+    from app.utils.period_calendar import (
+        calendar_year_for_fy_month,
+        month_label,
+        parse_month_label,
+    )
+
+    parsed = parse_month_label(header or "")
+    if parsed:
+        month, year = parsed
+        return month_label(month, year)
+    month = month_number_from_key(month_key)
+    if not month:
+        return None
+    return month_label(month, calendar_year_for_fy_month(int(fy_start), month))
 
 
 def quarter_label(fy_start_year: int, quarter: int) -> str:

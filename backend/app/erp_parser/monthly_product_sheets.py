@@ -206,9 +206,9 @@ def extract_monthly_product_sheets(
         reporting_quarter=reporting_quarter,
     )
 
-    # Sum Apr+May+Jun (etc.) into one Customer×Product×Quarter row.
-    # Without this, identical qty across months collide on row_hash at import.
-    buckets: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    # Keep each sheet month so the trend chart can show Apr / May / Jun.
+    # ``period`` remains the FY quarter. Identical months still sum.
+    buckets: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
     skipped_total = 0
     skipped_blank = 0
     skipped_invalid = 0
@@ -224,6 +224,11 @@ def extract_monthly_product_sheets(
         sheet_fy = cal_year if q_num != 4 else cal_year - 1
         label_fy = int(fiscal_year_start) if fiscal_year_start else sheet_fy
         period = quarter_label(label_fy, q_num)
+        from app.erp_parser.fiscal_quarters import month_number_from_key
+        from app.utils.period_calendar import month_label as calendar_month_label
+
+        month_num = month_number_from_key(month_key)
+        source_month = calendar_month_label(month_num, cal_year) if month_num else ""
 
         matrix = read_sheet_matrix(file_path, sheet_name)
         header = _find_product_header_row(matrix)
@@ -263,7 +268,12 @@ def extract_monthly_product_sheets(
                 if qty < 0:
                     skipped_invalid += 1
                     continue
-                key = (customer.casefold(), product.casefold(), period.casefold())
+                key = (
+                    customer.casefold(),
+                    product.casefold(),
+                    period.casefold(),
+                    source_month.casefold(),
+                )
                 if key in buckets:
                     buckets[key]["sales_quantity"] = (
                         Decimal(str(buckets[key]["sales_quantity"])) + Decimal(str(qty))
@@ -275,6 +285,7 @@ def extract_monthly_product_sheets(
                         "sales_quantity": Decimal(str(qty)),
                         "period": period,
                         "reporting_quarter": period,
+                        "source_month": source_month or None,
                     }
                 qty_ok += 1
                 emitted += 1

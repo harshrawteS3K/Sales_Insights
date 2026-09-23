@@ -23,9 +23,9 @@ from app.repositories.email_repository import EmailMessageRepository
 from app.schemas.audit import AuditTrailCreate
 from app.schemas.sales_record import ParsedSalesRow
 from app.services.audit_service import AuditService
-from app.services.report_service import ReportService
+from app.services.report_service import DUPLICATE_SUBMISSION_MESSAGE, ReportService
 from app.utils.hashing import build_sales_row_hash
-from app.utils.quantity import parse_quantity
+from app.utils.quantity import format_quantity, parse_quantity
 
 logger = get_logger(__name__)
 
@@ -174,6 +174,7 @@ class ERPIngestService:
         quarter: str,
         segment: str = "",
         location: str = "",
+        source_unit: str = "MT",
     ) -> Dict[str, List[ParsedSalesRow]]:
         from collections import defaultdict
 
@@ -182,9 +183,13 @@ class ERPIngestService:
             qty = raw.get("sales_quantity", raw.get("quantity"))
             try:
                 if isinstance(qty, Decimal):
-                    qty_val, qty_disp = qty, str(qty)
+                    qty_val = qty
                 else:
-                    qty_val, qty_disp = parse_quantity(qty)
+                    qty_val, _qty_disp = parse_quantity(qty)
+                from app.utils.quantity import to_mt
+
+                qty_val = to_mt(qty_val, source_unit=source_unit or "MT")
+                qty_disp = format_quantity(qty_val)
             except ValueError as exc:
                 raise ValidationAppError(f"Invalid quantity in import rows: {exc}") from exc
             customer = str(raw.get("customer_name") or raw.get("customer") or "").strip()
@@ -196,12 +201,14 @@ class ERPIngestService:
             ).strip()
             if not period:
                 continue
+            source_month = str(raw.get("source_month") or "").strip()
             existing = next(
                 (
                     r
                     for r in by_period[period]
                     if r.customer_name.casefold() == customer.casefold()
                     and r.product.casefold() == product.casefold()
+                    and (r.source_month or "") == source_month
                 ),
                 None,
             )
@@ -215,6 +222,7 @@ class ERPIngestService:
                     existing.product,
                     existing.quantity,
                     period,
+                    existing.source_month or "",
                 )
                 continue
             seg = (segment or "").strip()
@@ -229,10 +237,12 @@ class ERPIngestService:
                     quantity=qty_val,
                     quantity_display=qty_disp,
                     period=period,
+                    source_month=source_month or None,
                     unit="MT",
+                    original_unit=(source_unit or "MT").strip().upper() or "MT",
                     company=company,
                     row_hash=build_sales_row_hash(
-                        company, customer, seg, product, qty_val, period
+                        company, customer, seg, product, qty_val, period, source_month
                     ),
                 )
             )
@@ -266,6 +276,65 @@ class ERPIngestService:
             "Could not detect reporting quarter from workbook. Open Preview to retry."
         )
 
+    @staticmethod
+    def _business_qty(quantity: object) -> str:
+        return str(Decimal(str(quantity or 0)).quantize(Decimal("0.001")))
+
+    def _drop_existing_business_rows(
+        self,
+        distributor_id: int,
+        period: str,
+        rows: List[ParsedSalesRow],
+    ) -> List[ParsedSalesRow]:
+        """Drop rows that already exist for this distributor, place, and quarter."""
+        from sqlalchemy import select
+
+        from app.models.report import Report
+        from app.models.sales_record import SalesRecord
+        from app.utils.reporting_month import normalize_reporting_month
+
+        period_key = normalize_reporting_month(period) or (period or "").strip()
+        existing = self.db.execute(
+            select(
+                SalesRecord.customer_name,
+                SalesRecord.product,
+                SalesRecord.quantity,
+                SalesRecord.location,
+                SalesRecord.segment,
+            )
+            .join(Report, Report.id == SalesRecord.report_id)
+            .where(
+                SalesRecord.is_deleted.is_(False),
+                Report.is_deleted.is_(False),
+                SalesRecord.distributor_id == distributor_id,
+                Report.reporting_month == period_key,
+            )
+        ).all()
+        seen = {
+            (
+                str(customer or "").strip().casefold(),
+                str(product or "").strip().casefold(),
+                self._business_qty(qty),
+                str(loc or "").strip().casefold(),
+                str(seg or "").strip().casefold(),
+            )
+            for customer, product, qty, loc, seg in existing
+        }
+        fresh: List[ParsedSalesRow] = []
+        for row in rows:
+            key = (
+                row.customer_name.strip().casefold(),
+                row.product.strip().casefold(),
+                self._business_qty(row.quantity),
+                (row.location or "").strip().casefold(),
+                (row.segment or "").strip().casefold(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            fresh.append(row)
+        return fresh
+
     def _persist_preview_rows(
         self,
         *,
@@ -278,6 +347,7 @@ class ERPIngestService:
         quarter: str,
         segment: str,
         location: str,
+        source_unit: str = "MT",
         actor: str,
         fiscal_year_start: Optional[int],
         overall: float,
@@ -290,11 +360,25 @@ class ERPIngestService:
             quarter=quarter,
             segment=segment,
             location=location,
+            source_unit=source_unit or "MT",
         )
         if not by_period:
             raise ValidationAppError(
                 f"No valid rows to import after validation ({att.file_name})"
             )
+        incoming = sum(len(rows) for rows in by_period.values())
+        kept: Dict[str, List[ParsedSalesRow]] = {}
+        for period, parsed in by_period.items():
+            fresh = self._drop_existing_business_rows(
+                distributor_id,
+                period,
+                parsed,
+            )
+            if fresh:
+                kept[period] = fresh
+        if incoming and not kept:
+            raise ValidationAppError(DUPLICATE_SUBMISSION_MESSAGE)
+        by_period = kept
 
         total_inserted = 0
         any_dup = False
@@ -825,6 +909,11 @@ class ERPIngestService:
         merged_rows: List[Dict[str, Any]] = []
         primary_att = None
         primary_preview: Dict[str, Any] = {}
+        from app.utils.email_subject_parser import parse_email_subject
+
+        subject_meta = parse_email_subject(email.subject)
+        subject_month = str(subject_meta.get("source_month") or "").strip()
+        source_unit = str(subject_meta.get("unit") or email.parsed_unit or "MT").strip() or "MT"
         subject_period = (email.detected_quarter or reporting_quarter or "").strip()
 
         for idx, att in enumerate(attachments):
@@ -895,11 +984,15 @@ class ERPIngestService:
                 )
                 continue
 
-            if subject_period:
+            if subject_period or subject_month:
                 for row in use_rows:
-                    if isinstance(row, dict):
+                    if not isinstance(row, dict):
+                        continue
+                    if subject_period:
                         row["period"] = subject_period
                         row["reporting_quarter"] = subject_period
+                    if subject_month and not str(row.get("source_month") or "").strip():
+                        row["source_month"] = subject_month
             merged_rows.extend(use_rows)
             workbooks_imported.append(att.file_name or f"attachment-{att.id}")
             qualities.append(overall)
@@ -926,12 +1019,15 @@ class ERPIngestService:
                     quarter=subject_period or quarter,
                     segment=segment,
                     location=location,
+                    source_unit=source_unit,
                     actor=actor,
                     fiscal_year_start=fiscal_year_start,
                     overall=min(qualities) if qualities else 0.0,
                 )
             )
         except ValidationAppError as exc:
+            if exc.message == DUPLICATE_SUBMISSION_MESSAGE:
+                raise
             raise ValidationAppError(
                 "Merged Excel submission could not be imported.",
                 details={"reason": str(exc.message), "skips": workbook_skips},

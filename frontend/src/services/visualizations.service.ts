@@ -37,7 +37,7 @@ export type SalesInsightsPayload = {
     avg_monthly_sales_mt: number;
     avg_monthly_sales_mt_display: string;
   };
-  monthly_trend: Array<{ month: string; qty: number }>;
+  monthly_trend: Array<{ month: string; qty: number; tooltip?: string }>;
   top_customers: Array<{ customer: string; qty: number }>;
   product_contribution: Array<{ product: string; qty: number }>;
   table: {

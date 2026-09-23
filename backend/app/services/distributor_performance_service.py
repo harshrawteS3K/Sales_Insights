@@ -13,7 +13,6 @@ from app.models.sales_record import SalesRecord
 from app.repositories.sales_record_repository import (
     SalesRecordRepository,
     company_expr,
-    reporting_month_expr,
 )
 from app.services.sales_insights_service import (
     PERIOD_CUSTOM,
@@ -147,6 +146,7 @@ class DistributorPerformanceService:
             customer=cust,
             product=prod,
             distributor_id=distributor_id,
+            month_keys=month_keys,
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
@@ -170,11 +170,6 @@ class DistributorPerformanceService:
             .group_by(SalesRecord.distributor_id)
         )
         agg_q = self.sales._apply_filters(agg_q, **filter_kw)
-        if month_keys is not None:
-            if not month_keys:
-                agg_q = agg_q.where(SalesRecord.id == -1)
-            else:
-                agg_q = agg_q.where(reporting_month_expr().in_(month_keys))
 
         stats_by_id: Dict[int, Dict[str, Any]] = {}
         for row in self.db.execute(agg_q).all():
@@ -206,11 +201,6 @@ class DistributorPerformanceService:
             .group_by(SalesRecord.distributor_id, SalesRecord.location)
         )
         loc_q = self.sales._apply_filters(loc_q, **filter_kw)
-        if month_keys is not None:
-            if not month_keys:
-                loc_q = loc_q.where(SalesRecord.id == -1)
-            else:
-                loc_q = loc_q.where(reporting_month_expr().in_(month_keys))
 
         best_location: Dict[int, tuple[str, float]] = {}
         for row in self.db.execute(loc_q).all():
@@ -249,11 +239,6 @@ class DistributorPerformanceService:
             )
         )
         cust_q = self.sales._apply_filters(cust_q, **filter_kw)
-        if month_keys is not None:
-            if not month_keys:
-                cust_q = cust_q.where(SalesRecord.id == -1)
-            else:
-                cust_q = cust_q.where(reporting_month_expr().in_(month_keys))
 
         customers_by_id: Dict[int, List[Dict[str, Any]]] = {}
         for row in self.db.execute(cust_q).all():
@@ -276,6 +261,8 @@ class DistributorPerformanceService:
                 "products": 0,
             }
             qty = round(float(stats["qty"]), 3)
+            if (seg or cust or prod) and d.id not in stats_by_id:
+                continue
             stored = normalize_location(d.region)
             sales_loc = best_location.get(d.id, ("", 0.0))[0]
             place = stored or normalize_location(sales_loc)

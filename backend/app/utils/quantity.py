@@ -22,7 +22,7 @@ DEFAULT_SOURCE_UNIT = "MT"
 def normalize_unit(unit: Optional[str]) -> str:
     """Normalize unit labels to KG | MT | UNKNOWN."""
     raw = (unit or "").strip().upper()
-    if raw in {"MT", "TON", "TONNE", "TONNES", "METRIC TON", "METRIC TONNE"}:
+    if raw in {"MT", "TON", "TONS", "TONNE", "TONNES", "METRIC TON", "METRIC TONNE"}:
         return "MT"
     if raw in {"KG", "KGS", "KILO", "KILOS", "KILOGRAM", "KILOGRAMS"}:
         return "KG"

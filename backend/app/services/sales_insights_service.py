@@ -30,7 +30,6 @@ from app.utils.period_calendar import (
     quarter_of_month,
 )
 from app.utils.quantity import format_quantity
-from app.utils.reporting_month import normalize_reporting_month
 
 
 PERIOD_FULL_YEAR = "full_year"
@@ -176,6 +175,50 @@ def _last_n_rolling(n: int, *, as_of: Optional[date] = None) -> List[Tuple[int, 
     return out
 
 
+def _period_year_months(
+    period: Optional[str],
+    *,
+    fiscal_year_start: Optional[int] = None,
+    start_month: Optional[str] = None,
+    end_month: Optional[str] = None,
+    as_of: Optional[date] = None,
+) -> Optional[List[Tuple[int, int]]]:
+    """Calendar months in the selected period. None = unrestricted; [] = match nothing."""
+    period_key = (period or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if period_key in {"", "all"}:
+        return None
+
+    today = as_of or date.today()
+    if period_key in _PERIOD_MONTH_COUNT:
+        return _last_n_rolling(_PERIOD_MONTH_COUNT[period_key], as_of=today)
+
+    fy_start = _normalize_fy_start(fiscal_year_start, as_of=today)
+    if period_key in {PERIOD_FULL_YEAR, "full_financial_year", "fy"}:
+        return fy_calendar_months(fy_start)
+    if period_key in _QUARTER_PERIODS:
+        pairs: List[Tuple[int, int]] = []
+        for label in months_for_fy_quarter(fy_start, _QUARTER_PERIODS[period_key]):
+            parsed = parse_month_label(label)
+            if parsed:
+                month, year = parsed
+                pairs.append((year, month))
+        return pairs
+    if period_key in {PERIOD_CUSTOM, "custom_date_range", "custom_range"}:
+        start = _parse_ym(start_month)
+        end = _parse_ym(end_month)
+        if not start or not end:
+            return []
+        if start > end:
+            start, end = end, start
+        pairs = []
+        y, m = start
+        while (y, m) <= end:
+            pairs.append((y, m))
+            y, m = _shift_month(y, m, 1)
+        return pairs
+    return None
+
+
 def resolve_period_month_keys(
     period: Optional[str],
     *,
@@ -190,46 +233,18 @@ def resolve_period_month_keys(
     Returns None = no period restriction; [] = invalid range (match nothing).
     Rolling periods ignore fiscal_year_start. Custom range uses From/To months.
     """
-    period_key = (period or "").strip().lower().replace(" ", "_").replace("-", "_")
-    if period_key in {"", "all"}:
+    pairs = _period_year_months(
+        period,
+        fiscal_year_start=fiscal_year_start,
+        start_month=start_month,
+        end_month=end_month,
+        as_of=as_of,
+    )
+    if pairs is None:
         return None
-
-    today = as_of or date.today()
-
-    if period_key in _PERIOD_MONTH_COUNT:
-        n = _PERIOD_MONTH_COUNT[period_key]
-        return _keys_for_year_months(_last_n_rolling(n, as_of=today))
-
-    fy_start = _normalize_fy_start(fiscal_year_start)
-
-    if period_key in {PERIOD_FULL_YEAR, "full_financial_year", "fy"}:
-        return _keys_for_year_months(fy_calendar_months(fy_start))
-
-    if period_key in _QUARTER_PERIODS:
-        q = _QUARTER_PERIODS[period_key]
-        pairs = []
-        for label in months_for_fy_quarter(fy_start, q):
-            parsed = parse_month_label(label)
-            if parsed:
-                month, year = parsed
-                pairs.append((year, month))
-        return _keys_for_year_months(pairs)
-
-    if period_key in {PERIOD_CUSTOM, "custom_date_range", "custom_range"}:
-        start = _parse_ym(start_month)
-        end = _parse_ym(end_month)
-        if not start or not end:
-            return []
-        if start > end:
-            start, end = end, start
-        keys: List[str] = []
-        y, m = start
-        while (y, m) <= end:
-            keys.extend(_keys_for_calendar_month(y, m))
-            y, m = _shift_month(y, m, 1)
-        return list(dict.fromkeys(keys))
-
-    return None
+    if not pairs:
+        return []
+    return _keys_for_year_months(pairs)
 
 
 def trend_month_labels(
@@ -271,6 +286,71 @@ def trend_month_labels(
         return _quarter_labels_for_pairs(pairs)
 
     return _quarter_labels_for_pairs(fy_calendar_months(fy_start))
+
+
+_SHORT_MONTHS = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
+
+def _month_from_submission(source_month: Optional[str], report_name: Optional[str]) -> Optional[Tuple[int, int]]:
+    """Resolve a calendar month from the stored source month or the email subject."""
+    parsed = parse_month_label(str(source_month or ""))
+    if parsed:
+        month, year = parsed
+        return year, month
+    if not report_name:
+        return None
+    from app.utils.email_subject_parser import try_parse_email_subject
+
+    subject = try_parse_email_subject(str(report_name))
+    if not subject or not subject.get("source_month"):
+        return None
+    parsed = parse_month_label(str(subject["source_month"]))
+    if not parsed:
+        return None
+    month, year = parsed
+    return year, month
+
+
+def _month_trend_points(
+    rows: List[Tuple[Optional[str], Optional[str], float]],
+    window: Optional[List[Tuple[int, int]]],
+) -> List[Dict[str, Any]]:
+    """Month points that actually have quantity. Missing months are omitted."""
+    allowed = set(window) if window is not None else None
+    totals: Dict[Tuple[int, int], float] = {}
+    for source_month, report_name, qty in rows:
+        if qty <= 0:
+            continue
+        key = _month_from_submission(source_month, report_name)
+        if not key:
+            continue
+        if allowed is not None and key not in allowed:
+            continue
+        totals[key] = totals.get(key, 0.0) + qty
+    points: List[Dict[str, Any]] = []
+    for year, month in sorted(totals):
+        short = _SHORT_MONTHS[month - 1]
+        points.append(
+            {
+                "month": short,
+                "tooltip": f"{short} {year}",
+                "qty": round(totals[(year, month)], 3),
+            }
+        )
+    return points
 
 
 class SalesInsightsService:
@@ -439,7 +519,7 @@ class SalesInsightsService:
             Report.is_deleted.is_(False),
             Distributor.is_deleted.is_(False),
         )
-        q = self.sales._apply_filters(
+        return self.sales._apply_filters(
             q,
             distributor_id=distributor_id,
             customer=customer,
@@ -447,15 +527,10 @@ class SalesInsightsService:
             location=location,
             segment=segment,
             search=search,
+            month_keys=month_keys,
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
-        if month_keys is not None:
-            if not month_keys:
-                q = q.where(SalesRecord.id == -1)
-            else:
-                q = q.where(reporting_month_expr().in_(month_keys))
-        return q
 
     def sales_insights(
         self,
@@ -517,25 +592,29 @@ class SalesInsightsService:
 
         trend_q = self._scoped(
             select(
-                reporting_month_expr().label("month"),
+                SalesRecord.source_month,
+                Report.name,
                 func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
-            .group_by(reporting_month_expr()),
+            .group_by(SalesRecord.source_month, Report.name),
             **scope_kw,
         )
-        collapsed_trend: Dict[str, float] = {}
-        for raw_key, qty in self.db.execute(trend_q).all():
-            if not raw_key:
-                continue
-            canon = normalize_reporting_month(raw_key) or str(raw_key)
-            collapsed_trend[canon] = collapsed_trend.get(canon, 0.0) + _to_float(qty)
-        monthly_trend = [
-            {"month": label, "qty": round(collapsed_trend.get(label, 0.0), 3)}
-            for label in axis_months
-        ]
+        window = _period_year_months(
+            period,
+            fiscal_year_start=fiscal_year_start,
+            start_month=start_month,
+            end_month=end_month,
+        )
+        monthly_trend = _month_trend_points(
+            [
+                (src, name, _to_float(qty))
+                for src, name, qty in self.db.execute(trend_q).all()
+            ],
+            window,
+        )
 
         top_q = self._scoped(
             select(
