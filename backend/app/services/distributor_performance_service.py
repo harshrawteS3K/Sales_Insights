@@ -28,6 +28,8 @@ from app.services.sales_insights_service import (
     _to_float,
     resolve_period_month_keys,
 )
+from app.services.distributor_service import DistributorService
+from app.utils.distributor_location import country_group, country_label, normalize_location
 from app.utils.quantity import format_quantity
 
 
@@ -99,6 +101,7 @@ class DistributorPerformanceService:
         period: Optional[str] = None,
         segment: Optional[str] = None,
         location: Optional[str] = None,
+        country: Optional[str] = None,
         distributor_id: Optional[int] = None,
         customer: Optional[str] = None,
         product: Optional[str] = None,
@@ -116,9 +119,17 @@ class DistributorPerformanceService:
         seg = (segment or "").strip()
         if seg.lower() == "all":
             seg = None
+        DistributorService(self.db).backfill_blank_locations()
         loc = (location or "").strip()
         if loc.lower() == "all":
             loc = None
+        country_key = (country or "").strip().casefold().replace(" ", "_")
+        if country_key in {"", "all"}:
+            country_key = ""
+        elif country_key in {"other", "other_countries", "others"}:
+            country_key = "other"
+        elif country_key != "india":
+            country_key = ""
         cust = (customer or "").strip()
         if cust.lower() == "all":
             cust = None
@@ -265,13 +276,21 @@ class DistributorPerformanceService:
                 "products": 0,
             }
             qty = round(float(stats["qty"]), 3)
-            loc_label = best_location.get(d.id, ("", 0.0))[0] or "—"
+            stored = normalize_location(d.region)
+            sales_loc = best_location.get(d.id, ("", 0.0))[0]
+            place = stored or normalize_location(sales_loc)
+            if loc and place.casefold() != loc.casefold():
+                continue
+            if country_key and country_group(place) != country_key:
+                continue
+            loc_label = place or "—"
             name = ((d.company or "").strip() or (d.name or "").strip() or f"Distributor #{d.id}")
             ranking.append(
                 {
                     "distributor_id": d.id,
                     "distributor": name,
                     "location": loc_label,
+                    "country": country_label(place) or "—",
                     "customers": int(stats["customers"]),
                     "products": int(stats["products"]),
                     "sales_mt": qty,
@@ -316,6 +335,7 @@ class DistributorPerformanceService:
                 "period": period,
                 "segment": segment or "All",
                 "location": location or "All",
+                "country": country or "All",
                 "distributor_id": distributor_id,
                 "customer": customer or "All",
                 "product": product or "All",

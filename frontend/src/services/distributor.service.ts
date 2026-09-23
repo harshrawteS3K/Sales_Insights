@@ -29,6 +29,7 @@ export type DistributorPerformanceQuery = {
   period?: DistributorPerformancePeriod | string;
   segment?: string | null;
   location?: string | null;
+  country?: string | null;
   distributor_id?: number | null;
   customer?: string | null;
   product?: string | null;
@@ -48,6 +49,7 @@ export type DistributorPerformanceRow = {
   distributor_id: number;
   distributor: string;
   location: string;
+  country: string;
   customers: number;
   products: number;
   sales_mt: number;
@@ -103,6 +105,7 @@ function cleanPerformanceParams(
     period: q.period || undefined,
     segment: q.segment && q.segment !== 'All' ? q.segment : undefined,
     location: q.location && q.location !== 'All' ? q.location : undefined,
+    country: q.country && q.country !== 'All' ? q.country : undefined,
     distributor_id: q.distributor_id || undefined,
     customer: q.customer && q.customer !== 'All' ? q.customer : undefined,
     product: q.product && q.product !== 'All' ? q.product : undefined,

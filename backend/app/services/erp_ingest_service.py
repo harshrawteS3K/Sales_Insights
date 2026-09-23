@@ -30,7 +30,8 @@ from app.utils.quantity import parse_quantity
 logger = get_logger(__name__)
 
 # Cap Excel workbooks processed per email (download / score / import).
-MAX_EXCEL_ATTACHMENTS_PER_EMAIL = 5
+# One email may carry several product files (e.g. NVC101–NVC107) as one submission.
+MAX_EXCEL_ATTACHMENTS_PER_EMAIL = 20
 MIN_IMPORT_ACCURACY = 75.0
 
 _FIELD_ALIASES = {
@@ -305,7 +306,7 @@ class ERPIngestService:
                 parsed,
                 quality_score=int(round(overall)),
                 source=ReportSource.OUTLOOK,
-                report_name=f"{email.subject} - {att.file_name} ({period})",
+                report_name=email.subject or att.file_name,
                 email_message_id=email.id,
                 actor=actor,
                 reporting_quarter=period,
@@ -333,10 +334,10 @@ class ERPIngestService:
         mapping_override: Optional[Any] = None,
         fiscal_year_start: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Parse the email Excel for AI preview (no import)."""
+        """Parse every Excel on the email into one merged preview (no import)."""
         from app.services.email_subject_service import EmailSubjectService
 
-        email, att = self._excel_attachment(email_id)
+        email = self.emails.get_or_raise(email_id)
         EmailSubjectService(self.db).apply_to_email(email, actor=actor, skip_if_valid=True)
         if not email.subject_valid:
             raise ValidationAppError(
@@ -344,64 +345,121 @@ class ERPIngestService:
                 or "Invalid email subject. Expected format: Distributor | Location | Segment",
                 details={"email_id": email_id, "subject": email.subject},
             )
-        path = Path(att.file_path)
+        attachments = self._list_excel_attachments(email)
+        if not attachments:
+            raise ValidationAppError("No Excel attachment found for this email")
 
-        if mapping_override:
-            preview = self._preview_with_override(
-                path,
-                mapping_override,
-                fiscal_year_start=fiscal_year_start,
-            )
-            self.audit.log(
-                AuditTrailCreate(
-                    user_name=actor,
-                    action=AuditAction.UPDATED,
-                    details=(
-                        f"ERP Mapping Edited | email_id={email_id} | "
-                        f"workbook={att.file_name} | rows={preview.get('row_count', 0)}"
-                    ),
-                    entity_type="email",
-                    entity_id=str(email_id),
-                    module="Email Extraction",
-                    status="Success",
-                    extra_metadata={
-                        "workbook": att.file_name,
-                        "row_count": preview.get("row_count"),
-                        "confidence": (preview.get("confidence") or {}).get("overall"),
-                    },
+        subject_period = (email.detected_quarter or "").strip()
+        merged_rows: List[Dict[str, Any]] = []
+        attachment_summary: List[Dict[str, str]] = []
+        preview: Optional[Dict[str, Any]] = None
+        confidences: List[float] = []
+        primary_name = attachments[0].file_name
+
+        for idx, att in enumerate(attachments):
+            file_name = att.file_name or f"attachment-{att.id}"
+            product_name = Path(file_name).stem
+            path = Path(att.file_path or "")
+            if not path.is_file():
+                attachment_summary.append(
+                    {
+                        "attachment_name": file_name,
+                        "product_name": product_name,
+                        "status": "Failed",
+                    }
                 )
-            )
-        else:
-            preview = self.parser.preview(path, fiscal_year_start=fiscal_year_start)
-            preview["available_columns"] = self._available_columns(path, preview.get("sheet_name"))
-            self.audit.log(
-                AuditTrailCreate(
-                    user_name=actor,
-                    action=AuditAction.PROCESSED,
-                    details=(
-                        f"ERP Workbook Parsed | email_id={email_id} | "
-                        f"workbook={att.file_name} | sheet={preview.get('sheet_name')} | "
-                        f"rows={preview.get('row_count', 0)} | "
-                        f"confidence={(preview.get('confidence') or {}).get('overall')}"
-                    ),
-                    entity_type="email",
-                    entity_id=str(email_id),
-                    module="Email Extraction",
-                    status="Success",
-                    extra_metadata={
-                        "workbook": att.file_name,
-                        "sheet": preview.get("sheet_name"),
-                        "row_count": preview.get("row_count"),
-                        "confidence": (preview.get("confidence") or {}).get("overall"),
-                    },
+                continue
+            try:
+                if idx == 0 and mapping_override:
+                    one = self._preview_with_override(
+                        path,
+                        mapping_override,
+                        fiscal_year_start=fiscal_year_start,
+                        reporting_quarter=subject_period or None,
+                    )
+                else:
+                    one = self.parser.preview(
+                        path,
+                        fiscal_year_start=fiscal_year_start,
+                        reporting_quarter=subject_period or None,
+                    )
+                    if idx == 0:
+                        one["available_columns"] = self._available_columns(
+                            path, one.get("sheet_name")
+                        )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "ERP preview parse failed | email_id={} | file={} | err={}",
+                    email_id,
+                    file_name,
+                    exc,
                 )
+                attachment_summary.append(
+                    {
+                        "attachment_name": file_name,
+                        "product_name": product_name,
+                        "status": "Failed",
+                    }
+                )
+                continue
+
+            rows = list(one.get("rows") or [])
+            if subject_period:
+                for row in rows:
+                    row["period"] = subject_period
+                    row["reporting_quarter"] = subject_period
+            merged_rows.extend(rows)
+            confidences.append(float((one.get("confidence") or {}).get("overall") or 0))
+            attachment_summary.append(
+                {
+                    "attachment_name": file_name,
+                    "product_name": product_name,
+                    "status": "Parsed",
+                }
+            )
+            if preview is None:
+                preview = one
+                primary_name = file_name
+
+        if preview is None:
+            raise ValidationAppError(
+                "No Excel attachments could be parsed for this email.",
+                details={"attachment_summary": attachment_summary},
             )
 
+        preview["rows"] = merged_rows
+        preview["row_count"] = len(merged_rows)
+        if confidences and preview.get("confidence"):
+            preview["confidence"]["overall"] = min(confidences)
+            preview["accuracy"] = min(confidences)
+        preview["attachment_summary"] = attachment_summary
+
+        self.audit.log(
+            AuditTrailCreate(
+                user_name=actor,
+                action=AuditAction.PROCESSED,
+                details=(
+                    f"ERP Workbook Parsed | email_id={email_id} | "
+                    f"attachments={len(attachment_summary)} | rows={len(merged_rows)}"
+                ),
+                entity_type="email",
+                entity_id=str(email_id),
+                module="Email Extraction",
+                status="Success",
+                extra_metadata={
+                    "workbook": primary_name,
+                    "row_count": len(merged_rows),
+                    "attachment_summary": attachment_summary,
+                },
+            )
+        )
+
+        att = attachments[0]
         subject_match = self.resolve_distributor_from_subject(email)
         sender_matches = self.resolve_distributors_for_sender(email.sender_email)
         matches = [subject_match] if subject_match else sender_matches
-        all_excels = self._list_excel_attachments(email)
-        detected_q = (preview.get("detected_quarter") or email.detected_quarter or "").strip()
+        all_excels = attachments
+        detected_q = (subject_period or preview.get("detected_quarter") or "").strip()
         # Subject period wins; only fill from workbook when empty
         if detected_q and not (email.detected_quarter or "").strip():
             email.detected_quarter = detected_q
@@ -751,6 +809,10 @@ class ERPIngestService:
 
         segment = normalize_business_segment(email.parsed_segment)
         location = (email.parsed_location or "").strip()
+        from app.utils.distributor_location import apply_submitted_location
+
+        if apply_submitted_location(dist, location):
+            self.db.flush()
         quarter = (reporting_quarter or "").strip()
         total_inserted = 0
         any_dup = False
@@ -760,6 +822,10 @@ class ERPIngestService:
         workbooks_imported: List[str] = []
         workbook_skips: List[Dict[str, Any]] = []
         qualities: List[float] = []
+        merged_rows: List[Dict[str, Any]] = []
+        primary_att = None
+        primary_preview: Dict[str, Any] = {}
+        subject_period = (email.detected_quarter or reporting_quarter or "").strip()
 
         for idx, att in enumerate(attachments):
             path = Path(att.file_path or "")
@@ -829,49 +895,50 @@ class ERPIngestService:
                 )
                 continue
 
-            try:
-                inserted, was_dup, report, periods, n_reports = self._persist_preview_rows(
-                    email=email,
-                    att=att,
-                    preview=preview,
-                    use_rows=use_rows,
-                    distributor_id=resolved_id,
-                    company=company,
-                    quarter=quarter,
-                    segment=segment,
-                    location=location,
-                    actor=actor,
-                    fiscal_year_start=fiscal_year_start,
-                    overall=overall,
-                )
-            except ValidationAppError as exc:
-                workbook_skips.append(
-                    {"workbook": att.file_name, "reason": str(exc.message)}
-                )
-                continue
-
-            total_inserted += inserted
-            any_dup = any_dup or was_dup
-            last_report = report or last_report
-            quarters_imported.extend(periods)
-            reports_created += n_reports
+            if subject_period:
+                for row in use_rows:
+                    if isinstance(row, dict):
+                        row["period"] = subject_period
+                        row["reporting_quarter"] = subject_period
+            merged_rows.extend(use_rows)
             workbooks_imported.append(att.file_name or f"attachment-{att.id}")
             qualities.append(overall)
-            logger.info(
-                "ERP workbook imported | email_id={} | file={} | rows={} | quarters={}",
-                email_id,
-                att.file_name,
-                inserted,
-                periods,
-            )
+            if primary_att is None:
+                primary_att = att
+                primary_preview = preview
 
-        if not workbooks_imported:
+        if not workbooks_imported or primary_att is None:
             detail = workbook_skips or [{"reason": "no importable Excel attachments"}]
             raise ValidationAppError(
                 "No Excel attachments could be imported for this email.",
                 details={"skips": detail},
             )
 
+        try:
+            inserted, was_dup, last_report, quarters_imported, reports_created = (
+                self._persist_preview_rows(
+                    email=email,
+                    att=primary_att,
+                    preview=primary_preview,
+                    use_rows=merged_rows,
+                    distributor_id=resolved_id,
+                    company=company,
+                    quarter=subject_period or quarter,
+                    segment=segment,
+                    location=location,
+                    actor=actor,
+                    fiscal_year_start=fiscal_year_start,
+                    overall=min(qualities) if qualities else 0.0,
+                )
+            )
+        except ValidationAppError as exc:
+            raise ValidationAppError(
+                "Merged Excel submission could not be imported.",
+                details={"reason": str(exc.message), "skips": workbook_skips},
+            ) from exc
+
+        total_inserted = inserted
+        any_dup = was_dup
         overall_quality = min(qualities) if qualities else 0.0
         email.process_status = EmailProcessStatus.INSERTED.value
         email.confidence_score = int(round(overall_quality))

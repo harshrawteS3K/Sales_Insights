@@ -5,7 +5,7 @@ import { BLUE, BORDER } from '../../constants/theme';
 import {
   PERIOD_OPTIONS,
   FY_OPTIONS,
-  customMonthOptions,
+  customQuarterOptions,
   fyOptionLabel,
   isCustomPeriod,
   isFiscalYearEnabled,
@@ -48,10 +48,17 @@ const labelStyle: CSSProperties = {
   marginBottom: 3,
 };
 
+const COUNTRY_OPTIONS = [
+  { value: 'All', label: 'All' },
+  { value: 'India', label: 'India' },
+  { value: 'Other Countries', label: 'Other Countries' },
+];
+
 type Props = {
   title?: string;
   actionLabel?: string;
   loading?: boolean;
+  showCountry?: boolean;
   value: EnterpriseFilterState;
   options: EnterpriseFilterOptions;
   onChange: (patch: Partial<EnterpriseFilterState>) => void;
@@ -66,6 +73,7 @@ export function EnterpriseAnalyticsFilters({
   title = 'Filters',
   actionLabel = 'View',
   loading = false,
+  showCountry = false,
   value,
   options,
   onChange,
@@ -74,7 +82,7 @@ export function EnterpriseAnalyticsFilters({
   const fyEnabled = isFiscalYearEnabled(value.period);
   const rolling = isRollingPeriod(value.period);
   const custom = isCustomPeriod(value.period);
-  const monthOpts = customMonthOptions();
+  const quarterOpts = customQuarterOptions();
   const fyOptions =
     options.financial_years?.length
       ? options.financial_years
@@ -175,35 +183,34 @@ export function EnterpriseAnalyticsFilters({
           </div>
         )}
 
-        {/* Custom From / To Month */}
         {custom && (
           <>
             <div>
-              <div style={labelStyle}>From Month</div>
+              <div style={labelStyle}>From</div>
               <select
                 value={value.startMonth}
                 onChange={e => onChange({ startMonth: e.target.value })}
-                style={{ ...selectStyle, minWidth: 140 }}
+                style={{ ...selectStyle, minWidth: 160 }}
               >
                 <option value="">Select…</option>
-                {monthOpts.map(m => (
-                  <option key={`from-${m.value}`} value={m.value}>
-                    {m.label}
+                {quarterOpts.map(q => (
+                  <option key={`from-${q.from}`} value={q.from}>
+                    {q.label}
                   </option>
                 ))}
               </select>
             </div>
             <div>
-              <div style={labelStyle}>To Month</div>
+              <div style={labelStyle}>To</div>
               <select
                 value={value.endMonth}
                 onChange={e => onChange({ endMonth: e.target.value })}
-                style={{ ...selectStyle, minWidth: 140 }}
+                style={{ ...selectStyle, minWidth: 160 }}
               >
                 <option value="">Select…</option>
-                {monthOpts.map(m => (
-                  <option key={`to-${m.value}`} value={m.value}>
-                    {m.label}
+                {quarterOpts.map(q => (
+                  <option key={`to-${q.to}`} value={q.to}>
+                    {q.label}
                   </option>
                 ))}
               </select>
@@ -226,6 +233,22 @@ export function EnterpriseAnalyticsFilters({
           onChange={onDistributorChange}
           width={200}
         />
+        {showCountry && (
+          <div>
+            <div style={labelStyle}>Country</div>
+            <select
+              value={value.country || 'All'}
+              onChange={e => onChange({ country: e.target.value })}
+              style={{ ...selectStyle, minWidth: 160 }}
+            >
+              {COUNTRY_OPTIONS.map(o => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <SearchAutocomplete
           label="Location"
           options={options.locations}

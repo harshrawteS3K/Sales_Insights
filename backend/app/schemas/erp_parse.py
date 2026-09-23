@@ -53,6 +53,14 @@ class ERPAvailableColumn(BaseModel):
     column: int
 
 
+class ERPAttachmentSummary(BaseModel):
+    """One Excel file inside a multi-attachment email submission."""
+
+    attachment_name: str
+    product_name: str
+    status: str
+
+
 class ERPParsePreviewResponse(BaseModel):
     """Preview response (no import)."""
 
@@ -93,6 +101,7 @@ class ERPParsePreviewResponse(BaseModel):
     parsed_distributor: Optional[str] = None
     parsed_location: Optional[str] = None
     parsed_segment: Optional[str] = None
+    attachment_summary: List[ERPAttachmentSummary] = Field(default_factory=list)
 
 
 class ERPEmailPreviewRequest(BaseModel):

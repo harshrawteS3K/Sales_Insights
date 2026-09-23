@@ -163,6 +163,7 @@ class DistributorRepository(BaseRepository[Distributor]):
                     Distributor.name.ilike(pattern)
                     | Distributor.company.ilike(pattern)
                     | Distributor.email.ilike(pattern)
+                    | Distributor.region.ilike(pattern)
                 ),
             )
             .order_by(Distributor.company.asc())
@@ -182,6 +183,7 @@ class DistributorRepository(BaseRepository[Distributor]):
                 Distributor.name.ilike(pattern)
                 | Distributor.company.ilike(pattern)
                 | Distributor.email.ilike(pattern)
+                | Distributor.region.ilike(pattern)
             ),
         )
         return int(self.db.scalar(query) or 0)

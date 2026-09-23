@@ -116,6 +116,7 @@ export interface Distributor {
   is_deleted?: boolean;
   notes?: string | null;
   customer_count?: number;
+  country?: string;
   created_at?: string;
   updated_at?: string;
 }

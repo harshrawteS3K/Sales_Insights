@@ -39,8 +39,11 @@ router = APIRouter(prefix="/distributors", tags=["Distributors"])
 
 
 def _to_response(service: DistributorServiceDep, item) -> DistributorResponse:
+    from app.utils.distributor_location import country_label
+
     data = DistributorResponse.model_validate(item)
     data.customer_count = service.customer_count(item.id)
+    data.country = country_label(item.region)
     return data
 
 
@@ -119,6 +122,9 @@ def distributor_performance(
     ),
     segment: Optional[str] = Query(None),
     location: Optional[str] = Query(None),
+    country: Optional[str] = Query(
+        None, description="all | india | other"
+    ),
     distributor_id: Optional[int] = Query(None),
     customer: Optional[str] = Query(None),
     product: Optional[str] = Query(None),
@@ -131,6 +137,7 @@ def distributor_performance(
         period=period,
         segment=_clean(segment),
         location=_clean(location),
+        country=_clean(country),
         distributor_id=distributor_id,
         customer=_clean(customer),
         product=_clean(product),

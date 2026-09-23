@@ -1,6 +1,7 @@
 """Parse distributor email subjects: ``DISTRIBUTOR | LOCATION | SEGMENT [| PERIOD]``.
 
 Period forms (Indian FY Apr–Mar):
+  Monthly   — ``APRIL 2026`` (stored as FY quarter; month is never kept)
   Quarterly — ``Q2 FY 2025-26``
   Annual    — ``FY 2025-26``
 
@@ -28,6 +29,7 @@ from app.utils.period_calendar import (
 EXPECTED_SUBJECT_FORMAT = "DISTRIBUTOR NAME | LOCATION | SEGMENT | PERIOD"
 EXPECTED_SUBJECT_EXAMPLE = "Chaudhury | South | Rubber | Q2 FY 2025-26"
 EXPECTED_SUBJECT_EXAMPLE_YEAR = "Chaudhury | South | Rubber | FY 2025-26"
+EXPECTED_SUBJECT_EXAMPLE_MONTH = "Reda | South | Construction | APRIL 2026"
 
 # Pipe (or spaced hyphen / em/en-dash) only — commas are NOT valid separators.
 _SUBJECT_SPLIT_RE = re.compile(r"\s*(?:\||\s-\s|–|—)\s*")
@@ -86,6 +88,14 @@ def normalize_subject_period(raw: Optional[str]) -> Optional[str]:
     if not text:
         return None
 
+    # Monthly subject (APRIL 2026) → Indian FY quarter. Month is not retained.
+    from app.utils.period_calendar import parse_month_label, quarter_of_month, fy_start_for_calendar_month
+
+    month_hit = parse_month_label(text)
+    if month_hit:
+        month, year = month_hit
+        return fy_quarter_label(fy_start_for_calendar_month(month, year), quarter_of_month(month))
+
     # Prefer shared calendar parser (handles display forms, months, legacy)
     spec = parse_quarter_label(text)
     if spec and spec.year is not None:
@@ -121,9 +131,10 @@ def normalize_subject_period(raw: Optional[str]) -> Optional[str]:
         return fy_quarter_label(int(m.group(2)), int(m.group(1)))
 
     raise ValidationAppError(
-        f"Invalid period in subject. Use a quarter (Q2 FY 2025-26) or annual "
-        f"(FY 2025-26). Example: {EXPECTED_SUBJECT_EXAMPLE}",
-        details={"period": raw, "expected": "Q2 FY 2025-26 | FY 2025-26"},
+        f"Invalid period in subject. Use a month (APRIL 2026), a quarter "
+        f"(Q2 FY 2025-26), or an annual year (FY 2025-26). "
+        f"Example: {EXPECTED_SUBJECT_EXAMPLE_MONTH}",
+        details={"period": raw, "expected": "APRIL 2026 | Q2 FY 2025-26 | FY 2025-26"},
     )
 
 

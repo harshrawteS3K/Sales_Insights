@@ -146,9 +146,7 @@ def format_period_display(label: Optional[str]) -> str:
     if spec.kind == "year" and spec.year is not None:
         return fy_short_display(spec.year)
     if spec.kind == "quarter" and spec.year is not None and spec.quarter:
-        rng = _QUARTER_RANGE.get(spec.quarter, "")
-        base = f"{fy_short_display(spec.year)} • Q{spec.quarter}"
-        return f"{base} ({rng})" if rng else base
+        return f"{fy_short_display(spec.year)} • Q{spec.quarter}"
     return spec.label
 
 

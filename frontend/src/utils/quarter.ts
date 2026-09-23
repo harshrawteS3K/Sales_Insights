@@ -34,6 +34,12 @@ const LEGACY_Q_RE = /^\s*Q([1-4])\s+(\d{4})\s*$/i;
 const SUBJECT_Q_FY_RE =
   /^\s*Q\s*([1-4])\s+FY\s*(\d{4})\s*[-–—/]\s*(\d{2}|\d{4})\s*$/i;
 const RANGE_PAREN_RE = /\s*\((?:Apr|Jul|Oct|Jan)[^)]*\)\s*$/i;
+const MONTH_LABEL_RE =
+  /^\s*(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\s*$/i;
+const MONTH_INDEX: Record<string, number> = {
+  january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+  july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+};
 
 function fyEndOk(start: number, endRaw: string): boolean {
   const expectedYy = String((start + 1) % 100).padStart(2, '0');
@@ -87,6 +93,15 @@ export function parseQuarter(q: string): ParsedQuarter | null {
     return { year, quarter, label: fyQuarterLabel(year, quarter), kind: 'quarter' };
   }
 
+  m = MONTH_LABEL_RE.exec(text);
+  if (m) {
+    const month = MONTH_INDEX[m[1].toLowerCase()];
+    const calYear = Number(m[2]);
+    const fyStart = month >= 4 ? calYear : calYear - 1;
+    const quarter = month >= 4 && month <= 6 ? 1 : month >= 7 && month <= 9 ? 2 : month >= 10 ? 3 : 4;
+    return { year: fyStart, quarter, label: fyQuarterLabel(fyStart, quarter), kind: 'quarter' };
+  }
+
   return null;
 }
 
@@ -102,7 +117,7 @@ export function getQuarterRange(q: string | number): string {
   return '';
 }
 
-/** UI display: `FY 2025–26 • Q1 (Apr–Jun)` */
+/** UI display: `FY 2025–26 • Q1` (month names are never shown). */
 export function formatPeriodDisplay(label: string | null | undefined): string {
   const raw = (label || '').trim();
   if (!raw || raw === '—') return raw;
@@ -111,9 +126,7 @@ export function formatPeriodDisplay(label: string | null | undefined): string {
   if (parsed.kind === 'year' || parsed.quarter === 0) {
     return fyShortDisplay(parsed.year);
   }
-  const range = QUARTER_RANGE[parsed.quarter] || '';
-  const base = `${fyShortDisplay(parsed.year)} • Q${parsed.quarter}`;
-  return range ? `${base} (${range})` : base;
+  return `${fyShortDisplay(parsed.year)} • Q${parsed.quarter}`;
 }
 
 export type TimelineReport = {

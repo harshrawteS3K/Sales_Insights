@@ -32,6 +32,7 @@ import {
   type EnterpriseFilterOptions,
   type EnterpriseFilterState,
 } from '../../utils/analyticsFilters';
+import { formatPeriodDisplay } from '../../utils/quarter';
 
 const btnPrimary: CSSProperties = {
   display: 'inline-flex',
@@ -196,22 +197,30 @@ export function Visualizations() {
             <KpiCard label="Total Customers" value={String(kpis?.total_customers ?? 0)} />
             <KpiCard label="Total Products" value={String(kpis?.total_products ?? 0)} />
             <KpiCard
-              label="Average Monthly Sales (MT)"
+              label="Average Quarterly Sales (MT)"
               value={kpis?.avg_monthly_sales_mt_display || '0'}
               valueColor={TEAL}
             />
           </div>
 
           <ChartCard
-            title="Monthly Sales Trend"
-            subtitle="Sales Quantity (MT) by month for the selected period"
+            title="Sales Trend"
+            subtitle="Sales Quantity (MT) by quarter for the selected period"
             style={{ marginBottom: 20 }}
           >
             <div style={{ width: '100%', height: 300 }}>
               <ResponsiveContainer>
-                <LineChart data={data.monthly_trend} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                <LineChart data={data.monthly_trend} margin={{ top: 8, right: 16, left: 0, bottom: 36 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#6B7280' }} />
+                  <XAxis
+                    dataKey="month"
+                    tick={{ fontSize: 11, fill: '#6B7280' }}
+                    tickFormatter={value => formatPeriodDisplay(String(value))}
+                    interval={0}
+                    angle={-20}
+                    textAnchor="end"
+                    height={48}
+                  />
                   <YAxis tick={{ fontSize: 11, fill: '#6B7280' }} />
                   <Tooltip />
                   <Legend />
@@ -367,7 +376,7 @@ export function Visualizations() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
                 <thead>
                   <tr style={{ background: '#F9FAFB', borderBottom: `1px solid ${BORDER}` }}>
-                    {['Customer Name', 'Product', 'Location', 'Month', 'Sales Quantity (MT)', 'Distributor'].map(
+                    {['Customer Name', 'Product', 'Location', 'Quarter', 'Sales Quantity (MT)', 'Distributor'].map(
                       h => (
                         <th
                           key={h}
@@ -402,8 +411,10 @@ export function Visualizations() {
                       >
                         <td style={{ padding: '10px 12px', color: '#374151' }}>{row.customer}</td>
                         <td style={{ padding: '10px 12px', color: '#374151' }}>{row.product}</td>
-                        <td style={{ padding: '10px 12px', color: '#374151' }}>{row.location || '—'}</td>
-                        <td style={{ padding: '10px 12px', color: '#6B7280' }}>{row.month}</td>
+                        <td style={{ padding: '10px 12px', color: '#374151' }}>{row.location || 'Â—'}</td>
+                        <td style={{ padding: '10px 12px', color: '#6B7280' }}>
+                          {formatPeriodDisplay(row.month)}
+                        </td>
                         <td style={{ padding: '10px 12px', fontWeight: 600, color: BLUE }}>
                           {row.qty.toLocaleString()}
                         </td>

@@ -141,6 +141,7 @@ export function DistributorPerformance() {
         title="Performance Filters"
         actionLabel="Compare"
         loading={loading}
+        showCountry
         value={filters}
         options={filterOptions}
         onChange={patch => setFilters(prev => ({ ...prev, ...patch }))}
@@ -265,7 +266,7 @@ export function DistributorPerformance() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
                 <thead>
                   <tr style={{ background: '#F9FAFB', borderBottom: `1px solid ${BORDER}` }}>
-                    {['', 'Rank', 'Distributor', 'Location', 'Customers', 'Products', 'Sales (MT)'].map(
+                    {['', 'Rank', 'Distributor', 'Location', 'Country', 'Customers', 'Products', 'Sales (MT)'].map(
                       h => (
                         <th
                           key={h || 'exp'}
@@ -289,7 +290,7 @@ export function DistributorPerformance() {
                 <tbody>
                   {ranking.length === 0 ? (
                     <tr>
-                      <td colSpan={7} style={{ padding: 28, textAlign: 'center', color: '#94A3B8' }}>
+                      <td colSpan={8} style={{ padding: 28, textAlign: 'center', color: '#94A3B8' }}>
                         No distributors to rank.
                       </td>
                     </tr>
@@ -318,6 +319,7 @@ export function DistributorPerformance() {
                               {row.distributor}
                             </td>
                             <td style={{ padding: '10px 14px', color: '#374151' }}>{row.location}</td>
+                            <td style={{ padding: '10px 14px', color: '#374151' }}>{row.country || '—'}</td>
                             <td style={{ padding: '10px 14px', textAlign: 'right', color: '#374151' }}>
                               {row.customers}
                             </td>
@@ -338,7 +340,7 @@ export function DistributorPerformance() {
                           {open && (
                             <tr>
                               <td
-                                colSpan={7}
+                                colSpan={8}
                                 style={{
                                   padding: '0 14px 16px 48px',
                                   background: '#F8FAFC',

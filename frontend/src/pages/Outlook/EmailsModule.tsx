@@ -1130,7 +1130,7 @@ export function EmailsModule() {
                   </div>
                   <div style={{ flex: '0 1 180px' }}>
                     <label style={labelStyle}>
-                      {preview.monthly_pivot ? 'Fiscal Year Start (Apr)' : 'Detected Quarter (AI)'}
+                      {preview.monthly_pivot ? 'Fiscal Year Start' : 'Detected Quarter (AI)'}
                     </label>
                     {preview.monthly_pivot ? (
                       <select
@@ -1157,7 +1157,7 @@ export function EmailsModule() {
                       >
                         {[2024, 2025, 2026, 2027].map(y => (
                           <option key={y} value={y}>
-                            FY {y}–{String((y + 1) % 100).padStart(2, '0')} (Apr–Mar)
+                            FY {y}–{String((y + 1) % 100).padStart(2, '0')}
                           </option>
                         ))}
                       </select>
@@ -1189,9 +1189,38 @@ export function EmailsModule() {
                       fontSize: '0.8125rem',
                     }}
                   >
-                    Monthly columns are split into Indian FY quarters
-                    (FY • Q1=Apr–Jun … Q4=Jan–Mar) for Consolidated Data.
+                    Workbook columns are stored as Indian FY quarters only.
                   </div>
+                )}
+
+                {(preview.attachment_summary || []).length > 0 && (
+                  <>
+                    <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#6B7280', marginBottom: 8 }}>
+                      ATTACHMENT SUMMARY
+                    </div>
+                    <div style={{ maxHeight: 180, overflow: 'auto', marginBottom: 16, border: `1px solid ${BORDER}`, borderRadius: 8 }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
+                        <thead>
+                          <tr style={{ background: '#F3F4F6' }}>
+                            <th style={th}>Attachment Name</th>
+                            <th style={th}>Product Name</th>
+                            <th style={th}>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(preview.attachment_summary || []).map(item => (
+                            <tr key={item.attachment_name} style={{ borderBottom: `1px solid ${BORDER}` }}>
+                              <td style={td}>{item.attachment_name}</td>
+                              <td style={td}>{item.product_name}</td>
+                              <td style={{ ...td, fontWeight: 700, color: item.status === 'Parsed' ? '#059669' : RED }}>
+                                {item.status}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
                 )}
 
                 <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#6B7280', marginBottom: 8 }}>

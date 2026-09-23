@@ -2,12 +2,14 @@
 
 from typing import Dict, List, Optional
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
 from app.enums import AuditAction
 from app.exceptions import ConflictError
 from app.models.distributor import Distributor
+from app.models.sales_record import SalesRecord
 from app.repositories.distributor_customer_mapping_repository import (
     DistributorCustomerMappingRepository,
 )
@@ -29,6 +31,49 @@ class DistributorService:
         self.customer_maps = DistributorCustomerMappingRepository(db)
         self.audit = AuditService(db)
 
+    def backfill_blank_locations(self) -> int:
+        """Copy the latest submitted sales location onto distributors that have none."""
+        blank = list(
+            self.db.scalars(
+                select(Distributor).where(
+                    Distributor.is_deleted.is_(False),
+                    func.coalesce(func.trim(Distributor.region), "") == "",
+                )
+            ).all()
+        )
+        if not blank:
+            return 0
+        ids = [d.id for d in blank]
+        latest_ids = (
+            select(
+                SalesRecord.distributor_id.label("distributor_id"),
+                func.max(SalesRecord.id).label("max_id"),
+            )
+            .where(
+                SalesRecord.distributor_id.in_(ids),
+                SalesRecord.is_deleted.is_(False),
+                func.length(func.trim(SalesRecord.location)) > 0,
+            )
+            .group_by(SalesRecord.distributor_id)
+            .subquery()
+        )
+        rows = self.db.execute(
+            select(latest_ids.c.distributor_id, SalesRecord.location).join(
+                SalesRecord, SalesRecord.id == latest_ids.c.max_id
+            )
+        ).all()
+        by_id = {int(did): str(loc or "").strip() for did, loc in rows if str(loc or "").strip()}
+        updated = 0
+        for dist in blank:
+            loc = by_id.get(dist.id)
+            if not loc:
+                continue
+            dist.region = loc
+            updated += 1
+        if updated:
+            self.db.flush()
+        return updated
+
     def list_distributors(
         self,
         *,
@@ -38,6 +83,7 @@ class DistributorService:
         active_only: bool = False,
     ) -> List[Distributor]:
         """List distributors."""
+        self.backfill_blank_locations()
         if search:
             items = self.repo.search(search, skip=skip, limit=limit)
         else:

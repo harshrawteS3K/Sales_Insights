@@ -17,17 +17,16 @@ export const FY_OPTIONS = [2024, 2025, 2026] as const;
 
 export const PERIOD_OPTIONS: Array<{ value: AnalyticsPeriod; label: string }> = [
   { value: 'full_year', label: 'Full Financial Year' },
-  { value: 'q1', label: 'Q1 (Apr–Jun)' },
-  { value: 'q2', label: 'Q2 (Jul–Sep)' },
-  { value: 'q3', label: 'Q3 (Oct–Dec)' },
-  { value: 'q4', label: 'Q4 (Jan–Mar)' },
-  { value: 'last_3_months', label: 'Last 3 Months' },
-  { value: 'last_6_months', label: 'Last 6 Months' },
-  { value: 'last_12_months', label: 'Last 12 Months' },
+  { value: 'q1', label: 'Q1' },
+  { value: 'q2', label: 'Q2' },
+  { value: 'q3', label: 'Q3' },
+  { value: 'q4', label: 'Q4' },
+  { value: 'last_3_months', label: 'Last 3M' },
+  { value: 'last_6_months', label: 'Last 6M' },
+  { value: 'last_12_months', label: 'Last 12M' },
   { value: 'custom', label: 'Custom Range' },
 ];
 
-const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 export type EnterpriseFilterState = {
   period: AnalyticsPeriod;
@@ -36,6 +35,7 @@ export type EnterpriseFilterState = {
   distributorId: number | null;
   distributorLabel: string;
   location: string;
+  country: string;
   customer: string;
   product: string;
   startMonth: string;
@@ -67,6 +67,7 @@ export function defaultEnterpriseFilters(): EnterpriseFilterState {
     distributorId: null,
     distributorLabel: 'All',
     location: 'All',
+    country: 'All',
     customer: 'All',
     product: 'All',
     startMonth: '',
@@ -87,22 +88,24 @@ export function isCustomPeriod(period: AnalyticsPeriod): boolean {
   return period === 'custom';
 }
 
-/** Month+Year options spanning several Indian FYs for Custom Range. */
-export function customMonthOptions(): Array<{ value: string; label: string }> {
+/** Quarter options for Custom Range. Values are the first and last calendar month of the quarter. */
+export function customQuarterOptions(): Array<{ from: string; to: string; label: string }> {
   const startFy = currentFyStart() - 2;
-  const out: Array<{ value: string; label: string }> = [];
+  const bounds: Array<[number, number, number, number, number]> = [
+    [4, 0, 6, 0, 1],
+    [7, 0, 9, 0, 2],
+    [10, 0, 12, 0, 3],
+    [1, 1, 3, 1, 4],
+  ];
+  const out: Array<{ from: string; to: string; label: string }> = [];
   for (let fy = startFy; fy <= startFy + 4; fy++) {
-    for (let m = 4; m <= 12; m++) {
+    for (const [sm, sy, em, ey, q] of bounds) {
+      const startYear = fy + sy;
+      const endYear = fy + ey;
       out.push({
-        value: `${fy}-${String(m).padStart(2, '0')}`,
-        label: `${MONTH_SHORT[m - 1]} ${fy}`,
-      });
-    }
-    const endYear = fy + 1;
-    for (let m = 1; m <= 3; m++) {
-      out.push({
-        value: `${endYear}-${String(m).padStart(2, '0')}`,
-        label: `${MONTH_SHORT[m - 1]} ${endYear}`,
+        from: `${startYear}-${String(sm).padStart(2, '0')}`,
+        to: `${endYear}-${String(em).padStart(2, '0')}`,
+        label: `${fyShortDisplay(fy)} • Q${q}`,
       });
     }
   }
@@ -120,19 +123,19 @@ export function selectedPeriodDisplay(period: AnalyticsPeriod, fyStart: number):
     case 'full_year':
       return fy;
     case 'q1':
-      return `${fy} • Q1 (Apr–Jun)`;
+      return `${fy} • Q1`;
     case 'q2':
-      return `${fy} • Q2 (Jul–Sep)`;
+      return `${fy} • Q2`;
     case 'q3':
-      return `${fy} • Q3 (Oct–Dec)`;
+      return `${fy} • Q3`;
     case 'q4':
-      return `${fy} • Q4 (Jan–Mar)`;
+      return `${fy} • Q4`;
     case 'last_3_months':
-      return 'Last 3 Months (Rolling)';
+      return 'Last 3M';
     case 'last_6_months':
-      return 'Last 6 Months (Rolling)';
+      return 'Last 6M';
     case 'last_12_months':
-      return 'Last 12 Months (Rolling)';
+      return 'Last 12M';
     case 'custom':
       return 'Custom Range';
     default:
@@ -148,6 +151,7 @@ export function toAnalyticsQuery(state: EnterpriseFilterState) {
     customer: state.customer !== 'All' ? state.customer : null,
     product: state.product !== 'All' ? state.product : null,
     location: state.location !== 'All' ? state.location : null,
+    country: state.country !== 'All' ? state.country : null,
     segment: state.segment !== 'All' ? state.segment : null,
     fiscal_year_start: rolling || custom ? null : state.fiscalYearStart,
     period: state.period,
@@ -158,7 +162,7 @@ export function toAnalyticsQuery(state: EnterpriseFilterState) {
 
 export function validateEnterpriseFilters(state: EnterpriseFilterState): string | null {
   if (isCustomPeriod(state.period) && (!state.startMonth || !state.endMonth)) {
-    return 'Select From Month and To Month for a custom range.';
+    return 'Select the From and To quarter for a custom range.';
   }
   return null;
 }

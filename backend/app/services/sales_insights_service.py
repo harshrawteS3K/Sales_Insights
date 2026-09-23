@@ -20,6 +20,7 @@ from app.repositories.sales_record_repository import (
 )
 from app.utils.period_calendar import (
     calendar_year_for_fy_month,
+    format_period_display,
     fy_quarter_label,
     fy_short_display,
     fy_start_for_calendar_month,
@@ -29,6 +30,7 @@ from app.utils.period_calendar import (
     quarter_of_month,
 )
 from app.utils.quantity import format_quantity
+from app.utils.reporting_month import normalize_reporting_month
 
 
 PERIOD_FULL_YEAR = "full_year"
@@ -132,8 +134,17 @@ def _keys_for_year_months(pairs: List[Tuple[int, int]]) -> List[str]:
     return list(dict.fromkeys(keys))
 
 
-def _labels_for_year_months(pairs: List[Tuple[int, int]]) -> List[str]:
-    return [month_label(m, y) for y, m in pairs]
+def _quarter_labels_for_pairs(pairs: List[Tuple[int, int]]) -> List[str]:
+    """One canonical FY-quarter label per distinct quarter, oldest → newest."""
+    labels: List[str] = []
+    for year, month in pairs:
+        label = fy_quarter_label(
+            fy_start_for_calendar_month(month, year),
+            quarter_of_month(month),
+        )
+        if not labels or labels[-1] != label:
+            labels.append(label)
+    return labels
 
 
 def _last_n_within_fy(
@@ -229,21 +240,21 @@ def trend_month_labels(
     end_month: Optional[str] = None,
     as_of: Optional[date] = None,
 ) -> List[str]:
-    """Ordered display months for the trend chart X-axis."""
+    """Ordered FY-quarter labels for the trend chart (one point per quarter)."""
     period_key = (period or "").strip().lower().replace(" ", "_").replace("-", "_")
     today = as_of or date.today()
 
     if period_key in _PERIOD_MONTH_COUNT:
         n = _PERIOD_MONTH_COUNT[period_key]
-        return _labels_for_year_months(_last_n_rolling(n, as_of=today))
+        return _quarter_labels_for_pairs(_last_n_rolling(n, as_of=today))
 
     fy_start = _normalize_fy_start(fiscal_year_start)
 
     if period_key in {PERIOD_FULL_YEAR, "full_financial_year", "fy"}:
-        return _labels_for_year_months(fy_calendar_months(fy_start))
+        return _quarter_labels_for_pairs(fy_calendar_months(fy_start))
 
     if period_key in _QUARTER_PERIODS:
-        return list(months_for_fy_quarter(fy_start, _QUARTER_PERIODS[period_key]))
+        return [fy_quarter_label(fy_start, _QUARTER_PERIODS[period_key])]
 
     if period_key in {PERIOD_CUSTOM, "custom_date_range", "custom_range"}:
         start = _parse_ym(start_month)
@@ -252,14 +263,14 @@ def trend_month_labels(
             return []
         if start > end:
             start, end = end, start
-        labels: List[str] = []
+        pairs: List[Tuple[int, int]] = []
         y, m = start
         while (y, m) <= end:
-            labels.append(month_label(m, y))
+            pairs.append((y, m))
             y, m = _shift_month(y, m, 1)
-        return labels
+        return _quarter_labels_for_pairs(pairs)
 
-    return _labels_for_year_months(fy_calendar_months(fy_start))
+    return _quarter_labels_for_pairs(fy_calendar_months(fy_start))
 
 
 class SalesInsightsService:
@@ -501,8 +512,8 @@ class SalesInsightsService:
         )
         total_qty, total_customers, total_products = self.db.execute(kpi_q).one()
         total_qty_f = _to_float(total_qty)
-        n_months = max(len(axis_months), 1)
-        avg_monthly = total_qty_f / n_months
+        n_quarters = max(len(axis_months), 1)
+        avg_monthly = total_qty_f / n_quarters
 
         trend_q = self._scoped(
             select(
@@ -515,21 +526,16 @@ class SalesInsightsService:
             .group_by(reporting_month_expr()),
             **scope_kw,
         )
-        raw_trend = {
-            str(m): _to_float(q) for m, q in self.db.execute(trend_q).all() if m
-        }
-        monthly_trend = []
-        for label in axis_months:
-            qty = raw_trend.get(label, 0.0)
-            if qty == 0.0:
-                parsed = parse_month_label(label)
-                if parsed:
-                    month_num, year = parsed
-                    for key in _keys_for_calendar_month(year, month_num):
-                        qty = raw_trend.get(key, 0.0)
-                        if qty:
-                            break
-            monthly_trend.append({"month": label, "qty": round(qty, 3)})
+        collapsed_trend: Dict[str, float] = {}
+        for raw_key, qty in self.db.execute(trend_q).all():
+            if not raw_key:
+                continue
+            canon = normalize_reporting_month(raw_key) or str(raw_key)
+            collapsed_trend[canon] = collapsed_trend.get(canon, 0.0) + _to_float(qty)
+        monthly_trend = [
+            {"month": label, "qty": round(collapsed_trend.get(label, 0.0), 3)}
+            for label in axis_months
+        ]
 
         top_q = self._scoped(
             select(
@@ -610,7 +616,7 @@ class SalesInsightsService:
                 "customer": str(c or ""),
                 "product": str(p or ""),
                 "location": str(loc or ""),
-                "month": str(m or ""),
+                "month": format_period_display(str(m or "")),
                 "qty": round(_to_float(q), 3),
                 "distributor": str(d or ""),
             }
@@ -693,7 +699,7 @@ class SalesInsightsService:
                 "Customer Name": str(c or ""),
                 "Product": str(p or ""),
                 "Location": str(loc or ""),
-                "Month": str(m or ""),
+                "Quarter": format_period_display(str(m or "")),
                 "Sales Quantity (MT)": round(_to_float(q), 3),
                 "Distributor": str(d or ""),
             }

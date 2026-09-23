@@ -94,6 +94,7 @@ type FormState = {
   contact_person: string;
   email: string;
   cc_email: string;
+  region: string;
   is_active: boolean;
 };
 
@@ -104,6 +105,7 @@ const emptyForm = (): FormState => ({
   contact_person: '',
   email: '',
   cc_email: '',
+  region: '',
   is_active: true,
 });
 
@@ -115,6 +117,7 @@ function formFromDistributor(d: Distributor): FormState {
     contact_person: d.contact_person || '',
     email: d.email || '',
     cc_email: d.cc_email || '',
+    region: d.region || '',
     is_active: d.is_active,
   };
 }
@@ -127,6 +130,7 @@ function toPayload(form: FormState): DistributorCreatePayload {
     contact_person: form.contact_person.trim() || null,
     email: form.email.trim() || null,
     cc_email: form.cc_email.trim() || null,
+    region: form.region.trim() || null,
     is_active: form.is_active,
   };
 }
@@ -393,7 +397,7 @@ export function DistributorManagement() {
           <input
             value={searchInput}
             onChange={e => setSearchInput(e.target.value)}
-            placeholder="Search company, name, email…"
+            placeholder="Search company, name, email, location…"
             style={{ ...inputStyle, paddingLeft: 36 }}
           />
         </div>
@@ -440,7 +444,7 @@ export function DistributorManagement() {
           >
             <thead>
               <tr style={{ background: '#F9FAFB', borderBottom: `1px solid ${BORDER}` }}>
-                {['Distributor', 'Contact Person', 'Email', 'Active', 'Customers', 'Actions'].map(
+                {['Distributor', 'Location', 'Country', 'Contact Person', 'Email', 'Active', 'Customers', 'Actions'].map(
                   h => (
                     <th
                       key={h}
@@ -466,7 +470,7 @@ export function DistributorManagement() {
             <tbody>
               {rows.length === 0 && !loading ? (
                 <tr>
-                  <td colSpan={6} style={{ padding: 40, textAlign: 'center', color: '#9CA3AF' }}>
+                  <td colSpan={8} style={{ padding: 40, textAlign: 'center', color: '#9CA3AF' }}>
                     No distributors found
                   </td>
                 </tr>
@@ -482,6 +486,8 @@ export function DistributorManagement() {
                         </div>
                       )}
                     </td>
+                    <td style={{ ...cellPad, color: '#374151' }}>{d.region || '—'}</td>
+                    <td style={{ ...cellPad, color: '#374151' }}>{d.country || '—'}</td>
                     <td style={{ ...cellPad, color: '#374151' }}>
                       {d.contact_person || '—'}
                     </td>
@@ -634,6 +640,13 @@ export function DistributorManagement() {
                 <input
                   value={form.code}
                   onChange={e => setField('code', e.target.value)}
+                  style={{ ...inputStyle, marginBottom: 12 }}
+                />
+                <label style={labelStyle}>Location</label>
+                <input
+                  value={form.region}
+                  onChange={e => setField('region', e.target.value)}
+                  placeholder="South, Vietnam, UAE…"
                   style={{ ...inputStyle, marginBottom: 12 }}
                 />
                 <label style={labelStyle}>Contact Person</label>

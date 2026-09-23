@@ -70,6 +70,11 @@ export type ERPPreviewResponse = {
   parsed_distributor?: string | null;
   parsed_location?: string | null;
   parsed_segment?: string | null;
+  attachment_summary?: Array<{
+    attachment_name: string;
+    product_name: string;
+    status: string;
+  }>;
 };
 
 export type ERPImportResult = {

@@ -57,6 +57,7 @@ class DistributorResponse(DistributorBase, TimestampSchema):
     id: int
     is_deleted: bool = False
     customer_count: int = 0
+    country: str = ""
 
 
 class DistributorInfo(BaseModel):

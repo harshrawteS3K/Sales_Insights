@@ -10,7 +10,7 @@ const quickLinks = [
   { name: 'Distributor Management',       path: '/distributors',      category: 'Data'           },
   { name: 'ERP Header Dictionary',        path: '/admin/header-dictionary', category: 'Admin'   },
   { name: 'Sales Insights Analytics',     path: '/visualizations',   category: 'Visualizations' },
-  { name: 'Monthly Sales Trend',          path: '/visualizations',   category: 'Visualizations' },
+  { name: 'Sales Trend',                  path: '/visualizations',   category: 'Visualizations' },
   { name: 'Top Customers',                path: '/visualizations',   category: 'Visualizations' },
   { name: 'Product Contribution',         path: '/visualizations',   category: 'Visualizations' },
 ];

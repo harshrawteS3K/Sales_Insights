@@ -211,8 +211,7 @@ export function QuarterlyView({ quarters, companies }: Props) {
                       </div>
                       {row.isPartial && (
                         <div style={{ fontSize: '0.6875rem', color: '#B45309', marginTop: 2 }}>
-                          Partial quarter ({row.monthsSubmitted.length}/
-                          {row.monthsExpected.length} periods)
+                          Partial quarter
                         </div>
                       )}
                     </td>
@@ -220,7 +219,7 @@ export function QuarterlyView({ quarters, companies }: Props) {
                     <td style={tdStyle}>{row.totalQuantityDisplay}</td>
                     <td style={tdStyle}>{row.productsSold}</td>
                     <td style={tdStyle}>{row.reportsIncluded}</td>
-                    <td style={tdStyle}>{row.monthsSubmitted.join(', ') || '—'}</td>
+                    <td style={tdStyle}>{formatPeriodDisplay(row.quarter)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -369,7 +368,7 @@ function QuarterlyReportPanel({
             <Stat label="Reports Included" value={String(report.reportsIncluded)} />
             <Stat
               label="Periods Included"
-              value={report.monthsSubmitted.join(', ') || '—'}
+              value={formatPeriodDisplay(report.period.label)}
             />
           </div>
           {report.isPartial && (
@@ -384,7 +383,7 @@ function QuarterlyReportPanel({
                 fontSize: '0.75rem',
               }}
             >
-              Partial quarter — expected {report.monthsExpected.join(', ')}.
+              Partial quarter.
             </div>
           )}
         </div>
