@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.distributor import Distributor
@@ -16,38 +16,42 @@ class DistributorRepository(BaseRepository[Distributor]):
     def __init__(self, db: Session) -> None:
         super().__init__(db, Distributor)
 
+    def _active_distributors(self) -> List[Distributor]:
+        query = (
+            select(Distributor)
+            .where(Distributor.is_deleted.is_(False))
+            .order_by(Distributor.id.asc())
+        )
+        return list(self.db.scalars(query).all())
+
+    def _find_by_match_key(self, raw: str) -> Optional[Distributor]:
+        """Resolve S.K.TRADING / SK Trading / S.K.TRADING COMPANY to one row."""
+        key = normalize_distributor_name(raw)
+        if not key:
+            return None
+        for row in self._active_distributors():
+            if normalize_distributor_name(row.company) == key or normalize_distributor_name(row.name) == key:
+                return row
+        return None
+
     def get_by_name(self, name: str) -> Optional[Distributor]:
         """Fetch distributor by representative name (legacy / metadata lookup)."""
-        normalized = normalize_distributor_name(name)
-        if not normalized:
-            return None
-        query = select(Distributor).where(
-            func.lower(Distributor.name) == normalized.casefold(),
-            Distributor.is_deleted.is_(False),
-        )
-        return self.db.scalar(query)
+        return self._find_by_match_key(name)
 
     def get_by_company(self, company: str) -> Optional[Distributor]:
         """Fetch distributor by normalized company name (business identity)."""
-        normalized = normalize_company_name(company)
-        if not normalized:
-            return None
-        query = select(Distributor).where(
-            func.lower(func.trim(Distributor.company)) == normalized.casefold(),
-            Distributor.is_deleted.is_(False),
-        )
-        return self.db.scalar(query)
+        return self._find_by_match_key(company)
 
     def list_ids_for_company(self, company: str) -> List[int]:
         """All active distributor ids sharing the same company (incl. legacy dupes)."""
-        normalized = normalize_company_name(company)
-        if not normalized:
+        key = normalize_distributor_name(company)
+        if not key:
             return []
-        query = select(Distributor.id).where(
-            func.lower(func.trim(Distributor.company)) == normalized.casefold(),
-            Distributor.is_deleted.is_(False),
-        )
-        return list(self.db.scalars(query).all())
+        return [
+            row.id
+            for row in self._active_distributors()
+            if normalize_distributor_name(row.company) == key or normalize_distributor_name(row.name) == key
+        ]
 
     def get_by_email(self, email: str) -> Optional[Distributor]:
         """Fetch distributor by email."""
@@ -73,7 +77,7 @@ class DistributorRepository(BaseRepository[Distributor]):
         ``name`` stores the latest known representative (metadata only).
         """
         company_norm = normalize_company_name(company)
-        rep_norm = normalize_distributor_name(representative_name)
+        rep_norm = normalize_company_name(representative_name)
         if not company_norm:
             # Legacy Excel without Company Name → use representative as company key
             company_norm = rep_norm
@@ -81,18 +85,22 @@ class DistributorRepository(BaseRepository[Distributor]):
             raise ValueError("Distributor Company is required")
 
         existing = self.get_by_company(company_norm)
-        if existing is None and company_norm:
-            existing = self.get_by_name(company_norm)
+        if existing is None and rep_norm:
+            existing = self.get_by_name(rep_norm)
         if existing:
             updates: Dict[str, object] = {}
             cleaned_company = normalize_company_name(existing.company)
             if cleaned_company and cleaned_company != existing.company:
                 updates["company"] = cleaned_company
-            # Keep latest representative only when the person actually changed
-            if rep_norm and existing.name.casefold() != rep_norm.casefold():
+            # Keep the stored name when punctuation/suffix variants are the same company.
+            if (
+                rep_norm
+                and normalize_distributor_name(existing.name) != normalize_distributor_name(rep_norm)
+                and existing.name.casefold() != rep_norm.casefold()
+            ):
                 updates["name"] = rep_norm
             else:
-                cleaned_existing_name = normalize_distributor_name(existing.name)
+                cleaned_existing_name = normalize_company_name(existing.name)
                 if cleaned_existing_name and cleaned_existing_name != existing.name:
                     updates["name"] = cleaned_existing_name
             if address and not existing.address:
@@ -128,7 +136,7 @@ class DistributorRepository(BaseRepository[Distributor]):
 
         Prefer ``get_or_create_by_company`` for new call sites.
         """
-        company_key = normalize_company_name(company) or normalize_distributor_name(name)
+        company_key = normalize_company_name(company) or normalize_company_name(name)
         return self.get_or_create_by_company(
             company_key,
             representative_name=name,

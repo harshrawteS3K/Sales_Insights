@@ -103,6 +103,18 @@ NOISE_HEADERS = {
     "cust code",
     "party code",
     "account code",
+    "total",
+    "grand total",
+    "opening",
+    "closing",
+    "opening balance",
+    "closing balance",
+    "voucher no",
+    "vch type",
+    "vch no",
+    "balance",
+    "rate",
+    "amount",
 }
 
 

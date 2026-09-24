@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
-from app.utils.distributor_name import normalize_company_name
+from app.utils.distributor_name import normalize_company_name, normalize_distributor_name
 from app.utils.reporting_month import normalize_reporting_month
 
 logger = get_logger(__name__)
@@ -41,7 +41,7 @@ def report_replace_lock_key_company(company: str, reporting_month: str) -> int:
 
     This is the correct business-identity lock — representatives do not affect it.
     """
-    company_key = normalize_company_name(company).casefold()
+    company_key = normalize_distributor_name(company) or normalize_company_name(company).casefold()
     month = normalize_reporting_month(reporting_month).casefold()
     payload = f"report-replace-company|{company_key}|{month}".encode("utf-8")
     digest = hashlib.blake2b(payload, digest_size=8).digest()

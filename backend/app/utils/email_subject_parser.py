@@ -44,7 +44,8 @@ _UNIT_CANONICAL = {
 }
 
 # Pipe (or spaced hyphen / em/en-dash) only — commas are NOT valid separators.
-_SUBJECT_SPLIT_RE = re.compile(r"\s*(?:\||\s-\s|–|—)\s*")
+# Repeated pipes and surrounding spaces are one separator.
+_SUBJECT_SPLIT_RE = re.compile(r"\s*(?:\|+|\s-\s|–|—)\s*")
 
 # Q2 FY 2025-26  |  Q2 FY2025-26
 _Q_FY_RE = re.compile(

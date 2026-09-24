@@ -132,10 +132,21 @@ class BulkPersonaImportService:
         """Match Excel Second Party to an existing distributor when possible."""
         from difflib import SequenceMatcher
 
+        from app.utils.distributor_name import normalize_distributor_name
+
         target = normalize_company_name(name)
-        if not target:
+        target_key = normalize_distributor_name(name)
+        if not target and not target_key:
             return None
         target_cf = target.casefold()
+
+        if target_key:
+            for d in master:
+                if (
+                    normalize_distributor_name(d.company) == target_key
+                    or normalize_distributor_name(d.name) == target_key
+                ):
+                    return d
 
         for d in master:
             company = normalize_company_name(d.company or "").casefold()

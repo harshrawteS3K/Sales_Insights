@@ -469,6 +469,8 @@ class ERPIngestService:
                         path,
                         fiscal_year_start=fiscal_year_start,
                         reporting_quarter=subject_period or None,
+                        distributor_label=email.parsed_distributor or "",
+                        subject=email.subject,
                     )
                     if idx == 0:
                         one["available_columns"] = self._available_columns(
@@ -950,6 +952,8 @@ class ERPIngestService:
                         path,
                         fiscal_year_start=fiscal_year_start,
                         reporting_quarter=quarter or None,
+                        distributor_label=email.parsed_distributor or "",
+                        subject=email.subject,
                     )
                     use_rows = rows
                 else:
@@ -958,6 +962,8 @@ class ERPIngestService:
                         path,
                         fiscal_year_start=fiscal_year_start,
                         reporting_quarter=quarter or None,
+                        distributor_label=email.parsed_distributor or "",
+                        subject=email.subject,
                     )
                     use_rows = preview.get("rows") or []
                 if not quarter:

@@ -17,6 +17,10 @@ from app.erp_parser.metadata_parser import (
     detect_metadata_layout,
     extract_metadata_workbook,
 )
+from app.erp_parser.stock_item_parser import (
+    detect_stock_item_register,
+    extract_stock_item_workbook,
+)
 from app.erp_parser.confidence import compute_erp_confidence
 from app.erp_parser.cross_tab import (
     detect_product_month_matrix,
@@ -230,6 +234,7 @@ class ERPParserService:
         reporting_quarter: Optional[str] = None,
         fiscal_year_start: Optional[int] = None,
         allow_llm_fallback: bool = True,
+        subject: Optional[str] = None,
     ) -> ERPParseResult:
         """
         Full ERP parse pipeline.
@@ -239,6 +244,16 @@ class ERPParserService:
         """
         file_path = Path(path)
         logger.info("ERP parse start | path={}", file_path)
+
+        # 1. Subject parser — distributor, location, segment, period, unit.
+        if subject:
+            from app.utils.email_subject_parser import try_parse_email_subject
+
+            parsed_subject = try_parse_email_subject(subject)
+            if parsed_subject:
+                distributor_label = distributor_label or str(parsed_subject.get("distributor") or "")
+                if not reporting_quarter:
+                    reporting_quarter = parsed_subject.get("period")
 
         wb_info = detect_workbook(file_path)
         candidates = wb_info["candidate_sheets"]
@@ -308,7 +323,72 @@ class ERPParserService:
                     python_overall=float(confidence["overall_confidence"]),
                 )
 
-        # BPS product blocks: decide before header mapping, RapidFuzz, and the LLM.
+        # 3. Stock Item Register (SK Trading) before header dictionary and the LLM.
+        stock_names = [sheet_name] if sheet_name else list(candidates)
+        stock_layout = False
+        for stock_name in stock_names:
+            if not stock_name:
+                continue
+            try:
+                stock_matrix = read_sheet_matrix(file_path, stock_name)
+            except Exception:  # noqa: BLE001
+                continue
+            if detect_stock_item_register(stock_matrix):
+                stock_layout = True
+                break
+        if stock_layout:
+            stock_rows = extract_stock_item_workbook(
+                file_path,
+                fiscal_year_start=fiscal_year_start,
+                reporting_quarter=reporting_quarter,
+                sheet_name=sheet_name,
+                distributor_label=distributor_label,
+            )
+            if stock_rows and stock_rows.get("detected"):
+                if not stock_rows.get("rows"):
+                    raise ExcelProcessingError(
+                        "ERP Stock Item Register Parser activated but no sales rows were extracted."
+                    )
+                field_conf = {"customer": 97.0, "product": 97.0, "quantity": 96.0}
+                confidence = compute_erp_confidence(
+                    field_confidences=field_conf,
+                    sheet_score=float(stock_rows.get("score") or 88),
+                    extracted_rows=len(stock_rows["rows"]),
+                    quantity_ok=stock_rows["quantity_ok"],
+                    quantity_fail=stock_rows["quantity_fail"],
+                    skipped_invalid=stock_rows["skipped_invalid"],
+                )
+                active_mapped = {
+                    "positions": {"customer": 1, "product": None, "quantity": None},
+                    "originals": {
+                        "customer": "Particulars",
+                        "product": "Stock Item Register title",
+                        "quantity": "Outwards Quantity",
+                    },
+                    "confidences": field_conf,
+                    "methods": {
+                        "customer": "stock_item_register",
+                        "product": "stock_item_register",
+                        "quantity": "stock_item_register",
+                    },
+                    "quantity_columns": [],
+                    "month_column_meta": [],
+                }
+                return self._finalize_result(
+                    chosen=stock_rows.get("sheet_name") or "Stock Item Register",
+                    sheet_score=float(stock_rows.get("score") or 88),
+                    header_row=int(stock_rows.get("header_row") or 1),
+                    active_mapped=active_mapped,
+                    active_extracted=stock_rows,
+                    confidence=confidence,
+                    mapping_source="python",
+                    candidates=candidates,
+                    distributor_label=distributor_label or str(stock_rows.get("distributor") or ""),
+                    reporting_quarter=reporting_quarter,
+                    python_overall=float(confidence["overall_confidence"]),
+                )
+
+        # 4. BPS product blocks: before header mapping, RapidFuzz, and the LLM.
         block_names = [sheet_name] if sheet_name else list(candidates)
         block_layout = False
         for block_name in block_names:
@@ -913,6 +993,8 @@ class ERPParserService:
         fiscal_year_start: Optional[int] = None,
         reporting_quarter: Optional[str] = None,
         allow_llm_fallback: bool = True,
+        distributor_label: str = "",
+        subject: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Preview-only payload for ``POST /api/erp/parse-preview``.
 
@@ -924,9 +1006,15 @@ class ERPParserService:
             fiscal_year_start=fiscal_year_start,
             reporting_quarter=reporting_quarter,
             allow_llm_fallback=allow_llm_fallback,
+            distributor_label=distributor_label,
+            subject=subject,
         )
         breakdown = result.confidence_breakdown or {}
-        block_mode = breakdown.get("layout") in {"product_blocks", "metadata_sales"}
+        block_mode = breakdown.get("layout") in {
+            "product_blocks",
+            "metadata_sales",
+            "stock_item_register",
+        }
         quarter_hit = None
         if not block_mode:
             try:

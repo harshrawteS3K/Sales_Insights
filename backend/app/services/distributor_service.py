@@ -17,7 +17,7 @@ from app.repositories.distributor_repository import DistributorRepository
 from app.schemas.audit import AuditTrailCreate
 from app.schemas.distributor import DistributorCreate, DistributorInfo, DistributorUpdate
 from app.services.audit_service import AuditService
-from app.utils.distributor_name import normalize_distributor_name
+from app.utils.distributor_name import normalize_company_name
 
 logger = get_logger(__name__)
 
@@ -140,7 +140,7 @@ class DistributorService:
             existing = self.repo.get_by_email(str(payload.email).lower())
             if existing:
                 raise ConflictError(f"Distributor with email {payload.email} already exists")
-        name = normalize_distributor_name(payload.name)
+        name = normalize_company_name(payload.name)
         code = (payload.code or "").strip() or None
         entity = Distributor(
             name=name,
@@ -190,7 +190,7 @@ class DistributorService:
         if "contact_person" in data and data["contact_person"] is not None:
             data["contact_person"] = str(data["contact_person"]).strip() or None
         if "name" in data and data["name"]:
-            data["name"] = normalize_distributor_name(data["name"])
+            data["name"] = normalize_company_name(data["name"])
         updated = self.repo.update(distributor, data)
         self.audit.log(
             AuditTrailCreate(

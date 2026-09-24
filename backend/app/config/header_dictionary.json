@@ -65,6 +65,7 @@
     "qty kg",
     "quantity kg",
     "bags moved",
-    "movement"
+    "movement",
+    "outwards"
   ]
 }

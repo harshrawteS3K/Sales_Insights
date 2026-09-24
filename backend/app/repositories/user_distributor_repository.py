@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models.distributor import Distributor
@@ -73,21 +73,22 @@ class UserDistributorRepository(BaseRepository[UserDistributor]):
 
     def has_distributor_access(self, user_id: int, distributor: str) -> bool:
         """Return True if user is assigned to a distributor by company or name."""
-        norm_company = normalize_company_name(distributor)
-        norm_name = normalize_distributor_name(distributor)
-        if not norm_company and not norm_name:
+        key = normalize_distributor_name(distributor)
+        if not key and not normalize_company_name(distributor):
             return False
 
         query = (
-            select(UserDistributor.id)
-            .join(Distributor, UserDistributor.distributor_id == Distributor.id)
+            select(Distributor)
+            .join(UserDistributor, UserDistributor.distributor_id == Distributor.id)
             .where(
                 UserDistributor.user_id == user_id,
                 Distributor.is_deleted.is_(False),
-                (
-                    (func.lower(func.trim(Distributor.company)) == norm_company.casefold())
-                    | (func.lower(func.trim(Distributor.name)) == norm_name.casefold())
-                ),
             )
         )
-        return self.db.scalar(query) is not None
+        for row in self.db.scalars(query).all():
+            if key and (
+                normalize_distributor_name(row.company) == key
+                or normalize_distributor_name(row.name) == key
+            ):
+                return True
+        return False
