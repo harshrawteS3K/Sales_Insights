@@ -37,7 +37,10 @@
     "grade",
     "sku",
     "product fg code",
-    "commodity"
+    "commodity",
+    "stock item",
+    "stock item register",
+    "item transactions"
   ],
   "quantity": [
     "qty",

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 from pydantic import BaseModel, Field
 
 from app.core.logging import get_logger
+from app.erp_parser.block_parser import extract_product_blocks_workbook
 from app.erp_parser.confidence import compute_erp_confidence
 from app.erp_parser.cross_tab import (
     detect_product_month_matrix,
@@ -299,6 +300,60 @@ class ERPParserService:
                 }
             return result
 
+        block_sheet = sheet_name
+        product_blocks = extract_product_blocks_workbook(
+            file_path,
+            fiscal_year_start=fiscal_year_start,
+            reporting_quarter=reporting_quarter,
+            sheet_name=block_sheet,
+        )
+        if product_blocks and product_blocks.get("rows"):
+            field_conf = {"customer": 97.0, "product": 97.0, "quantity": 95.0}
+            confidence = compute_erp_confidence(
+                field_confidences=field_conf,
+                sheet_score=float(product_blocks.get("score") or 85),
+                extracted_rows=len(product_blocks["rows"]),
+                quantity_ok=product_blocks["quantity_ok"],
+                quantity_fail=product_blocks["quantity_fail"],
+                skipped_invalid=product_blocks["skipped_invalid"],
+            )
+            primary_sheet = product_blocks.get("sheet_name") or "product blocks"
+            active_mapped = {
+                "positions": {"customer": 0, "product": None, "quantity": None},
+                "originals": {
+                    "customer": "Party",
+                    "product": "Product block title",
+                    "quantity": "Month columns",
+                },
+                "confidences": field_conf,
+                "methods": {
+                    "customer": "product_blocks",
+                    "product": "product_blocks",
+                    "quantity": "product_blocks",
+                },
+                "quantity_columns": [],
+                "month_column_meta": [],
+            }
+            logger.info(
+                "ERP product block layout detected | sheet={} | rows={} | score={}",
+                primary_sheet,
+                len(product_blocks["rows"]),
+                product_blocks.get("score"),
+            )
+            return self._finalize_result(
+                chosen=primary_sheet,
+                sheet_score=float(product_blocks.get("score") or 85),
+                header_row=1,
+                active_mapped=active_mapped,
+                active_extracted=product_blocks,
+                confidence=confidence,
+                mapping_source="python",
+                candidates=candidates,
+                distributor_label=distributor_label,
+                reporting_quarter=reporting_quarter,
+                python_overall=float(confidence["overall_confidence"]),
+            )
+
         if sheet_name:
             try:
                 from app.erp_parser.workbook_detector import resolve_sheet_name
@@ -437,7 +492,12 @@ class ERPParserService:
                 active_confidence = python_confidence
 
         need_llm = False
-        if allow_llm_fallback and not (
+        block_ready = bool(
+            active_extracted
+            and active_extracted.get("rows")
+            and active_extracted.get("layout") == "product_blocks"
+        )
+        if allow_llm_fallback and not block_ready and not (
             matrix_layout and active_extracted and active_extracted.get("rows")
         ):
             need_llm = (
@@ -470,6 +530,7 @@ class ERPParserService:
                 active_extracted.get("layout") in {
                     "product_month_matrix",
                     "monthly_product_sheets",
+                    "product_blocks",
                 }
                 or _mapping_complete(
                     active_mapped["positions"],
@@ -539,6 +600,7 @@ class ERPParserService:
             if not isinstance(qty, Decimal):
                 qty = Decimal(str(qty))
             row_period = str(raw.get("period") or raw.get("reporting_quarter") or quarter or "").strip() or None
+            source_month = str(raw.get("source_month") or "").strip() or None
             row = ParsedSalesRow(
                 sr_no=None,
                 distributor=dist_label,
@@ -548,6 +610,7 @@ class ERPParserService:
                 quantity=qty,
                 quantity_display=str(raw.get("sales_quantity_display") or qty),
                 period=row_period,
+                source_month=source_month,
                 unit="MT",
                 company=None,
                 row_hash="",
@@ -560,6 +623,7 @@ class ERPParserService:
                 row.product,
                 row.quantity,
                 row.period or "",
+                source_month or "",
             )
             parsed_rows.append(row)
 
@@ -589,6 +653,11 @@ class ERPParserService:
                         if r.get("period")
                         else {}
                     ),
+                    **(
+                        {"source_month": r["source_month"]}
+                        if r.get("source_month")
+                        else {}
+                    ),
                 }
                 for r in raw_rows
             ],
@@ -606,6 +675,7 @@ class ERPParserService:
                 **confidence,
                 "fiscal_year_start": active_extracted.get("fiscal_year_start"),
                 "monthly_pivot": active_extracted.get("monthly_pivot"),
+                "layout": active_extracted.get("layout"),
                 "mapping_source": mapping_source,
                 "python_confidence": python_overall,
                 "layout": active_extracted.get("layout"),
@@ -765,18 +835,25 @@ class ERPParserService:
             allow_llm_fallback=allow_llm_fallback,
         )
         breakdown = result.confidence_breakdown or {}
+        block_mode = breakdown.get("layout") == "product_blocks"
         quarter_hit = None
-        try:
-            from app.erp_parser.quarter_detector import detect_reporting_quarter
+        if not block_mode:
+            try:
+                from app.erp_parser.quarter_detector import detect_reporting_quarter
 
-            quarter_hit = detect_reporting_quarter(
-                path,
-                allow_llm_fallback=allow_llm_fallback,
-            )
-        except Exception:  # noqa: BLE001
-            quarter_hit = None
+                quarter_hit = detect_reporting_quarter(
+                    path,
+                    allow_llm_fallback=allow_llm_fallback,
+                )
+            except Exception:  # noqa: BLE001
+                quarter_hit = None
 
         detected_quarter = (quarter_hit or {}).get("reporting_quarter")
+        if block_mode and not detected_quarter:
+            for raw in result.rows or []:
+                if raw.get("period"):
+                    detected_quarter = raw.get("period")
+                    break
         quarter_confidence = float((quarter_hit or {}).get("confidence") or 0)
 
         return {
