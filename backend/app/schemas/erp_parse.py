@@ -59,6 +59,8 @@ class ERPAttachmentSummary(BaseModel):
     attachment_name: str
     product_name: str
     status: str
+    parser_used: Optional[str] = None
+    confidence: Optional[float] = None
 
 
 class ERPParsePreviewResponse(BaseModel):

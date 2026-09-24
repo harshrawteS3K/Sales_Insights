@@ -81,6 +81,61 @@ class ERPIngestService:
             "match": "subject",
         }
 
+    def _preferred_parser_name(self, email: Any) -> Optional[str]:
+        """Reuse the last high-confidence parser for this distributor."""
+        match = self.resolve_distributor_from_subject(email)
+        if not match:
+            return None
+        from app.repositories.parser_profile_repository import ParserProfileRepository
+
+        profile = ParserProfileRepository(self.db).get_by_distributor(int(match["id"]))
+        if profile is None or float(profile.confidence or 0) < 90:
+            return None
+        return profile.parser_strategy
+
+    def _remember_parser(self, email: Any, preview: Dict[str, Any]) -> None:
+        match = self.resolve_distributor_from_subject(email)
+        if not match:
+            return
+        confidence = float(preview.get("orchestrator_confidence") or 0)
+        strategy = str((preview.get("confidence") or {}).get("breakdown", {}).get("parser_name") or "")
+        if confidence < 90 or not strategy:
+            return
+        from app.repositories.parser_profile_repository import ParserProfileRepository
+
+        ParserProfileRepository(self.db).upsert(int(match["id"]), strategy, confidence)
+
+    def _log_email_job(self, email: Any, attachment_summary: List[Dict[str, Any]], merged_rows: List[Dict[str, Any]]) -> None:
+        parsed = [item for item in attachment_summary if item.get("status") == "Parsed"]
+        if not parsed:
+            return
+        dominant = max(parsed, key=lambda item: int(item.get("row_count") or 0))
+        sheets = sum(int(item.get("sheet_count") or 0) for item in parsed)
+        confidence_values = [float(item.get("confidence") or 0) for item in parsed]
+        confidence = min(confidence_values) if confidence_values else 0
+        duration = sum(float(item.get("duration_sec") or 0) for item in parsed)
+        llm_used = any(item.get("llm_used") for item in parsed)
+        tokens = sum(int(item.get("llm_tokens") or 0) for item in parsed if item.get("llm_used"))
+        reasons = [str(item.get("llm_reason")) for item in parsed if item.get("llm_used") and item.get("llm_reason")]
+        email_name = email.parsed_distributor or email.subject or "Email"
+        logger.info(
+            "AI Job\nEmail\n{}\nAttachments : {}\nSheets : {}\nParser : {}\nConfidence : {}\nRows : {}\nLLM Used : {}\nDuration : {} sec",
+            email_name,
+            len(attachment_summary),
+            sheets,
+            dominant.get("parser_used") or "",
+            int(round(confidence)),
+            len(merged_rows),
+            "Yes" if llm_used else "No",
+            f"{duration:.1f}",
+        )
+        if llm_used:
+            logger.info(
+                "LLM Tokens\n{}\nReason\n{}",
+                tokens,
+                reasons[0] if reasons else "Low confidence",
+            )
+
     def resolve_distributors_for_sender(self, sender_email: str) -> List[Dict[str, Any]]:
         """Match distributor(s) by sender email (legacy fallback)."""
         email = (sender_email or "").strip().lower()
@@ -437,6 +492,7 @@ class ERPIngestService:
             raise ValidationAppError("No Excel attachment found for this email")
 
         subject_period = (email.detected_quarter or "").strip()
+        preferred_parser = self._preferred_parser_name(email)
         merged_rows: List[Dict[str, Any]] = []
         attachment_summary: List[Dict[str, str]] = []
         preview: Optional[Dict[str, Any]] = None
@@ -471,6 +527,7 @@ class ERPIngestService:
                         reporting_quarter=subject_period or None,
                         distributor_label=email.parsed_distributor or "",
                         subject=email.subject,
+                        preferred_parser=preferred_parser,
                     )
                     if idx == 0:
                         one["available_columns"] = self._available_columns(
@@ -511,8 +568,18 @@ class ERPIngestService:
                     "attachment_name": file_name,
                     "product_name": product_name,
                     "status": "Parsed",
+                    "parser_used": str(one.get("parser_used") or ""),
+                    "confidence": float(one.get("orchestrator_confidence") or 0),
+                    "sheet_count": int(one.get("sheet_count") or 0),
+                    "llm_used": bool(one.get("llm_used")),
+                    "llm_tokens": int(one.get("llm_tokens") or 0),
+                    "llm_reason": str(one.get("llm_reason") or ""),
+                    "row_count": len(rows),
+                    "duration_sec": float(one.get("duration_sec") or 0),
                 }
             )
+            if not mapping_override:
+                self._remember_parser(email, one)
             if preview is None:
                 preview = one
                 primary_name = file_name
@@ -529,6 +596,7 @@ class ERPIngestService:
             preview["confidence"]["overall"] = min(confidences)
             preview["accuracy"] = min(confidences)
         preview["attachment_summary"] = attachment_summary
+        self._log_email_job(email, attachment_summary, merged_rows)
 
         self.audit.log(
             AuditTrailCreate(
@@ -928,6 +996,7 @@ class ERPIngestService:
         source_unit = str(subject_meta.get("unit") or email.parsed_unit or "MT").strip() or "MT"
         subject_period = (email.detected_quarter or reporting_quarter or "").strip()
 
+        preferred_parser = None if mapping else self._preferred_parser_name(email)
         for idx, att in enumerate(attachments):
             path = Path(att.file_path or "")
             if not path.is_file():
@@ -954,6 +1023,7 @@ class ERPIngestService:
                         reporting_quarter=quarter or None,
                         distributor_label=email.parsed_distributor or "",
                         subject=email.subject,
+                        preferred_parser=preferred_parser,
                     )
                     use_rows = rows
                 else:
@@ -964,6 +1034,7 @@ class ERPIngestService:
                         reporting_quarter=quarter or None,
                         distributor_label=email.parsed_distributor or "",
                         subject=email.subject,
+                        preferred_parser=preferred_parser,
                     )
                     use_rows = preview.get("rows") or []
                 if not quarter:

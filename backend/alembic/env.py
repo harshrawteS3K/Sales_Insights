@@ -11,6 +11,7 @@ from app.models import (  # noqa: F401 — ensure models are registered
     AuditTrail,
     CustomerMaster,
     Distributor,
+    DistributorParserProfile,
     EmailAttachment,
     EmailMessage,
     ProductMaster,

@@ -139,6 +139,7 @@ def parse_llm_mapping_json(raw: str) -> Dict[str, Any]:
         "customer_column": _col("customer_column"),
         "product_column": _col("product_column"),
         "quantity_column": _col("quantity_column"),
+        "parser_hint": _col("parser_hint") or "",
         "confidence": int(round(confidence)),
     }
 
@@ -178,20 +179,29 @@ class LLMHeaderResolver:
         self.timeout = float(
             timeout if timeout is not None else rt.get("timeout") or settings.openai_timeout_seconds or 30
         )
+        self.last_token_count = 0
 
     def resolve_headers(
         self,
         headers: list[str],
         sample_rows: list[list[str]],
+        *,
+        sample_limit: int = MAX_SAMPLE_ROWS,
+        system_prompt: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Identify Customer / Product / Sales Quantity columns.
 
-        Returns only:
-        ``{customer_column, product_column, quantity_column, confidence}``
+        Returns column names and confidence. Row extraction stays in Python.
         """
+        prompt = system_prompt or SYSTEM_PROMPT
         clean_headers = sanitize_headers(headers)
-        clean_rows = sanitize_sample_rows(sample_rows, header_count=len(clean_headers))
+        clean_rows = sanitize_sample_rows(
+            sample_rows,
+            header_count=len(clean_headers),
+            limit=sample_limit,
+        )
         if not clean_headers:
             raise LLMHeaderResolverError("No headers provided")
 
@@ -202,6 +212,8 @@ class LLMHeaderResolver:
             raise LLMHeaderResolverError("OPENAI_API_KEY is not configured")
 
         user_payload = {"headers": clean_headers, "sample_rows": clean_rows}
+        if extra:
+            user_payload.update(extra)
         est = estimate_payload_tokens(clean_headers, clean_rows)
         if est > 500:
             logger.warning(
@@ -209,14 +221,14 @@ class LLMHeaderResolver:
                 est,
             )
             clean_rows = clean_rows[:2]
-            user_payload = {"headers": clean_headers, "sample_rows": clean_rows}
+            user_payload["sample_rows"] = clean_rows
 
         body = {
             "model": self.model,
             "temperature": 0,
             "response_format": {"type": "json_object"},
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": prompt},
                 {
                     "role": "user",
                     "content": json.dumps(user_payload, ensure_ascii=True),
@@ -253,6 +265,8 @@ class LLMHeaderResolver:
             raise LLMHeaderResolverError("Unexpected OpenAI response shape") from exc
 
         usage = payload.get("usage") if isinstance(payload, dict) else None
+        if isinstance(usage, dict):
+            self.last_token_count = int(usage.get("total_tokens") or 0)
         try:
             from app.database.session import SessionLocal
             from app.services.llm_settings_service import LlmSettingsService

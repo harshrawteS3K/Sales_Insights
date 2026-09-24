@@ -138,7 +138,13 @@ def _score_email(email_id: int, *, allow_llm: bool = True) -> None:
                 failed_names.append(excel.file_name or "?")
                 continue
             try:
-                preview = parser.preview(path, allow_llm_fallback=allow_llm)
+                preview = parser.preview(
+                    path,
+                    allow_llm_fallback=allow_llm,
+                    distributor_label=email.parsed_distributor or "",
+                    subject=email.subject,
+                    reporting_quarter=(email.detected_quarter or None),
+                )
                 overall = float((preview.get("confidence") or {}).get("overall") or 0)
                 scores.append(overall)
                 src = str(preview.get("mapping_source") or "python").lower()

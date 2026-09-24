@@ -4,6 +4,7 @@ from app.models.llm_usage_log import LlmUsageLog
 from app.models.audit_trail import AuditTrail
 from app.models.customer_master import CustomerMaster
 from app.models.distributor import Distributor
+from app.models.distributor_parser_profile import DistributorParserProfile
 from app.models.distributor_customer_mapping import DistributorCustomerMapping
 from app.models.email_message import EmailAttachment, EmailMessage
 from app.models.product_master import ProductMaster
@@ -20,6 +21,7 @@ __all__ = [
     "UserDistributor",
     "UserSegment",
     "Distributor",
+    "DistributorParserProfile",
     "DistributorCustomerMapping",
     "Report",
     "SalesRecord",
