@@ -13,6 +13,10 @@ from app.erp_parser.block_parser import (
     detect_block_product_layout,
     extract_product_blocks_workbook,
 )
+from app.erp_parser.metadata_parser import (
+    detect_metadata_layout,
+    extract_metadata_workbook,
+)
 from app.erp_parser.confidence import compute_erp_confidence
 from app.erp_parser.cross_tab import (
     detect_product_month_matrix,
@@ -238,6 +242,71 @@ class ERPParserService:
 
         wb_info = detect_workbook(file_path)
         candidates = wb_info["candidate_sheets"]
+
+        # Kemco metadata: Item Group product, before header mapping and the LLM.
+        meta_names = [sheet_name] if sheet_name else list(candidates)
+        meta_layout = False
+        for meta_name in meta_names:
+            if not meta_name:
+                continue
+            try:
+                meta_matrix = read_sheet_matrix(file_path, meta_name)
+            except Exception:  # noqa: BLE001
+                continue
+            if detect_metadata_layout(meta_matrix):
+                meta_layout = True
+                break
+        if meta_layout:
+            metadata = extract_metadata_workbook(
+                file_path,
+                fiscal_year_start=fiscal_year_start,
+                reporting_quarter=reporting_quarter,
+                sheet_name=sheet_name,
+            )
+            if metadata and metadata.get("detected"):
+                if not metadata.get("rows"):
+                    raise ExcelProcessingError(
+                        "ERP Metadata Parser activated but no sales rows were extracted."
+                    )
+                field_conf = {"customer": 98.0, "product": 98.0, "quantity": 96.0}
+                confidence = compute_erp_confidence(
+                    field_confidences=field_conf,
+                    sheet_score=float(metadata.get("score") or 90),
+                    extracted_rows=len(metadata["rows"]),
+                    quantity_ok=metadata["quantity_ok"],
+                    quantity_fail=metadata["quantity_fail"],
+                    skipped_invalid=metadata["skipped_invalid"],
+                )
+                active_mapped = {
+                    "positions": {"customer": 0, "product": None, "quantity": 1},
+                    "originals": {
+                        "customer": "Account Name",
+                        "product": "Item Group",
+                        "quantity": "Nett Sale Qty.",
+                    },
+                    "confidences": field_conf,
+                    "methods": {
+                        "customer": "metadata",
+                        "product": "metadata",
+                        "quantity": "metadata",
+                    },
+                    "quantity_columns": [],
+                    "month_column_meta": [],
+                }
+                sheet_dist = str(metadata.get("distributor") or "").strip()
+                return self._finalize_result(
+                    chosen=metadata.get("sheet_name") or "Sales Analysis",
+                    sheet_score=float(metadata.get("score") or 90),
+                    header_row=int(metadata.get("header_row") or 1),
+                    active_mapped=active_mapped,
+                    active_extracted=metadata,
+                    confidence=confidence,
+                    mapping_source="python",
+                    candidates=candidates,
+                    distributor_label=distributor_label or sheet_dist,
+                    reporting_quarter=reporting_quarter,
+                    python_overall=float(confidence["overall_confidence"]),
+                )
 
         # BPS product blocks: decide before header mapping, RapidFuzz, and the LLM.
         block_names = [sheet_name] if sheet_name else list(candidates)
@@ -616,6 +685,7 @@ class ERPParserService:
                 qty = Decimal(str(qty))
             row_period = str(raw.get("period") or raw.get("reporting_quarter") or quarter or "").strip() or None
             source_month = str(raw.get("source_month") or "").strip() or None
+            original_unit = str(raw.get("original_unit") or "").strip() or None
             row = ParsedSalesRow(
                 sr_no=None,
                 distributor=dist_label,
@@ -627,6 +697,7 @@ class ERPParserService:
                 period=row_period,
                 source_month=source_month,
                 unit="MT",
+                original_unit=original_unit,
                 company=None,
                 row_hash="",
                 errors=[],
@@ -671,6 +742,11 @@ class ERPParserService:
                     **(
                         {"source_month": r["source_month"]}
                         if r.get("source_month")
+                        else {}
+                    ),
+                    **(
+                        {"original_unit": r["original_unit"]}
+                        if r.get("original_unit")
                         else {}
                     ),
                 }
@@ -850,7 +926,7 @@ class ERPParserService:
             allow_llm_fallback=allow_llm_fallback,
         )
         breakdown = result.confidence_breakdown or {}
-        block_mode = breakdown.get("layout") == "product_blocks"
+        block_mode = breakdown.get("layout") in {"product_blocks", "metadata_sales"}
         quarter_hit = None
         if not block_mode:
             try:

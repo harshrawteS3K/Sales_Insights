@@ -181,6 +181,7 @@ class ERPIngestService:
         by_period: Dict[str, List[ParsedSalesRow]] = defaultdict(list)
         for raw in use_rows:
             qty = raw.get("sales_quantity", raw.get("quantity"))
+            row_unit = str(raw.get("original_unit") or "").strip()
             try:
                 if isinstance(qty, Decimal):
                     qty_val = qty
@@ -188,7 +189,9 @@ class ERPIngestService:
                     qty_val, _qty_disp = parse_quantity(qty)
                 from app.utils.quantity import to_mt
 
-                qty_val = to_mt(qty_val, source_unit=source_unit or "MT")
+                row_unit = str(raw.get("original_unit") or "").strip()
+                applied_unit = row_unit or source_unit or "MT"
+                qty_val = to_mt(qty_val, source_unit=applied_unit)
                 qty_disp = format_quantity(qty_val)
             except ValueError as exc:
                 raise ValidationAppError(f"Invalid quantity in import rows: {exc}") from exc
@@ -239,7 +242,7 @@ class ERPIngestService:
                     period=period,
                     source_month=source_month or None,
                     unit="MT",
-                    original_unit=(source_unit or "MT").strip().upper() or "MT",
+                    original_unit=(row_unit or source_unit or "MT").strip().upper() or "MT",
                     company=company,
                     row_hash=build_sales_row_hash(
                         company, customer, seg, product, qty_val, period, source_month
@@ -488,6 +491,13 @@ class ERPIngestService:
                 continue
 
             rows = list(one.get("rows") or [])
+            distinct_products = []
+            for row in rows:
+                name = str((row or {}).get("product") or "").strip()
+                if name and name not in distinct_products:
+                    distinct_products.append(name)
+            if len(distinct_products) == 1:
+                product_name = distinct_products[0]
             if subject_period:
                 for row in rows:
                     row["period"] = subject_period

@@ -40,13 +40,19 @@
     "commodity",
     "stock item",
     "stock item register",
-    "item transactions"
+    "item transactions",
+    "item group"
   ],
   "quantity": [
     "qty",
     "quantity",
     "sales qty",
+    "sales qty.",
     "sales quantity",
+    "nett sale qty",
+    "nett sale qty.",
+    "net sale qty",
+    "net sale qty.",
     "dispatch qty",
     "dispatch quantity",
     "invoice qty",
