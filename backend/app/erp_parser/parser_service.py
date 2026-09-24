@@ -17,6 +17,10 @@ from app.erp_parser.metadata_parser import (
     detect_metadata_layout,
     extract_metadata_workbook,
 )
+from app.erp_parser.matrix_month_parser import (
+    detect_matrix_month_layout,
+    extract_matrix_month_workbook,
+)
 from app.erp_parser.stock_item_parser import (
     detect_stock_item_register,
     extract_stock_item_workbook,
@@ -453,6 +457,71 @@ class ERPParserService:
                 reporting_quarter=reporting_quarter,
                 python_overall=float(confidence["overall_confidence"]),
             )
+
+        # 5. Customer | Product | month columns (Excel dates or Apr/May/Jun). No LLM.
+        matrix_names = [sheet_name] if sheet_name else list(candidates)
+        matrix_layout = False
+        for matrix_name in matrix_names:
+            if not matrix_name:
+                continue
+            try:
+                matrix_sheet = read_sheet_matrix(file_path, matrix_name)
+            except Exception:  # noqa: BLE001
+                continue
+            if detect_matrix_month_layout(matrix_sheet):
+                matrix_layout = True
+                break
+        if matrix_layout:
+            matrix_rows = extract_matrix_month_workbook(
+                file_path,
+                fiscal_year_start=fiscal_year_start,
+                reporting_quarter=reporting_quarter,
+                sheet_name=sheet_name,
+                distributor_label=distributor_label,
+            )
+            if matrix_rows and matrix_rows.get("detected"):
+                if not matrix_rows.get("rows"):
+                    raise ExcelProcessingError(
+                        "ERP Matrix Month Parser activated but no sales rows were extracted."
+                    )
+                field_conf = {"customer": 98.0, "product": 98.0, "quantity": 96.0}
+                confidence = compute_erp_confidence(
+                    field_confidences=field_conf,
+                    sheet_score=float(matrix_rows.get("score") or 90),
+                    extracted_rows=len(matrix_rows["rows"]),
+                    quantity_ok=matrix_rows["quantity_ok"],
+                    quantity_fail=matrix_rows["quantity_fail"],
+                    skipped_invalid=matrix_rows["skipped_invalid"],
+                )
+                active_mapped = {
+                    "positions": {"customer": 0, "product": 1, "quantity": None},
+                    "originals": {
+                        "customer": "Customer",
+                        "product": "Product",
+                        "quantity": "Month columns",
+                    },
+                    "confidences": field_conf,
+                    "methods": {
+                        "customer": "matrix_month",
+                        "product": "matrix_month",
+                        "quantity": "matrix_month",
+                    },
+                    "quantity_columns": [],
+                    "month_column_meta": [],
+                }
+                return self._finalize_result(
+                    chosen=matrix_rows.get("sheet_name") or "matrix months",
+                    sheet_score=float(matrix_rows.get("score") or 90),
+                    header_row=int(matrix_rows.get("header_row") or 1),
+                    active_mapped=active_mapped,
+                    active_extracted=matrix_rows,
+                    confidence=confidence,
+                    mapping_source="python",
+                    candidates=candidates,
+                    distributor_label=distributor_label or str(matrix_rows.get("distributor") or ""),
+                    reporting_quarter=reporting_quarter,
+                    python_overall=float(confidence["overall_confidence"]),
+                )
 
         # Multi-sheet monthly product matrix (NORTH CHOWDHRY: Apr-25…Mar-26 tabs)
         monthly_sheets = extract_monthly_product_sheets(
@@ -1014,6 +1083,7 @@ class ERPParserService:
             "product_blocks",
             "metadata_sales",
             "stock_item_register",
+            "matrix_month",
         }
         quarter_hit = None
         if not block_mode:
