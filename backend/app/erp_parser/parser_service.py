@@ -9,7 +9,10 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 from pydantic import BaseModel, Field
 
 from app.core.logging import get_logger
-from app.erp_parser.block_parser import extract_product_blocks_workbook
+from app.erp_parser.block_parser import (
+    detect_block_product_layout,
+    extract_product_blocks_workbook,
+)
 from app.erp_parser.confidence import compute_erp_confidence
 from app.erp_parser.cross_tab import (
     detect_product_month_matrix,
@@ -236,6 +239,72 @@ class ERPParserService:
         wb_info = detect_workbook(file_path)
         candidates = wb_info["candidate_sheets"]
 
+        # BPS product blocks: decide before header mapping, RapidFuzz, and the LLM.
+        block_names = [sheet_name] if sheet_name else list(candidates)
+        block_layout = False
+        for block_name in block_names:
+            if not block_name:
+                continue
+            try:
+                block_matrix = read_sheet_matrix(file_path, block_name)
+            except Exception:  # noqa: BLE001
+                continue
+            if detect_block_product_layout(block_matrix):
+                block_layout = True
+                break
+        product_blocks = None
+        if block_layout:
+            product_blocks = extract_product_blocks_workbook(
+                file_path,
+                fiscal_year_start=fiscal_year_start,
+                reporting_quarter=reporting_quarter,
+                sheet_name=sheet_name,
+            )
+        if product_blocks and product_blocks.get("detected"):
+            if not product_blocks.get("rows"):
+                raise ExcelProcessingError(
+                    "ERP Block Parser activated but no sales rows were extracted."
+                )
+            field_conf = {"customer": 97.0, "product": 97.0, "quantity": 95.0}
+            confidence = compute_erp_confidence(
+                field_confidences=field_conf,
+                sheet_score=float(product_blocks.get("score") or 85),
+                extracted_rows=len(product_blocks["rows"]),
+                quantity_ok=product_blocks["quantity_ok"],
+                quantity_fail=product_blocks["quantity_fail"],
+                skipped_invalid=product_blocks["skipped_invalid"],
+            )
+            primary_sheet = product_blocks.get("sheet_name") or "product blocks"
+            active_mapped = {
+                "positions": {"customer": 0, "product": None, "quantity": None},
+                "originals": {
+                    "customer": "Party",
+                    "product": "Product block title",
+                    "quantity": "Month columns",
+                },
+                "confidences": field_conf,
+                "methods": {
+                    "customer": "product_blocks",
+                    "product": "product_blocks",
+                    "quantity": "product_blocks",
+                },
+                "quantity_columns": [],
+                "month_column_meta": [],
+            }
+            return self._finalize_result(
+                chosen=primary_sheet,
+                sheet_score=float(product_blocks.get("score") or 85),
+                header_row=1,
+                active_mapped=active_mapped,
+                active_extracted=product_blocks,
+                confidence=confidence,
+                mapping_source="python",
+                candidates=candidates,
+                distributor_label=distributor_label,
+                reporting_quarter=reporting_quarter,
+                python_overall=float(confidence["overall_confidence"]),
+            )
+
         # Multi-sheet monthly product matrix (NORTH CHOWDHRY: Apr-25…Mar-26 tabs)
         monthly_sheets = extract_monthly_product_sheets(
             file_path,
@@ -299,60 +368,6 @@ class ERPParserService:
                     "sheets_used": sheets_used,
                 }
             return result
-
-        block_sheet = sheet_name
-        product_blocks = extract_product_blocks_workbook(
-            file_path,
-            fiscal_year_start=fiscal_year_start,
-            reporting_quarter=reporting_quarter,
-            sheet_name=block_sheet,
-        )
-        if product_blocks and product_blocks.get("rows"):
-            field_conf = {"customer": 97.0, "product": 97.0, "quantity": 95.0}
-            confidence = compute_erp_confidence(
-                field_confidences=field_conf,
-                sheet_score=float(product_blocks.get("score") or 85),
-                extracted_rows=len(product_blocks["rows"]),
-                quantity_ok=product_blocks["quantity_ok"],
-                quantity_fail=product_blocks["quantity_fail"],
-                skipped_invalid=product_blocks["skipped_invalid"],
-            )
-            primary_sheet = product_blocks.get("sheet_name") or "product blocks"
-            active_mapped = {
-                "positions": {"customer": 0, "product": None, "quantity": None},
-                "originals": {
-                    "customer": "Party",
-                    "product": "Product block title",
-                    "quantity": "Month columns",
-                },
-                "confidences": field_conf,
-                "methods": {
-                    "customer": "product_blocks",
-                    "product": "product_blocks",
-                    "quantity": "product_blocks",
-                },
-                "quantity_columns": [],
-                "month_column_meta": [],
-            }
-            logger.info(
-                "ERP product block layout detected | sheet={} | rows={} | score={}",
-                primary_sheet,
-                len(product_blocks["rows"]),
-                product_blocks.get("score"),
-            )
-            return self._finalize_result(
-                chosen=primary_sheet,
-                sheet_score=float(product_blocks.get("score") or 85),
-                header_row=1,
-                active_mapped=active_mapped,
-                active_extracted=product_blocks,
-                confidence=confidence,
-                mapping_source="python",
-                candidates=candidates,
-                distributor_label=distributor_label,
-                reporting_quarter=reporting_quarter,
-                python_overall=float(confidence["overall_confidence"]),
-            )
 
         if sheet_name:
             try:
