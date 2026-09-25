@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from app.erp_parser.block_parser import extract_product_block_rows
+from app.erp_parser.cross_product_matrix import extract_cross_product_rows
 from app.erp_parser.cross_tab import (
     detect_product_month_matrix,
     extract_product_month_matrix_rows,
@@ -26,6 +27,7 @@ PARSER_LABEL = {
     "stock_item_register": "Stock Item Register Parser",
     "product_blocks": "Block Product Parser",
     "matrix_month": "Matrix Month Parser",
+    "cross_product_matrix": "Cross Product Matrix",
     "header": "Header Parser",
     "product_month_matrix": "Cross Tab Parser",
     "monthly_product_sheets": "Monthly Product Sheets",
@@ -37,6 +39,7 @@ PRIORITY = {
     "stock_item_register": 5,
     "product_blocks": 4,
     "matrix_month": 3,
+    "cross_product_matrix": 3,
     "product_month_matrix": 2,
     "monthly_product_sheets": 1,
     "header": 0,
@@ -256,6 +259,40 @@ def run_header(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: Any) 
     return _guard("header", sheet_name, _run)
 
 
+def run_cross_product(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: Any) -> ParserResult:
+    def _run() -> ParserResult:
+        extracted = extract_cross_product_rows(
+            matrix,
+            fiscal_year_start=kwargs.get("fiscal_year_start"),
+            reporting_quarter=kwargs.get("reporting_quarter"),
+            distributor_label=kwargs.get("distributor_label") or "",
+        )
+        confidence = float((extracted or {}).get("confidence") or 0)
+        field_conf = {"customer": 98.0, "product": 98.0, "quantity": 96.0}
+        result = _result(
+            "cross_product_matrix",
+            extracted,
+            _mapped(
+                customer=0,
+                product=None,
+                quantity=None,
+                originals={
+                    "customer": "Customer",
+                    "product": "Product block",
+                    "quantity": "Month columns",
+                },
+                method="cross_product_matrix",
+                field_conf=field_conf,
+            ),
+            sheet_name=sheet_name,
+            reason="Customer column, repeating month blocks, and product headers",
+        )
+        result.confidence = confidence
+        return result
+
+    return _guard("cross_product_matrix", sheet_name, _run)
+
+
 def run_cross_tab(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: Any) -> ParserResult:
     def _run() -> ParserResult:
         layout = detect_product_month_matrix(matrix)
@@ -337,6 +374,7 @@ _SHEET_RUNNERS = {
     "stock_item_register": run_stock,
     "product_blocks": run_blocks,
     "matrix_month": run_matrix,
+    "cross_product_matrix": run_cross_product,
     "header": run_header,
     "product_month_matrix": run_cross_tab,
 }

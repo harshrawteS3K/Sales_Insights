@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Sequence
 
 from app.erp_parser.block_parser import detect_block_product_layout
+from app.erp_parser.cross_product_matrix import detect_cross_product_matrix
 from app.erp_parser.matrix_month_parser import detect_matrix_month_layout
 from app.erp_parser.metadata_parser import detect_metadata_layout
 from app.erp_parser.stock_item_parser import detect_stock_item_register
@@ -38,6 +39,15 @@ def fingerprint_sheet(matrix: Sequence[Sequence[Any]]) -> List[Dict[str, Any]]:
                 "layout": "Block Layout",
                 "fingerprint_confidence": 90.0,
                 "reason": "Product title, Party, and TOTAL",
+            }
+        )
+    if detect_cross_product_matrix(matrix):
+        found.append(
+            {
+                "parser_name": "cross_product_matrix",
+                "layout": "Cross Product Matrix",
+                "fingerprint_confidence": 90.0,
+                "reason": "Customer column, repeating month blocks, and product headers",
             }
         )
     if detect_matrix_month_layout(matrix):

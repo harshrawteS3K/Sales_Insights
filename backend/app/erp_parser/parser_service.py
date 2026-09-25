@@ -526,6 +526,7 @@ class ERPParserService:
             "stock_item_register",
             "matrix_month",
             "product_month_matrix",
+            "cross_product_matrix",
             "monthly_product_sheets",
         }
         quarter_hit = None

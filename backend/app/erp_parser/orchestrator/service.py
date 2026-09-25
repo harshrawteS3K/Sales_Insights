@@ -59,7 +59,8 @@ def _best(results: Sequence[ParserResult]) -> Optional[ParserResult]:
 
 
 def _score(result: ParserResult, **kwargs: Any) -> ParserResult:
-    result.confidence = score_extraction(result.rows, **kwargs)
+    authored = float(result.confidence or 0)
+    result.confidence = max(authored, score_extraction(result.rows, **kwargs))
     band = decision_band(result.confidence)
     result.warnings = [
         note
@@ -107,6 +108,7 @@ def _merge_sheets(results: Sequence[ParserResult], **score_kwargs: Any) -> Optio
         sheet_name=names[0] if names else dominant.sheet_name,
         header_row=dominant.header_row,
         sheet_score=dominant.sheet_score,
+        confidence=float(dominant.confidence or 0),
     )
     return _score(merged, **score_kwargs)
 
@@ -441,6 +443,16 @@ class UniversalParserOrchestrator:
                 path.name,
                 int(extracted.get("products_detected") or 0),
                 len(winner.rows),
+            )
+        elif winner.parser_name == "cross_product_matrix":
+            logger.info(
+                "Parser : Cross Product Matrix\nStrategy : Product Block Matrix\nProducts : {}\nCustomers : {}\nRows Parsed : {}\nQuarter : {}\nConfidence : {}\nLLM Used : {}",
+                int(extracted.get("products_detected") or 0),
+                int(extracted.get("customers_detected") or 0),
+                len(winner.rows),
+                extracted.get("quarter") or "",
+                int(round(winner.confidence)),
+                "Yes" if winner.llm_used else "No",
             )
         elif winner.parser_name == "matrix_month":
             months = extracted.get("months_detected") or []
