@@ -1,11 +1,13 @@
-"""Load .xlsx, .xlsm, and .xls into one workbook surface.
+"""Load Excel workbooks from file contents, not from the filename extension.
 
-.xlsx/.xlsm use openpyxl. .xls uses xlrd. Callers keep using sheet names,
-cell values, merged ranges, and datetimes. The file on disk is not converted.
+PK (OOXML) uses openpyxl. D0 CF 11 E0 (OLE) uses xlrd. Callers keep using
+sheet names, cell values, merged ranges, and datetimes. The file on disk
+is not converted.
 """
 
 from __future__ import annotations
 
+import io
 import time
 from pathlib import Path
 from typing import Any, Iterator, List, Optional, Sequence, Union
@@ -20,8 +22,8 @@ from app.exceptions import ExcelProcessingError
 
 logger = get_logger(__name__)
 
-ALLOWED_EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
-_OPENPYXL_EXTENSIONS = {".xlsx", ".xlsm"}
+_ZIP_MAGIC = b"PK"
+_OLE_MAGIC = bytes.fromhex("D0CF11E0")
 
 # One success line per file while a parse re-opens the same workbook.
 _LOGGED_AT: dict[str, float] = {}
@@ -146,33 +148,47 @@ class XlsWorkbook:
             release()
 
 
+def detect_workbook_format(path: Union[str, Path]) -> str:
+    """Return XLSX or XLS from the first 8 bytes. The filename is ignored."""
+    file_path = Path(path)
+    with file_path.open("rb") as handle:
+        signature = handle.read(8)
+    if signature.startswith(_ZIP_MAGIC):
+        return "XLSX"
+    if signature.startswith(_OLE_MAGIC):
+        return "XLS"
+    raise ExcelProcessingError(
+        f"Invalid workbook '{file_path.name}'. The file is not an Excel workbook."
+    )
+
+
 def load_workbook_any(path: Union[str, Path]):
-    """Open a workbook. .xls uses xlrd. .xlsx and .xlsm use openpyxl."""
+    """Open a workbook using the format stored inside the file."""
     file_path = Path(path)
     if not file_path.exists():
         raise ExcelProcessingError(f"Excel file not found: {file_path}")
-    suffix = file_path.suffix.lower()
-    if suffix not in ALLOWED_EXTENSIONS:
-        raise ExcelProcessingError(
-            f"Unsupported workbook type '{suffix}'. Only .xlsx, .xlsm, and .xls are accepted."
-        )
+    detected = detect_workbook_format(file_path)
     try:
-        if suffix == ".xls":
+        if detected == "XLS":
             workbook = XlsWorkbook(_open_xls(file_path))
             engine = "xlrd"
-        elif suffix in _OPENPYXL_EXTENSIONS:
-            workbook = load_workbook(file_path, data_only=True, read_only=False)
-            engine = "openpyxl"
         else:
-            raise ExcelProcessingError(
-                f"Unsupported workbook type '{suffix}'. Only .xlsx, .xlsm, and .xls are accepted."
-            )
+            workbook = _open_ooxml(file_path)
+            engine = "openpyxl"
     except ExcelProcessingError:
         raise
     except Exception as exc:  # noqa: BLE001
         raise ExcelProcessingError(f"Unable to open workbook: {exc}") from exc
 
-    _log_loaded(file_path, engine, len(list(workbook.sheetnames)))
+    _log_loaded(file_path, detected, engine, len(list(workbook.sheetnames)))
+    return workbook
+
+
+def _open_ooxml(path: Path):
+    """Open an OOXML workbook from bytes so a .xls filename cannot reject it."""
+    buffer = io.BytesIO(path.read_bytes())
+    workbook = load_workbook(buffer, data_only=True, read_only=False)
+    workbook._loader_buffer = buffer
     return workbook
 
 
@@ -183,7 +199,7 @@ def _open_xls(path: Path) -> xlrd.Book:
         return xlrd.open_workbook(str(path), formatting_info=False)
 
 
-def _log_loaded(path: Path, engine: str, sheet_count: int) -> None:
+def _log_loaded(path: Path, detected: str, engine: str, sheet_count: int) -> None:
     key = str(path.resolve())
     now = time.monotonic()
     previous = _LOGGED_AT.get(key)
@@ -191,9 +207,10 @@ def _log_loaded(path: Path, engine: str, sheet_count: int) -> None:
     if previous is not None and now - previous < _LOG_WINDOW_SECONDS:
         return
     logger.info(
-        "Workbook Loader\n\nFile : {}\n\nFormat : {}\n\nEngine : {}\n\nSheets : {}\n\nStatus : Loaded Successfully",
+        "File: {}\nExtension: {}\nDetected Format: {}\nEngine: {}\nSheets: {}\nStatus: Loaded Successfully",
         path.name,
-        path.suffix.lstrip(".").upper(),
+        path.suffix.lower() or "(none)",
+        detected,
         engine,
         sheet_count,
     )
