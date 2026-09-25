@@ -113,7 +113,7 @@ def _score_email(email_id: int, *, allow_llm: bool = True) -> None:
         for att in email.attachments or []:
             if getattr(att, "is_deleted", False):
                 continue
-            if att.is_excel or (att.file_name or "").lower().endswith((".xlsx", ".xlsm")):
+            if att.is_excel or (att.file_name or "").lower().endswith((".xlsx", ".xlsm", ".xls")):
                 excels.append(att)
             if len(excels) >= MAX_EXCEL_ATTACHMENTS_PER_EMAIL:
                 break

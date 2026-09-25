@@ -169,7 +169,7 @@ class OutlookSyncService:
             for att in msg.attachments or []:
                 if getattr(att, "is_deleted", False):
                     continue
-                if att.is_excel or (att.file_name or "").lower().endswith((".xlsx", ".xlsm")):
+                if att.is_excel or (att.file_name or "").lower().endswith((".xlsx", ".xlsm", ".xls")):
                     excel_count += 1
                     if excel_name is None:
                         excel_name = att.file_name
@@ -674,7 +674,7 @@ class OutlookSyncService:
         for att in email.attachments or []:
             if getattr(att, "is_deleted", False):
                 continue
-            if att.is_excel or (att.file_name or "").lower().endswith((".xlsx", ".xlsm")):
+            if att.is_excel or (att.file_name or "").lower().endswith((".xlsx", ".xlsm", ".xls")):
                 return True
         return False
 

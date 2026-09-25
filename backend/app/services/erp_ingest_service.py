@@ -190,7 +190,7 @@ class ERPIngestService:
             return False
         if getattr(att, "is_excel", False):
             return True
-        return (getattr(att, "file_name", None) or "").lower().endswith((".xlsx", ".xlsm"))
+        return (getattr(att, "file_name", None) or "").lower().endswith((".xlsx", ".xlsm", ".xls"))
 
     def _list_excel_attachments(
         self,

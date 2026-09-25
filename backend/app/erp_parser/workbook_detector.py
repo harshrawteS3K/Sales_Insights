@@ -5,12 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, List, Sequence, Union
 
-from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
+from app.erp_parser.workbook_loader import load_workbook_any
 from app.exceptions import ExcelProcessingError
-
-ALLOWED_EXTENSIONS = {".xlsx", ".xlsm"}
 
 
 def _cell_text(value: Any) -> str:
@@ -29,19 +27,8 @@ def sheet_is_empty(ws: Worksheet, *, max_rows: int = 200, max_cols: int = 40) ->
 
 
 def load_workbook_safe(path: Union[str, Path]):
-    """Load an .xlsx/.xlsm workbook with openpyxl (data_only=False to keep formulas readable)."""
-    file_path = Path(path)
-    if not file_path.exists():
-        raise ExcelProcessingError(f"Excel file not found: {file_path}")
-    suffix = file_path.suffix.lower()
-    if suffix not in ALLOWED_EXTENSIONS:
-        raise ExcelProcessingError(
-            f"Unsupported workbook type '{suffix}'. Only .xlsx and .xlsm are accepted."
-        )
-    try:
-        return load_workbook(file_path, data_only=True, read_only=False)
-    except Exception as exc:  # noqa: BLE001
-        raise ExcelProcessingError(f"Unable to open workbook: {exc}") from exc
+    """Load .xlsx, .xlsm, or .xls. The caller receives one workbook surface."""
+    return load_workbook_any(path)
 
 
 def list_candidate_sheets(path: Union[str, Path]) -> List[str]:
