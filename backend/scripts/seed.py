@@ -412,6 +412,50 @@ def ensure_user_distributor(
     counters["distributor_mappings"] += 1
 
 
+def ensure_super_admin(db: Session, counters: Dict[str, int]) -> None:
+    """Create the Super Admin once. A second run does not insert another row."""
+    from app.core.config import settings
+
+    existing = db.scalar(
+        select(User).where(
+            func.lower(User.username) == "superadmin",
+            User.is_deleted.is_(False),
+        )
+    )
+    if existing is not None:
+        return
+
+    password = (settings.super_admin_password or "").strip()
+    if not password:
+        raise RuntimeError(
+            "SUPER_ADMIN_PASSWORD is required to create the Super Admin. "
+            "Set it in the environment and run seed again."
+        )
+
+    email = "superadmin@apcotex.com"
+    taken = db.scalar(
+        select(User).where(func.lower(User.email) == email, User.is_deleted.is_(False))
+    )
+    if taken is not None:
+        raise RuntimeError(f"Cannot seed Super Admin: email {email} is already in use")
+
+    db.add(
+        User(
+            username="superadmin",
+            email=email,
+            full_name="Super Admin",
+            title="Identity Administrator",
+            password_hash=hash_password(password),
+            role=UserRole.SUPER_ADMIN.value,
+            is_active=True,
+            is_deleted=False,
+            outlook_sync_permission=OutlookSyncPermission.ALL.value,
+        )
+    )
+    db.flush()
+    counters["users_created"] += 1
+
+
 def seed(db: Session) -> Tuple[Dict[str, int], Dict[str, int]]:
     counters = {
         "users_created": 0,
@@ -421,6 +465,8 @@ def seed(db: Session) -> Tuple[Dict[str, int], Dict[str, int]]:
         "distributor_mappings": 0,
         "distributors_created": 0,
     }
+
+    ensure_super_admin(db, counters)
 
     for persona in PERSONA_SEED:
         user = upsert_user(db, persona, counters)

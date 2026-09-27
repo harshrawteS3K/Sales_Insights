@@ -159,7 +159,7 @@ export const UserManagementService = {
       headers['X-User-Name'] = session.name;
     }
     const url = `${getApiBaseUrl()}/users/export?${params.toString()}`;
-    const response = await fetch(url, { headers });
+    const response = await fetch(url, { headers, credentials: 'include' });
     if (!response.ok) {
       throw new ApiError('Export failed', response.status);
     }
@@ -182,6 +182,7 @@ export const UserManagementService = {
     const response = await fetch(`${getApiBaseUrl()}/personas/bulk-import/preview`, {
       method: 'POST',
       headers,
+      credentials: 'include',
       body: formData,
     });
     if (!response.ok) {
@@ -205,6 +206,7 @@ export const UserManagementService = {
     const response = await fetch(`${getApiBaseUrl()}/personas/bulk-import`, {
       method: 'POST',
       headers,
+      credentials: 'include',
       body: formData,
     });
     if (!response.ok) {
@@ -223,7 +225,7 @@ export const UserManagementService = {
       headers['X-User-Name'] = session.name;
     }
     const url = `${getApiBaseUrl()}/personas/sample-format`;
-    const response = await fetch(url, { headers });
+    const response = await fetch(url, { headers, credentials: 'include' });
     if (!response.ok) {
       throw new ApiError('Sample format download failed', response.status);
     }

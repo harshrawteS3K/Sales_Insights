@@ -6,10 +6,10 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
-import httpx
-
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.llm.bedrock_client import BedrockError, complete
+from app.llm.model_registry import default_model_id, resolve_model_id
 
 logger = get_logger(__name__)
 
@@ -47,11 +47,10 @@ Output JSON:
 
 MAX_HEADERS = 15
 MAX_SAMPLE_ROWS = 3
-OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 
 
 class LLMHeaderResolverError(Exception):
-    """Raised when the OpenAI header resolver cannot produce a mapping."""
+    """Raised when the structure analyzer cannot produce a mapping."""
 
 
 def _cell_text(value: Any) -> str:
@@ -135,17 +134,25 @@ def parse_llm_mapping_json(raw: str) -> Dict[str, Any]:
         confidence = 0.0
     confidence = max(0.0, min(100.0, confidence))
 
+    ignore = data.get("ignore_columns") or []
+    if not isinstance(ignore, list):
+        ignore = [str(ignore)]
     return {
         "customer_column": _col("customer_column"),
         "product_column": _col("product_column"),
         "quantity_column": _col("quantity_column"),
         "parser_hint": _col("parser_hint") or "",
+        "layout_type": str(data.get("layout_type") or "").strip(),
+        "product_header_row": data.get("product_header_row"),
+        "month_header_row": data.get("month_header_row"),
+        "ignore_columns": [str(item) for item in ignore if str(item).strip()],
+        "grouping": str(data.get("grouping") or "").strip(),
         "confidence": int(round(confidence)),
     }
 
 
 class LLMHeaderResolver:
-    """OpenAI-backed semantic column mapper (headers + sample cells only)."""
+    """Bedrock-backed structure analyzer. It returns layout JSON. Python extracts rows."""
 
     def __init__(
         self,
@@ -154,32 +161,41 @@ class LLMHeaderResolver:
         model: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> None:
+        del api_key
+        self._explicit_model = resolve_model_id(model) if model is not None else None
         settings = get_settings()
-        # Prefer admin Settings overrides (model / enable / key from env)
+        runtime = self._runtime_settings()
+        self._llm_enabled = bool(runtime.get("enabled", True))
+        self.timeout = float(
+            timeout if timeout is not None else runtime.get("timeout") or settings.bedrock_timeout or 30
+        )
+        self.last_token_count = 0
+        self.last_prompt_tokens = 0
+        self.last_completion_tokens = 0
+
+    def _runtime_settings(self) -> Dict[str, Any]:
+        """Current admin selection. Read on each call so a Settings change needs no restart."""
+        settings = get_settings()
         try:
             from app.database.session import SessionLocal
             from app.services.llm_settings_service import resolve_runtime_llm
 
             _db = SessionLocal()
             try:
-                rt = resolve_runtime_llm(_db)
+                return resolve_runtime_llm(_db)
             finally:
                 _db.close()
         except Exception:  # noqa: BLE001
-            rt = {
-                "enabled": bool((settings.openai_api_key or "").strip()),
-                "api_key": (settings.openai_api_key or "").strip(),
-                "model": settings.openai_model or "gpt-5.4-mini",
-                "timeout": float(settings.openai_timeout_seconds or 30),
+            return {
+                "enabled": True,
+                "model": default_model_id(),
+                "timeout": float(settings.bedrock_timeout or 30),
             }
 
-        self._llm_enabled = bool(rt.get("enabled"))
-        self.api_key = (api_key if api_key is not None else rt.get("api_key")) or ""
-        self.model = (model if model is not None else rt.get("model")) or "gpt-4o-mini"
-        self.timeout = float(
-            timeout if timeout is not None else rt.get("timeout") or settings.openai_timeout_seconds or 30
-        )
-        self.last_token_count = 0
+    def _model_for_request(self) -> str:
+        if self._explicit_model:
+            return self._explicit_model
+        return resolve_model_id(self._runtime_settings().get("model"))
 
     def resolve_headers(
         self,
@@ -208,12 +224,10 @@ class LLMHeaderResolver:
         if not self._llm_enabled:
             raise LLMHeaderResolverError("LLM is disabled in Admin Settings")
 
-        if not self.api_key:
-            raise LLMHeaderResolverError("OPENAI_API_KEY is not configured")
-
+        reason = str((extra or {}).get("reason") or "")
         user_payload = {"headers": clean_headers, "sample_rows": clean_rows}
         if extra:
-            user_payload.update(extra)
+            user_payload.update({key: value for key, value in extra.items() if key != "reason"})
         est = estimate_payload_tokens(clean_headers, clean_rows)
         if est > 500:
             logger.warning(
@@ -223,50 +237,21 @@ class LLMHeaderResolver:
             clean_rows = clean_rows[:2]
             user_payload["sample_rows"] = clean_rows
 
-        body = {
-            "model": self.model,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": prompt},
-                {
-                    "role": "user",
-                    "content": json.dumps(user_payload, ensure_ascii=True),
-                },
-            ],
-        }
-
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(
-                    OPENAI_CHAT_URL,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=body,
-                )
-                response.raise_for_status()
-                payload = response.json()
-        except httpx.TimeoutException as exc:
-            raise LLMHeaderResolverError(f"OpenAI timeout: {exc}") from exc
-        except httpx.HTTPStatusError as exc:
-            raise LLMHeaderResolverError(
-                f"OpenAI HTTP {exc.response.status_code}: {exc.response.text[:200]}"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise LLMHeaderResolverError(f"OpenAI network error: {exc}") from exc
-        except Exception as exc:  # noqa: BLE001
-            raise LLMHeaderResolverError(f"OpenAI request failed: {exc}") from exc
+            result = complete(
+                system=prompt,
+                user=json.dumps(user_payload, ensure_ascii=True),
+                model_id=self._model_for_request(),
+                timeout=self.timeout,
+                reason=reason,
+            )
+        except BedrockError as exc:
+            raise LLMHeaderResolverError(str(exc)) from exc
 
-        try:
-            content = payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise LLMHeaderResolverError("Unexpected OpenAI response shape") from exc
-
-        usage = payload.get("usage") if isinstance(payload, dict) else None
-        if isinstance(usage, dict):
-            self.last_token_count = int(usage.get("total_tokens") or 0)
+        usage = result.usage()
+        self.last_prompt_tokens = int(usage["prompt_tokens"])
+        self.last_completion_tokens = int(usage["completion_tokens"])
+        self.last_token_count = int(usage["total_tokens"])
         try:
             from app.database.session import SessionLocal
             from app.services.llm_settings_service import LlmSettingsService
@@ -275,9 +260,9 @@ class LLMHeaderResolver:
             try:
                 LlmSettingsService(_db).record_usage(
                     purpose="header_mapping",
-                    usage=usage if isinstance(usage, dict) else {},
-                    model=self.model,
-                    provider="openai",
+                    usage=usage,
+                    model=result.model_id,
+                    provider="bedrock",
                 )
                 _db.commit()
             finally:
@@ -285,4 +270,4 @@ class LLMHeaderResolver:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to persist LLM usage | purpose=header_mapping | err={}", exc)
 
-        return parse_llm_mapping_json(content)
+        return parse_llm_mapping_json(result.text)

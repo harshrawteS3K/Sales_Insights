@@ -215,6 +215,8 @@ class ERPParserService:
         allow_llm_fallback: bool = True,
         subject: Optional[str] = None,
         preferred_parser: Optional[str] = None,
+        known_fingerprint: Optional[str] = None,
+        known_profiles: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> ERPParseResult:
         """Parse one workbook through the universal orchestrator."""
         from app.erp_parser.orchestrator.service import UniversalParserOrchestrator
@@ -228,6 +230,8 @@ class ERPParserService:
             allow_llm_fallback=allow_llm_fallback,
             subject=subject,
             preferred_parser=preferred_parser,
+            known_fingerprint=known_fingerprint,
+            known_profiles=known_profiles,
         )
 
     def _finalize_result(
@@ -504,6 +508,8 @@ class ERPParserService:
         distributor_label: str = "",
         subject: Optional[str] = None,
         preferred_parser: Optional[str] = None,
+        known_fingerprint: Optional[str] = None,
+        known_profiles: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Preview-only payload for ``POST /api/erp/parse-preview``.
 
@@ -518,6 +524,8 @@ class ERPParserService:
             distributor_label=distributor_label,
             subject=subject,
             preferred_parser=preferred_parser,
+            known_fingerprint=known_fingerprint,
+            known_profiles=known_profiles,
         )
         breakdown = result.confidence_breakdown or {}
         block_mode = breakdown.get("layout") in {

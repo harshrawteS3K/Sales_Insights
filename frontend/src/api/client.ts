@@ -127,6 +127,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     response = await fetch(url, {
       method: options.method || 'GET',
       headers: buildHeaders(options.headers),
+      credentials: 'include',
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: options.signal,
     });
@@ -159,6 +160,7 @@ export async function apiUpload<T>(
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', url);
+    xhr.withCredentials = true;
 
     const session = getSession();
     if (session) {

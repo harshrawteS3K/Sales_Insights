@@ -16,6 +16,7 @@ from app.erp_parser.llm_header_resolver import (
     sanitize_sample_rows,
 )
 from app.erp_parser.parser_service import LLM_FALLBACK_THRESHOLD, LLM_MIN_TRUST
+from app.llm.model_registry import resolve_model_id
 
 
 def _save(wb: Workbook, path: Path) -> Path:
@@ -323,57 +324,39 @@ def test_explicit_preview_can_call_llm(tmp_path: Path):
     assert abs(float(result["rows"][0]["sales_quantity"]) - 55) < 1e-9
 
 
-def test_resolver_builds_openai_request_shape():
-    """Unit: resolver posts temperature=0 JSON payload (mocked HTTP)."""
+def test_resolver_builds_bedrock_request_shape():
+    """Unit: resolver sends the existing prompt and header samples to Bedrock."""
     captured = {}
 
-    class FakeResponse:
-        status_code = 200
+    class FakeResult:
+        text = (
+            '{"customer_column":"Sold To","product_column":"Commodity",'
+            '"quantity_column":"Net Movement","confidence":96}'
+        )
+        model_id = resolve_model_id("GPT-5.4")
 
-        def raise_for_status(self):
-            return None
-
-        def json(self):
+        def usage(self):
             return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": (
-                                '{"customer_column":"Sold To","product_column":"Commodity",'
-                                '"quantity_column":"Net Movement","confidence":96}'
-                            )
-                        }
-                    }
-                ]
+                "prompt_tokens": 10,
+                "completion_tokens": 8,
+                "input_tokens": 10,
+                "output_tokens": 8,
+                "total_tokens": 18,
             }
 
-    class FakeClient:
-        def __init__(self, *a, **k):
-            pass
+    def fake_complete(**kwargs):
+        captured.update(kwargs)
+        return FakeResult()
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def post(self, url, headers=None, json=None):
-            captured["url"] = url
-            captured["json"] = json
-            captured["headers"] = headers
-            return FakeResponse()
-
-    with patch("app.erp_parser.llm_header_resolver.httpx.Client", FakeClient):
-        out = LLMHeaderResolver(api_key="test-key", model="gpt-5.4-mini").resolve_headers(
+    with patch("app.erp_parser.llm_header_resolver.complete", fake_complete):
+        out = LLMHeaderResolver(model="GPT-5.4").resolve_headers(
             ["Sold To", "Commodity", "Net Movement", "Extra1"],
             [["A", "B", "1"], ["C", "D", "2"]],
         )
 
     assert out["customer_column"] == "Sold To"
     assert out["confidence"] == 96
-    assert captured["json"]["temperature"] == 0
-    assert captured["json"]["model"] == "gpt-5.4-mini"
-    user = captured["json"]["messages"][1]["content"]
-    assert "headers" in user
-    assert "sample_rows" in user
-    assert "workbook" not in user.lower()
+    assert captured["model_id"] == resolve_model_id("GPT-5.4")
+    assert "headers" in captured["user"]
+    assert "sample_rows" in captured["user"]
+    assert "workbook" not in captured["user"].lower()

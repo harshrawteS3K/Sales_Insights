@@ -334,12 +334,20 @@ def run_cross_tab(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: An
     return _guard("product_month_matrix", sheet_name, _run)
 
 
-def run_monthly_sheets(path: Any, **kwargs: Any) -> ParserResult:
+def run_monthly_sheets(
+    path: Any,
+    *,
+    raw_matrices: Optional[Dict[str, Sequence[Sequence[Any]]]] = None,
+    sheet_names: Optional[Sequence[str]] = None,
+    **kwargs: Any,
+) -> ParserResult:
     def _run() -> ParserResult:
         extracted = extract_monthly_product_sheets(
             path,
             fiscal_year_start=kwargs.get("fiscal_year_start"),
             reporting_quarter=kwargs.get("reporting_quarter"),
+            sheet_names=sheet_names,
+            matrices=raw_matrices,
         )
         sheets = list((extracted or {}).get("sheets_used") or [])
         field_conf = {"customer": 96.0, "product": 96.0, "quantity": 94.0}

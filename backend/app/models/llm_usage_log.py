@@ -9,7 +9,7 @@ from app.database.base import Base, TimestampMixin
 
 
 class LlmUsageLog(Base, TimestampMixin):
-    """One OpenAI (or future provider) chat completion usage record."""
+    """One Bedrock chat completion usage record."""
 
     __tablename__ = "llm_usage_logs"
     __table_args__ = (
@@ -18,7 +18,7 @@ class LlmUsageLog(Base, TimestampMixin):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    provider: Mapped[str] = mapped_column(String(50), nullable=False, default="openai")
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, default="bedrock")
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     purpose: Mapped[str] = mapped_column(String(80), nullable=False)
     prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

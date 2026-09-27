@@ -981,6 +981,7 @@ class ReportService:
         mark_duplicate_as_error: bool = False,
         confidence_breakdown: Optional[dict] = None,
         workbook_meta: Optional[dict] = None,
+        allow_existing_file: bool = False,
     ) -> Tuple[Report, int, bool, int]:
         """
         Persist already-approved ERP rows (preview → approve flow).
@@ -994,7 +995,7 @@ class ReportService:
         # One workbook can feed multiple FY quarters — scope file dedupe per quarter.
         quarter_scoped_hash = sha256_bytes(f"{content_hash}|{reporting_quarter.strip()}".encode("utf-8"))
         existing_file = self.reports.get_by_content_hash(quarter_scoped_hash)
-        if existing_file:
+        if existing_file and not allow_existing_file:
             raise ValidationAppError(DUPLICATE_SUBMISSION_MESSAGE)
 
         dist = self.distributors.get_or_raise(distributor_id)

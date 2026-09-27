@@ -3,6 +3,7 @@
 import hashlib
 
 from sqlalchemy import text
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
@@ -14,6 +15,21 @@ logger = get_logger(__name__)
 # Stable 64-bit keys (namespace for APCOTEX master replace)
 CUSTOMER_MASTER_REPLACE_LOCK = 8_742_100_001
 PRODUCT_MASTER_REPLACE_LOCK = 8_742_100_002
+OUTLOOK_SCHEDULER_LOCK_KEY = 1001
+
+
+def try_session_advisory_lock(conn: Connection, lock_key: int) -> bool:
+    """Try a session-level advisory lock. False means another backend holds it."""
+    locked = conn.execute(
+        text("SELECT pg_try_advisory_lock(:key)"),
+        {"key": lock_key},
+    ).scalar()
+    return bool(locked)
+
+
+def release_session_advisory_lock(conn: Connection, lock_key: int) -> None:
+    """Release a session-level advisory lock on the same connection that acquired it."""
+    conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key})
 
 
 def acquire_xact_lock(db: Session, lock_key: int, *, label: str = "resource") -> None:

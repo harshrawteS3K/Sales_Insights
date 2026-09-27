@@ -23,6 +23,8 @@ class ParserResult:
     llm_used: bool = False
     llm_tokens: int = 0
     llm_reason: str = ""
+    layout: str = ""
+    parser_version: str = ""
 
     @property
     def strategy(self) -> str:

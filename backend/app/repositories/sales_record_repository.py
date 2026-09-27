@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import distinct, false, func, or_, select, update
+from sqlalchemy import and_, case, distinct, false, func, not_, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.distributor import Distributor
@@ -30,6 +30,32 @@ def reporting_month_expr():
     return func.coalesce(
         func.nullif(func.trim(Report.reporting_month), ""),
         SalesRecord.period,
+    )
+
+
+_KG_UNIT_LABELS = ("KG", "KGS", "KILO", "KILOS", "KILOGRAM", "KILOGRAMS")
+_MT_UNIT_LABELS = ("MT", "TON", "TONS", "TONNE", "TONNES", "METRIC TON", "METRIC TONNE")
+
+
+def mt_quantity_expr():
+    """
+    ``sales_records.quantity`` in MT.
+
+    There is no separate quantity_mt column. Consolidation writes MT and sets
+    ``unit`` to MT. Rows whose ``unit`` is still KG are kilograms and are
+    divided by 1000. A row already marked MT is used as stored, even when
+    ``original_unit`` records that the workbook was KG.
+    """
+    unit_norm = func.upper(func.trim(func.coalesce(SalesRecord.unit, "")))
+    origin_norm = func.upper(func.trim(func.coalesce(SalesRecord.original_unit, "")))
+    stored_as_mt = unit_norm.in_(_MT_UNIT_LABELS)
+    stored_as_kg = or_(
+        unit_norm.in_(_KG_UNIT_LABELS),
+        and_(not_(stored_as_mt), origin_norm.in_(_KG_UNIT_LABELS)),
+    )
+    return case(
+        (stored_as_kg, SalesRecord.quantity / 1000),
+        else_=SalesRecord.quantity,
     )
 
 

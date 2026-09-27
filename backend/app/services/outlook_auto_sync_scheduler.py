@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -11,11 +12,17 @@ from apscheduler.triggers.interval import IntervalTrigger
 from app.core.logging import get_logger
 from app.enums import SyncStatus
 from app.utils.datetime_utils import utc_now
+from app.utils.db_locks import (
+    OUTLOOK_SCHEDULER_LOCK_KEY,
+    release_session_advisory_lock,
+    try_session_advisory_lock,
+)
 
 logger = get_logger(__name__)
 
 _SCHEDULER_JOB_ID = "outlook_auto_sync"
 _SETTING_LAST_SUCCESS = "outlook_auto_sync_last_success"
+_SYNC_WAIT_SECONDS = 25 * 60
 
 _scheduler: Optional[BackgroundScheduler] = None
 _last_success_at: Optional[datetime] = None
@@ -71,7 +78,25 @@ def record_auto_sync_success(when: Optional[datetime] = None) -> None:
         logger.exception("Failed persisting outlook auto-sync last success")
 
 
-def _run_automated_outlook_sync() -> None:
+def _wait_for_sync_job(job_id: int) -> None:
+    """Hold the caller until the queued Outlook sync leaves the started state."""
+    from app.database.session import SessionLocal
+    from app.models.sync_job import SyncJob
+
+    deadline = time.monotonic() + _SYNC_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        db = SessionLocal()
+        try:
+            job = db.get(SyncJob, job_id)
+            if job is None or job.status != SyncStatus.STARTED.value:
+                return
+        finally:
+            db.close()
+        time.sleep(2)
+    logger.warning("Outlook Sync job {} still running when the leader wait elapsed", job_id)
+
+
+def _enqueue_automated_outlook_sync() -> None:
     """Enqueue a full-mailbox Outlook sync as System (reuses existing sync service)."""
     from app.database.session import SessionLocal
     from app.models.sync_job import SyncJob
@@ -79,6 +104,7 @@ def _run_automated_outlook_sync() -> None:
     from app.services.outlook_sync_service import OutlookSyncService
 
     db = SessionLocal()
+    job_id: Optional[int] = None
     try:
         service = OutlookSyncService(db)
         mailbox = service.graph.resolve_mailbox(None)
@@ -97,6 +123,7 @@ def _run_automated_outlook_sync() -> None:
         job = service.sync_jobs.create(job)
         db.commit()
         db.refresh(job)
+        job_id = job.id
 
         get_sync_queue().enqueue(
             job_id=job.id,
@@ -115,6 +142,33 @@ def _run_automated_outlook_sync() -> None:
         logger.exception("Automated Outlook Sync failed to enqueue")
     finally:
         db.close()
+
+    if job_id is not None:
+        _wait_for_sync_job(job_id)
+
+
+def _run_automated_outlook_sync() -> None:
+    """Run Outlook Sync only on the backend that holds advisory lock 1001."""
+    from app.database.session import engine
+
+    conn = engine.connect()
+    acquired = False
+    try:
+        acquired = try_session_advisory_lock(conn, OUTLOOK_SCHEDULER_LOCK_KEY)
+        conn.commit()
+        if not acquired:
+            logger.info("Scheduler Leader Already Active\nJob skipped.")
+            return
+        logger.info(
+            "Scheduler Leader Acquired\n\nJob : Outlook Sync\n\nLock : 1001\n\nStatus : Running"
+        )
+        try:
+            _enqueue_automated_outlook_sync()
+        finally:
+            release_session_advisory_lock(conn, OUTLOOK_SCHEDULER_LOCK_KEY)
+            conn.commit()
+    finally:
+        conn.close()
 
 
 def start_outlook_auto_sync_scheduler() -> None:

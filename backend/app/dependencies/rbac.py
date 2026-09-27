@@ -1,21 +1,28 @@
-"""RBAC dependency helpers — header-based (dev) + production auth modes."""
+"""RBAC dependency helpers. Identity comes from the server session, never from headers."""
 
+import hashlib
 from dataclasses import dataclass
 from typing import Annotated, Callable, Optional
 
-from fastapi import Depends, Header, Request
+from fastapi import Depends, Request
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.logging import get_logger
+from app.database.session import get_db
 from app.enums import UserRole
 from app.exceptions import ForbiddenError, UnauthorizedError
+from app.models.auth_session import AuthSession
+from app.models.user import User
+from app.services.auth_service import SESSION_COOKIE_NAME
+from app.utils.datetime_utils import utc_now
 
 logger = get_logger(__name__)
 
 
 @dataclass
 class RequestUser:
-    """Caller identity extracted from RBAC headers / JWT (JWT-ready shape)."""
+    """Caller identity loaded from the users table."""
 
     role: UserRole
     name: str
@@ -37,194 +44,57 @@ def _parse_role(raw: Optional[str]) -> UserRole:
         ) from exc
 
 
-def _auth_mode() -> str:
-    return (settings.auth_mode or "headers").strip().lower()
+def _request_user_from_row(db: Session, row: User) -> RequestUser:
+    """Build the caller from the database row. Client headers are not consulted."""
+    from app.repositories.user_distributor_repository import UserDistributorRepository
+    from app.services.segment_access_service import SegmentAccessService
 
-
-def _verify_trusted_gateway(request: Request) -> None:
-    """Require shared secret from corporate reverse proxy / API gateway."""
-    secret = (settings.auth_trusted_secret or "").strip()
-    if not secret:
-        if settings.is_production:
-            raise UnauthorizedError(
-                "AUTH_TRUSTED_SECRET is required when AUTH_MODE=trusted_headers in production"
-            )
-        logger.warning(
-            "AUTH_MODE=trusted_headers but AUTH_TRUSTED_SECRET is empty — allowing request (non-production)"
-        )
-        return
-
-    header_name = settings.auth_trusted_header or "X-Internal-Auth"
-    provided = request.headers.get(header_name) or request.headers.get(header_name.lower())
-    if not provided or provided.strip() != secret:
-        logger.warning("Trusted auth failed | missing_or_invalid header={}", header_name)
-        raise UnauthorizedError("Missing or invalid internal authentication header")
-
-
-def _user_from_jwt(request: Request) -> RequestUser:
-    """Validate Bearer JWT and map claims to RequestUser."""
-    secret = (settings.auth_jwt_secret or "").strip()
-    if not secret:
-        raise UnauthorizedError("AUTH_JWT_SECRET is not configured for AUTH_MODE=jwt")
-
-    auth = request.headers.get("Authorization") or ""
-    if not auth.lower().startswith("bearer "):
-        raise UnauthorizedError("Authorization Bearer token required")
-    token = auth.split(" ", 1)[1].strip()
-    if not token:
-        raise UnauthorizedError("Empty Bearer token")
-
-    try:
-        import jwt  # PyJWT
-    except ImportError as exc:
-        raise UnauthorizedError(
-            "PyJWT is required for AUTH_MODE=jwt — install with: pip install PyJWT"
-        ) from exc
-
-    options = {"require": ["exp"]}
-    decode_kwargs = {
-        "algorithms": [settings.auth_jwt_algorithm or "HS256"],
-        "options": options,
-    }
-    audience = (settings.auth_jwt_audience or "").strip()
-    if audience:
-        decode_kwargs["audience"] = audience
-
-    try:
-        claims = jwt.decode(token, secret, **decode_kwargs)
-    except Exception as exc:
-        logger.warning("JWT validation failed | error={}", exc)
-        raise UnauthorizedError("Invalid or expired token") from exc
-
-    role_raw = claims.get("role") or claims.get("roles") or claims.get("app_role")
-    if isinstance(role_raw, list):
-        role_raw = role_raw[0] if role_raw else None
-    name = (
-        claims.get("name")
-        or claims.get("preferred_username")
-        or claims.get("email")
-        or claims.get("sub")
-        or "jwt-user"
+    role = _parse_role(row.role)
+    user = RequestUser(
+        role=role,
+        name=row.full_name,
+        user_id=row.id,
+        email=row.email,
     )
-    uid = claims.get("uid") or claims.get("user_id") or claims.get("sub")
-    user_id = int(uid) if isinstance(uid, int) or (isinstance(uid, str) and uid.isdigit()) else None
-    segments_raw = claims.get("segments")
-    segments: Optional[list[str]] = None
-    if isinstance(segments_raw, list):
-        segments = [str(s) for s in segments_raw]
-    elif isinstance(segments_raw, str) and segments_raw.strip():
-        segments = [s.strip() for s in segments_raw.split(",") if s.strip()]
-    return RequestUser(
-        role=_parse_role(str(role_raw) if role_raw else None),
-        name=str(name),
-        user_id=user_id,
-        segments=segments,
-    )
-
-
-def _parse_segments_header(raw: Optional[str]) -> Optional[list[str]]:
-    if not raw:
-        return None
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
-    return parts or None
-
-
-def _user_from_headers(
-    request: Request,
-    x_user_role: Optional[str],
-    x_user_name: Optional[str],
-    x_user_id: Optional[str],
-    x_user_segments: Optional[str] = None,
-    x_user_email: Optional[str] = None,
-) -> RequestUser:
-    role_header = x_user_role or request.headers.get(settings.rbac_role_header)
-    name_header = x_user_name or request.headers.get(settings.rbac_user_header)
-    id_header = x_user_id or request.headers.get(settings.rbac_user_id_header)
-    seg_header = x_user_segments or request.headers.get("X-User-Segments")
-    email_header = x_user_email or request.headers.get("X-User-Email")
-
-    role = _parse_role(role_header)
-    name = (name_header or "anonymous").strip()
-    user_id = int(id_header) if id_header and id_header.isdigit() else None
-    segments = _parse_segments_header(seg_header)
-    email = (email_header or "").strip() or None
-    return RequestUser(
-        role=role, name=name, user_id=user_id, segments=segments, email=email
-    )
-
-
-async def get_current_user(
-    request: Request,
-    x_user_role: Annotated[Optional[str], Header(alias="X-User-Role")] = None,
-    x_user_name: Annotated[Optional[str], Header(alias="X-User-Name")] = None,
-    x_user_id: Annotated[Optional[str], Header(alias="X-User-Id")] = None,
-    x_user_segments: Annotated[Optional[str], Header(alias="X-User-Segments")] = None,
-    x_user_email: Annotated[Optional[str], Header(alias="X-User-Email")] = None,
-) -> RequestUser:
-    """
-    Resolve the current caller based on AUTH_MODE.
-
-    - headers (default): Phase 1 RBAC headers — preserved for local/dev workflow.
-    - trusted_headers: same headers + gateway shared secret (corp network / reverse proxy).
-    - jwt: Authorization Bearer JWT; role/name from claims.
-
-    Defaults to role=user / name=anonymous when headers are absent (dev-friendly)
-    unless jwt/trusted mode requires credentials.
-    """
-    mode = _auth_mode()
-
-    if mode == "jwt":
-        user = _user_from_jwt(request)
+    user.segments = SegmentAccessService(db).segments_for_user(user)
+    if role in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
+        user.distributor_ids = []
     else:
-        if mode == "trusted_headers":
-            _verify_trusted_gateway(request)
-        elif mode not in {"headers", "header", "dev"}:
-            logger.warning("Unknown AUTH_MODE={!r} — falling back to headers", mode)
-        user = _user_from_headers(
-            request, x_user_role, x_user_name, x_user_id, x_user_segments, x_user_email
+        user.distributor_ids = UserDistributorRepository(db).list_ids_for_user(row.id)
+    return user
+
+
+def get_current_user(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> RequestUser:
+    """
+    Resolve the caller from the login session cookie and the users table.
+
+    ``X-User-Role``, ``X-Role``, and any other client permission field are ignored.
+    """
+    token = (request.cookies.get(SESSION_COOKIE_NAME) or "").strip()
+    if not token:
+        raise UnauthorizedError("Authentication required")
+
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    session = db.scalar(
+        select(AuthSession).where(
+            AuthSession.token_hash == digest,
+            AuthSession.revoked_at.is_(None),
+            AuthSession.expires_at > utc_now(),
         )
-
-        # Hydrate segments/email from DB when not sent on headers (persona users)
-        if user.user_id and (not user.segments or not user.email):
-            try:
-                from app.database.session import SessionLocal
-                from app.services.segment_access_service import SegmentAccessService
-                from app.repositories.user_repository import UserRepository
-
-                db = SessionLocal()
-                try:
-                    if not user.segments:
-                        user.segments = SegmentAccessService(db).segments_for_user(user)
-                    if not user.email:
-                        row = UserRepository(db).get_by_id(user.user_id)
-                        if row:
-                            user.email = row.email
-                finally:
-                    db.close()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Segment hydrate failed | user_id={} | err={}", user.user_id, exc)
-        elif user.role in {UserRole.ADMIN, UserRole.SUPER_ADMIN} and not user.segments:
-            user.segments = ["*"]
-
-        # Production guard: never silently accept spoofed elevated roles without gateway/JWT.
-        if (
-            settings.is_production
-            and mode in {"headers", "header", "dev"}
-            and user.role in {UserRole.ADMIN, UserRole.SUPER_ADMIN}
-            and not (settings.auth_trusted_secret or settings.auth_jwt_secret)
-        ):
-            logger.error(
-                "Production AUTH_MODE=headers with elevated role and no AUTH_TRUSTED_SECRET/JWT — "
-                "configure trusted_headers or jwt before exposing outside the corp network"
-            )
-
-    request.state.current_user = user
-    logger.debug(
-        "Resolved request user | mode={} | role={} | name={}",
-        mode,
-        user.role.value,
-        user.name,
     )
+    if session is None:
+        raise UnauthorizedError("Authentication required")
+
+    row = db.get(User, session.user_id)
+    if row is None or row.is_deleted or not row.is_active:
+        raise UnauthorizedError("Authentication required")
+
+    user = _request_user_from_row(db, row)
+    request.state.current_user = user
+    logger.debug("Resolved request user | role={} | name={}", user.role.value, user.name)
     return user
 
 

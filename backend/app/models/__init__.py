@@ -12,11 +12,13 @@ from app.models.report import Report
 from app.models.sales_record import SalesRecord
 from app.models.system_setting import SystemSetting
 from app.models.sync_job import SyncJob
+from app.models.auth_session import AuthSession
 from app.models.user import User
 from app.models.user_distributor import UserDistributor
 from app.models.user_segment import UserSegment
 
 __all__ = [
+    "AuthSession",
     "User",
     "UserDistributor",
     "UserSegment",

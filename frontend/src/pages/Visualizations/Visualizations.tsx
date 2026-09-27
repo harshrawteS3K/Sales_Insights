@@ -34,6 +34,12 @@ import {
 } from '../../utils/analyticsFilters';
 import { formatPeriodDisplay } from '../../utils/quarter';
 
+function formatMt(value: number): string {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return '0.00 MT';
+  return `${amount.toFixed(2)} MT`;
+}
+
 const btnPrimary: CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
@@ -209,15 +215,20 @@ export function Visualizations() {
             style={{ marginBottom: 20 }}
           >
             <div style={{ width: '100%', height: 300 }}>
-              <ResponsiveContainer>
+              {(data.monthly_trend || []).length === 0 && !(kpis?.total_sales_mt) ? (
+                <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94A3B8', fontSize: '0.875rem' }}>
+                  No sales records for the selected filters.
+                </div>
+              ) : (
+              <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={data.monthly_trend} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
                   <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#6B7280' }} />
                   <YAxis tick={{ fontSize: 11, fill: '#6B7280' }} />
                   <Tooltip
-                    formatter={(value: number) => [`${value} MT`, 'Sales']}
+                    formatter={(value: number) => [formatMt(value), 'Sales']}
                     labelFormatter={(_label, payload) =>
-                      String(payload?.[0]?.payload?.tooltip || _label || '')
+                      (payload?.[0]?.payload?.tooltip as string) || String(_label || '')
                     }
                   />
                   <Legend />
@@ -226,12 +237,13 @@ export function Visualizations() {
                     dataKey="qty"
                     name="Sales (MT)"
                     stroke={BLUE}
-                    strokeWidth={2.5}
+                    strokeWidth={2}
                     dot={{ r: 3 }}
                     activeDot={{ r: 5 }}
                   />
                 </LineChart>
               </ResponsiveContainer>
+              )}
             </div>
           </ChartCard>
 
@@ -260,12 +272,12 @@ export function Visualizations() {
                       tick={{ fontSize: 11, fill: '#6B7280' }}
                     />
                     <Tooltip
-                      formatter={(value: number) => [`${value} MT`, 'Sales']}
+                      formatter={(value: number) => [formatMt(value), 'Sales']}
                       labelFormatter={(_, payload) =>
                         (payload?.[0]?.payload?.fullName as string) || ''
                       }
                     />
-                    <Bar dataKey="qty" name="Sales MT" fill={TEAL} radius={[0, 4, 4, 0]} />
+                    <Bar dataKey="qty" name="Sales (MT)" fill={TEAL} radius={[0, 4, 4, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -289,7 +301,7 @@ export function Visualizations() {
                         <Cell key={idx} fill={PRODUCT_COLORS[idx % PRODUCT_COLORS.length]} />
                       ))}
                     </Pie>
-                    <Tooltip formatter={(value: number) => [`${value} MT`, 'Sales']} />
+                    <Tooltip formatter={(value: number) => [formatMt(value), 'Sales']} />
                     <Legend />
                   </PieChart>
                 </ResponsiveContainer>
@@ -413,7 +425,7 @@ export function Visualizations() {
                           {formatPeriodDisplay(row.month)}
                         </td>
                         <td style={{ padding: '10px 12px', fontWeight: 600, color: BLUE }}>
-                          {row.qty.toLocaleString()}
+                          {row.qty_display || formatMt(row.qty).replace(' MT', '')}
                         </td>
                         <td style={{ padding: '10px 12px', color: '#374151' }}>{row.distributor}</td>
                       </tr>

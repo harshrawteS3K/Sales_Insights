@@ -52,7 +52,7 @@ export const AuditTrailService = {
       headers['X-User-Name'] = session.name;
     }
     const url = `${getApiBaseUrl()}/audit-trail/export?${params.toString()}`;
-    const res = await fetch(url, { headers });
+    const res = await fetch(url, { headers, credentials: 'include' });
     if (!res.ok) {
       throw new Error('Failed to export audit trail');
     }

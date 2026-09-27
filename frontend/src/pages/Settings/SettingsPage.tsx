@@ -55,8 +55,8 @@ export function SettingsPage() {
   const { userRole } = useLayoutContext();
   const [settings, setSettings] = useState<LlmSettings | null>(null);
   const [usage, setUsage] = useState<UsagePayload | null>(null);
-  const [provider, setProvider] = useState('openai');
-  const [model, setModel] = useState('gpt-4o-mini');
+  const [provider, setProvider] = useState('bedrock');
+  const [model, setModel] = useState('');
   const [enabled, setEnabled] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -72,8 +72,8 @@ export function SettingsPage() {
         apiRequest<{ success: boolean; data: UsagePayload }>('/settings/llm/usage?limit=40'),
       ]);
       setSettings(sRes.data);
-      setProvider(sRes.data.provider || 'openai');
-      setModel(sRes.data.model || 'gpt-4o-mini');
+      setProvider(sRes.data.provider || 'bedrock');
+      setModel(sRes.data.model || sRes.data.available_models?.[0] || '');
       setEnabled(Boolean(sRes.data.enabled));
       setUsage(uRes.data);
     } catch (err) {
@@ -177,9 +177,9 @@ export function SettingsPage() {
                 onChange={e => setProvider(e.target.value)}
                 style={inputStyle}
               >
-                {(settings?.available_providers || ['openai']).map(p => (
+                {(settings?.available_providers || ['bedrock']).map(p => (
                   <option key={p} value={p}>
-                    {p === 'openai' ? 'OpenAI' : p}
+                    {p === 'bedrock' ? 'AWS Bedrock' : p}
                   </option>
                 ))}
               </select>
@@ -188,14 +188,11 @@ export function SettingsPage() {
             <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#374151' }}>Model</span>
               <select value={model} onChange={e => setModel(e.target.value)} style={inputStyle}>
-                {(settings?.available_models || []).map(m => (
-                  <option key={m} value={m}>
-                    {m}
+                {(settings?.available_models || []).map(name => (
+                  <option key={name} value={name}>
+                    {name}
                   </option>
                 ))}
-                {model && !(settings?.available_models || []).includes(model) && (
-                  <option value={model}>{model}</option>
-                )}
               </select>
             </label>
 
@@ -220,13 +217,17 @@ export function SettingsPage() {
 
             <div style={{ fontSize: '0.8125rem', color: '#64748B' }}>
               API key:{' '}
-              {settings?.api_key_configured ? (
+              {settings?.provider === 'bedrock' ? (
+                <span style={{ color: '#059669', fontWeight: 600 }}>
+                  IAM role on the host (no API key)
+                </span>
+              ) : settings?.api_key_configured ? (
                 <span style={{ color: '#059669', fontWeight: 600 }}>
                   configured ({settings.api_key_masked})
                 </span>
               ) : (
                 <span style={{ color: '#DC2626', fontWeight: 600 }}>
-                  missing — set OPENAI_API_KEY in backend .env
+                  not configured
                 </span>
               )}
             </div>

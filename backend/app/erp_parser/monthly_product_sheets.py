@@ -163,10 +163,15 @@ def _find_product_header_row(matrix: Sequence[Sequence[Any]]) -> Optional[Dict[s
     return best
 
 
-def detect_monthly_product_sheets(path: Union[str, Path]) -> Optional[Dict[str, Any]]:
+def detect_monthly_product_sheets(
+    path: Union[str, Path],
+    *,
+    sheet_names: Optional[Sequence[str]] = None,
+    matrices: Optional[Dict[str, Sequence[Sequence[Any]]]] = None,
+) -> Optional[Dict[str, Any]]:
     """True when workbook has several month-named sheets with product columns."""
     file_path = Path(path)
-    sheets = list_candidate_sheets(file_path) or []
+    sheets = list(sheet_names) if sheet_names is not None else (list_candidate_sheets(file_path) or [])
     month_sheets: List[Tuple[str, str, int]] = []
     for name in sheets:
         parsed = parse_sheet_month_label(name)
@@ -176,7 +181,10 @@ def detect_monthly_product_sheets(path: Union[str, Path]) -> Optional[Dict[str, 
         return None
 
     probe_name = month_sheets[0][0]
-    matrix = read_sheet_matrix(file_path, probe_name)
+    if matrices is not None and probe_name in matrices:
+        matrix = [list(row) for row in matrices[probe_name]]
+    else:
+        matrix = read_sheet_matrix(file_path, probe_name)
     header = _find_product_header_row(matrix)
     if not header:
         return None
@@ -194,9 +202,11 @@ def extract_monthly_product_sheets(
     *,
     fiscal_year_start: Optional[int] = None,
     reporting_quarter: Optional[str] = None,
+    sheet_names: Optional[Sequence[str]] = None,
+    matrices: Optional[Dict[str, Sequence[Sequence[Any]]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Extract all month sheets into Customer/Product/Qty quarterly rows."""
-    meta = detect_monthly_product_sheets(path)
+    meta = detect_monthly_product_sheets(path, sheet_names=sheet_names, matrices=matrices)
     if not meta:
         return None
 
@@ -230,7 +240,10 @@ def extract_monthly_product_sheets(
         month_num = month_number_from_key(month_key)
         source_month = calendar_month_label(month_num, cal_year) if month_num else ""
 
-        matrix = read_sheet_matrix(file_path, sheet_name)
+        if matrices is not None and sheet_name in matrices:
+            matrix = [list(row) for row in matrices[sheet_name]]
+        else:
+            matrix = read_sheet_matrix(file_path, sheet_name)
         header = _find_product_header_row(matrix)
         if not header:
             errors.append(f"Sheet {sheet_name}: no product header")

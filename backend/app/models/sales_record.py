@@ -29,6 +29,10 @@ class SalesRecord(Base, TimestampMixin, SoftDeleteMixin):
         Index("ix_sales_records_product", "product"),
         Index("ix_sales_records_segment", "segment"),
         Index("ix_sales_records_period", "period"),
+        Index("ix_sales_records_distributor_period_active", "distributor_id", "period", "is_deleted"),
+        Index("ix_sales_records_segment_period", "segment", "period"),
+        Index("ix_sales_records_customer_period", "customer_name", "period"),
+        Index("ix_sales_records_product_period", "product", "period"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

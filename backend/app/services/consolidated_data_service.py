@@ -23,7 +23,7 @@ from app.schemas.sales_record import (
 )
 from app.services.audit_service import AuditService
 from app.utils.datetime_utils import format_frontend_datetime
-from app.utils.quantity import format_quantity
+from app.utils.quantity import format_mt, quantity_as_mt
 
 logger = get_logger(__name__)
 
@@ -423,7 +423,13 @@ class ConsolidatedDataService:
                 segment=record.segment,
                 location=(getattr(record, "location", None) or "").strip(),
                 product=record.product,
-                quantity=record.quantity_display or format_quantity(record.quantity),
+                quantity=format_mt(
+                    quantity_as_mt(
+                        record.quantity,
+                        unit=getattr(record, "unit", None),
+                        original_unit=getattr(record, "original_unit", None),
+                    )
+                ),
             )
             groups[report_id].sales.append(line)
             groups[report_id].recordCount = len(groups[report_id].sales)

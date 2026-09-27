@@ -104,6 +104,7 @@ class ERPParsePreviewResponse(BaseModel):
     parsed_location: Optional[str] = None
     parsed_segment: Optional[str] = None
     attachment_summary: List[ERPAttachmentSummary] = Field(default_factory=list)
+    duplicate_review: Optional["DuplicateReview"] = None
 
 
 class ERPEmailPreviewRequest(BaseModel):
@@ -122,12 +123,28 @@ class ERPImportRequest(BaseModel):
     fiscal_year_start: Optional[int] = Field(default=None, ge=1990, le=2100)
     mapping: Optional[Union[List[ERPMappingItem], Dict[str, Any]]] = None
     rows: Optional[List[ERPPreviewRow]] = None
+    replace_existing: bool = False
+
+
+class DuplicateReview(BaseModel):
+    """Shown when consolidated rows already exist for this distributor slice."""
+
+    detected: bool = False
+    message: str = ""
+    distributor: str = ""
+    financial_year: str = ""
+    quarter: str = ""
+    existing_rows: int = 0
+    new_rows: int = 0
+    periods: List[str] = Field(default_factory=list)
 
 
 class ERPImportResponse(BaseModel):
     report_id: int
     records_inserted: int
     duplicate: bool = False
+    requires_review: bool = False
+    duplicate_review: Optional[DuplicateReview] = None
     quality_score: int = 0
     distributor_id: int
     reporting_quarter: str
@@ -136,3 +153,6 @@ class ERPImportResponse(BaseModel):
     workbook_skips: List[Dict[str, Any]] = Field(default_factory=list)
     reports_created: int = 1
     quarters_imported: List[str] = Field(default_factory=list)
+
+
+ERPParsePreviewResponse.model_rebuild()

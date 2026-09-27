@@ -82,6 +82,74 @@ def resolve_sheet_name(path: Union[str, Path], sheet_name: str) -> str:
     raise ExcelProcessingError(f"Sheet not found: {wanted}")
 
 
+def merged_map_for_sheet(ws: Any) -> dict[tuple[int, int], Any]:
+    """Expand each merged range from its top-left value. Built once per sheet."""
+    merged_map: dict[tuple[int, int], Any] = {}
+    ranges = getattr(getattr(ws, "merged_cells", None), "ranges", None) or []
+    for merged in list(ranges):
+        min_row, min_col, max_row, max_col = (
+            merged.min_row,
+            merged.min_col,
+            merged.max_row,
+            merged.max_col,
+        )
+        top_left = ws.cell(min_row, min_col).value
+        for r in range(min_row, max_row + 1):
+            for c in range(min_col, max_col + 1):
+                merged_map[(r, c)] = top_left
+    return merged_map
+
+
+def merged_range_count(wb: Any) -> int:
+    total = 0
+    for name in wb.sheetnames:
+        ranges = getattr(getattr(wb[name], "merged_cells", None), "ranges", None)
+        if ranges is None:
+            continue
+        total += len(list(ranges))
+    return total
+
+
+def hidden_column_indexes(ws: Any, width: int) -> set[int]:
+    from openpyxl.utils import get_column_letter
+
+    hidden: set[int] = set()
+    for idx in range(1, width + 1):
+        dim = ws.column_dimensions.get(get_column_letter(idx))
+        if dim is not None and bool(getattr(dim, "hidden", False)):
+            hidden.add(idx - 1)
+    return hidden
+
+
+def matrix_from_worksheet(
+    ws: Any,
+    *,
+    max_rows: int = 5000,
+    max_cols: int = 60,
+    merged_map: dict[tuple[int, int], Any] | None = None,
+) -> List[List[Any]]:
+    """Dense matrix. Merged cells are filled from the shared map."""
+    if merged_map is None:
+        merged_map = merged_map_for_sheet(ws)
+    rows: List[List[Any]] = []
+    for r_idx, row in enumerate(
+        ws.iter_rows(min_row=1, max_row=max_rows, max_col=max_cols, values_only=False),
+        start=1,
+    ):
+        values: List[Any] = []
+        any_value = False
+        for c_idx, cell in enumerate(row, start=1):
+            val = merged_map.get((r_idx, c_idx), cell.value)
+            if _cell_text(val):
+                any_value = True
+            values.append(val)
+        if any_value or rows:
+            rows.append(values)
+    while rows and not any(_cell_text(v) for v in rows[-1]):
+        rows.pop()
+    return rows
+
+
 def read_sheet_matrix(
     path: Union[str, Path],
     sheet_name: str,
@@ -93,42 +161,7 @@ def read_sheet_matrix(
     resolved = resolve_sheet_name(path, sheet_name)
     wb = load_workbook_safe(path)
     try:
-        ws = wb[resolved]
-
-        # Unwrap merged cells so header/title spans appear in every covered cell.
-        merged_map: dict[tuple[int, int], Any] = {}
-        for merged in list(ws.merged_cells.ranges):
-            min_row, min_col, max_row, max_col = (
-                merged.min_row,
-                merged.min_col,
-                merged.max_row,
-                merged.max_col,
-            )
-            top_left = ws.cell(min_row, min_col).value
-            for r in range(min_row, max_row + 1):
-                for c in range(min_col, max_col + 1):
-                    merged_map[(r, c)] = top_left
-
-        rows: List[List[Any]] = []
-        for r_idx, row in enumerate(
-            ws.iter_rows(min_row=1, max_row=max_rows, max_col=max_cols, values_only=False),
-            start=1,
-        ):
-            values: List[Any] = []
-            any_value = False
-            for c_idx, cell in enumerate(row, start=1):
-                val = merged_map.get((r_idx, c_idx), cell.value)
-                if _cell_text(val):
-                    any_value = True
-                values.append(val)
-            if any_value or rows:
-                # Keep leading blank rows only until first content; trailing handled later
-                rows.append(values)
-
-        # Trim trailing all-blank rows
-        while rows and not any(_cell_text(v) for v in rows[-1]):
-            rows.pop()
-        return rows
+        return matrix_from_worksheet(wb[resolved], max_rows=max_rows, max_cols=max_cols)
     finally:
         wb.close()
 

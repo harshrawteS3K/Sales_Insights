@@ -21,11 +21,13 @@ def score_extraction(
     *,
     distributor_label: str = "",
     reporting_quarter: Optional[str] = None,
+    fingerprint_matched: Optional[bool] = None,
 ) -> float:
     """
-    Customer 25, Product 25, numeric quantity 20, quarter 15, distributor 15.
+    Customer 25, Product 25, numeric quantity 20, quarter 15, fingerprint 15.
 
-    95–100 auto accept, 90–94 accept with warning, 70–89 LLM, below 70 human review.
+    The score is a single pass over the extracted rows. 95–100 auto accept,
+    90–94 accept with warning, 70–89 LLM, below 70 human review.
     """
     if not rows:
         return 0.0
@@ -33,16 +35,21 @@ def score_extraction(
     customers = sum(1 for row in rows if str(row.get("customer_name") or "").strip())
     products = sum(1 for row in rows if str(row.get("product") or "").strip())
     quantities = sum(1 for row in rows if _qty_ok(row))
-    quarters = sum(1 for row in rows if str(row.get("period") or row.get("reporting_quarter") or "").strip())
+    quarters = sum(
+        1 for row in rows if str(row.get("period") or row.get("reporting_quarter") or "").strip()
+    )
     if quarters == 0 and (reporting_quarter or "").strip():
         quarters = total
-    distributor_hit = 1.0 if (distributor_label or "").strip() else 0.0
+    if fingerprint_matched is None:
+        structure_hit = 1.0 if (distributor_label or "").strip() else 0.0
+    else:
+        structure_hit = 1.0 if fingerprint_matched else 0.0
     score = (
         25.0 * (customers / total)
         + 25.0 * (products / total)
         + 20.0 * (quantities / total)
         + 15.0 * (quarters / total)
-        + 15.0 * distributor_hit
+        + 15.0 * structure_hit
     )
     return round(max(0.0, min(100.0, score)), 1)
 

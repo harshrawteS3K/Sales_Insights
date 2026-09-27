@@ -7,11 +7,11 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-import httpx
-
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.erp_parser.workbook_detector import list_candidate_sheets, read_sheet_matrix
+from app.llm.bedrock_client import BedrockError, complete
+from app.llm.model_registry import default_model_id, resolve_model_id
 
 logger = get_logger(__name__)
 
@@ -28,8 +28,6 @@ Rules:
 Output JSON:
 {"sheet_name":"","confidence":0,"reason":""}
 """
-
-OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 
 
 class LLMSheetResolverError(Exception):
@@ -92,7 +90,7 @@ def parse_llm_sheet_json(raw: str, candidates: Sequence[str]) -> Dict[str, Any]:
 
 
 class LLMSheetResolver:
-    """OpenAI-backed worksheet picker."""
+    """Bedrock-backed worksheet picker."""
 
     def __init__(
         self,
@@ -101,6 +99,16 @@ class LLMSheetResolver:
         model: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> None:
+        del api_key
+        self._explicit_model = resolve_model_id(model) if model is not None else None
+        settings = get_settings()
+        runtime = self._runtime_settings()
+        self._llm_enabled = bool(runtime.get("enabled", True))
+        self.timeout = float(
+            timeout if timeout is not None else runtime.get("timeout") or settings.bedrock_timeout or 30
+        )
+
+    def _runtime_settings(self) -> Dict[str, Any]:
         settings = get_settings()
         try:
             from app.database.session import SessionLocal
@@ -108,22 +116,20 @@ class LLMSheetResolver:
 
             _db = SessionLocal()
             try:
-                rt = resolve_runtime_llm(_db)
+                return resolve_runtime_llm(_db)
             finally:
                 _db.close()
         except Exception:  # noqa: BLE001
-            rt = {
-                "enabled": bool((settings.openai_api_key or "").strip()),
-                "api_key": (settings.openai_api_key or "").strip(),
-                "model": settings.openai_model or "gpt-4o-mini",
-                "timeout": float(settings.openai_timeout_seconds or 30),
+            return {
+                "enabled": True,
+                "model": default_model_id(),
+                "timeout": float(settings.bedrock_timeout or 30),
             }
-        self._llm_enabled = bool(rt.get("enabled"))
-        self.api_key = (api_key if api_key is not None else rt.get("api_key")) or ""
-        self.model = (model if model is not None else rt.get("model")) or "gpt-4o-mini"
-        self.timeout = float(
-            timeout if timeout is not None else rt.get("timeout") or settings.openai_timeout_seconds or 30
-        )
+
+    def _model_for_request(self) -> str:
+        if self._explicit_model:
+            return self._explicit_model
+        return resolve_model_id(self._runtime_settings().get("model"))
 
     def pick_sheet(
         self,
@@ -134,8 +140,6 @@ class LLMSheetResolver:
         """Return ``(sheet_name, confidence)``."""
         if not self._llm_enabled:
             raise LLMSheetResolverError("LLM is disabled in Admin Settings")
-        if not self.api_key:
-            raise LLMSheetResolverError("OPENAI_API_KEY is not configured")
 
         names = list(candidates or list_candidate_sheets(path))
         if not names:
@@ -151,34 +155,20 @@ class LLMSheetResolver:
             except Exception as exc:  # noqa: BLE001
                 previews.append({"sheet_name": name, "preview": [], "error": str(exc)[:80]})
 
-        body = {
-            "model": self.model,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {"sheets": previews, "candidates": names[:20]},
-                        ensure_ascii=True,
-                    ),
-                },
-            ],
-        }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        with httpx.Client(timeout=self.timeout) as client:
-            resp = client.post(OPENAI_CHAT_URL, headers=headers, json=body)
-            resp.raise_for_status()
-            payload = resp.json()
-        content = (
-            (((payload.get("choices") or [{}])[0].get("message") or {}).get("content"))
-            or ""
-        )
-        usage = payload.get("usage") if isinstance(payload, dict) else None
+        try:
+            result = complete(
+                system=SYSTEM_PROMPT,
+                user=json.dumps(
+                    {"sheets": previews, "candidates": names[:20]},
+                    ensure_ascii=True,
+                ),
+                model_id=self._model_for_request(),
+                timeout=self.timeout,
+                reason="Sheet selection",
+            )
+        except BedrockError as exc:
+            raise LLMSheetResolverError(str(exc)) from exc
+        usage = result.usage()
         try:
             from app.database.session import SessionLocal
             from app.services.llm_settings_service import LlmSettingsService
@@ -187,9 +177,9 @@ class LLMSheetResolver:
             try:
                 LlmSettingsService(_db).record_usage(
                     purpose="sheet_detect",
-                    usage=usage if isinstance(usage, dict) else {},
-                    model=self.model,
-                    provider="openai",
+                    usage=usage,
+                    model=result.model_id,
+                    provider="bedrock",
                 )
                 _db.commit()
             finally:
@@ -197,7 +187,7 @@ class LLMSheetResolver:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to persist LLM usage | purpose=sheet_detect | err={}", exc)
 
-        parsed = parse_llm_sheet_json(content, names)
+        parsed = parse_llm_sheet_json(result.text, names)
         logger.info(
             "LLM sheet pick | sheet={} | confidence={} | reason={}",
             parsed["sheet_name"],

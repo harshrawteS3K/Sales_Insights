@@ -13,6 +13,7 @@ from app.models.sales_record import SalesRecord
 from app.repositories.sales_record_repository import (
     SalesRecordRepository,
     company_expr,
+    mt_quantity_expr,
 )
 from app.services.sales_insights_service import (
     PERIOD_CUSTOM,
@@ -29,7 +30,7 @@ from app.services.sales_insights_service import (
 )
 from app.services.distributor_service import DistributorService
 from app.utils.distributor_location import country_group, country_label, normalize_location
-from app.utils.quantity import format_quantity
+from app.utils.quantity import format_mt, round_mt
 
 
 class DistributorPerformanceService:
@@ -154,7 +155,7 @@ class DistributorPerformanceService:
         agg_q = (
             select(
                 SalesRecord.distributor_id.label("distributor_id"),
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
                 func.count(func.distinct(SalesRecord.customer_name)).label("customers"),
                 func.count(func.distinct(SalesRecord.product)).label("products"),
             )
@@ -185,7 +186,7 @@ class DistributorPerformanceService:
             select(
                 SalesRecord.distributor_id.label("distributor_id"),
                 SalesRecord.location.label("location"),
-                func.sum(SalesRecord.quantity).label("qty"),
+                func.sum(mt_quantity_expr()).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -219,7 +220,7 @@ class DistributorPerformanceService:
                 SalesRecord.distributor_id.label("distributor_id"),
                 SalesRecord.customer_name.label("customer"),
                 func.count(func.distinct(SalesRecord.product)).label("product_count"),
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -235,7 +236,7 @@ class DistributorPerformanceService:
             .group_by(SalesRecord.distributor_id, SalesRecord.customer_name)
             .order_by(
                 SalesRecord.distributor_id.asc(),
-                func.sum(SalesRecord.quantity).desc(),
+                func.sum(mt_quantity_expr()).desc(),
             )
         )
         cust_q = self.sales._apply_filters(cust_q, **filter_kw)
@@ -243,13 +244,13 @@ class DistributorPerformanceService:
         customers_by_id: Dict[int, List[Dict[str, Any]]] = {}
         for row in self.db.execute(cust_q).all():
             did = int(row.distributor_id)
-            qty = round(_to_float(row.qty), 3)
+            qty = round_mt(row.qty)
             customers_by_id.setdefault(did, []).append(
                 {
                     "customer": str(row.customer or ""),
                     "product_count": int(row.product_count or 0),
                     "sales_mt": qty,
-                    "sales_mt_display": format_quantity(qty),
+                    "sales_mt_display": format_mt(qty),
                 }
             )
 
@@ -260,7 +261,7 @@ class DistributorPerformanceService:
                 "customers": 0,
                 "products": 0,
             }
-            qty = round(float(stats["qty"]), 3)
+            qty = round_mt(stats["qty"])
             if (seg or cust or prod) and d.id not in stats_by_id:
                 continue
             stored = normalize_location(d.region)
@@ -281,7 +282,7 @@ class DistributorPerformanceService:
                     "customers": int(stats["customers"]),
                     "products": int(stats["products"]),
                     "sales_mt": qty,
-                    "sales_mt_display": format_quantity(qty),
+                    "sales_mt_display": format_mt(qty),
                     "has_sales": qty > 0,
                     "customer_contribution": customers_by_id.get(d.id, []),
                 }
@@ -302,13 +303,13 @@ class DistributorPerformanceService:
                     "distributor": top["distributor"] if top else "—",
                     "distributor_id": top["distributor_id"] if top else None,
                     "sales_mt": top["sales_mt"] if top else 0.0,
-                    "sales_mt_display": top["sales_mt_display"] if top else format_quantity(0),
+                    "sales_mt_display": top["sales_mt_display"] if top else format_mt(0),
                 },
                 "runner_up": {
                     "distributor": runner["distributor"] if runner else "—",
                     "distributor_id": runner["distributor_id"] if runner else None,
                     "sales_mt": runner["sales_mt"] if runner else 0.0,
-                    "sales_mt_display": runner["sales_mt_display"] if runner else format_quantity(0),
+                    "sales_mt_display": runner["sales_mt_display"] if runner else format_mt(0),
                 },
                 "active_distributors": {
                     "submitted": submitted,

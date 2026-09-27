@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple, Union
+from typing import Any, Dict, List, Union
 
-from openpyxl.utils import get_column_letter
-
-from app.erp_parser.workbook_detector import list_candidate_sheets, load_workbook_safe, read_sheet_matrix
+from app.erp_parser.workbook_detector import (
+    hidden_column_indexes,
+    read_sheet_matrix,
+)
 
 _HEADER_WORDS = {
     "customer",
@@ -47,15 +48,11 @@ def _month_name(value: date) -> str:
 
 
 def _hidden_column_indexes(path: Path, sheet_name: str, width: int) -> set[int]:
+    from app.erp_parser.workbook_detector import load_workbook_safe
+
     wb = load_workbook_safe(path)
     try:
-        ws = wb[sheet_name]
-        hidden: set[int] = set()
-        for idx in range(1, width + 1):
-            dim = ws.column_dimensions.get(get_column_letter(idx))
-            if dim is not None and bool(getattr(dim, "hidden", False)):
-                hidden.add(idx - 1)
-        return hidden
+        return hidden_column_indexes(wb[sheet_name], width)
     finally:
         wb.close()
 
@@ -114,6 +111,22 @@ def _drop_empty(matrix: List[List[Any]]) -> List[List[Any]]:
     return [[row[col] for col in keep] for row in rows]
 
 
+def normalize_matrix(matrix: List[List[Any]], hidden: set[int] | None = None) -> List[List[Any]]:
+    """Apply the in-memory cleanup to a matrix that was already read."""
+    rows = [list(row) for row in matrix]
+    if not rows:
+        return []
+    if hidden:
+        rows = [
+            [cell for idx, cell in enumerate(row) if idx not in hidden]
+            for row in rows
+        ]
+    _trim_and_numbers(rows)
+    _convert_header_dates(rows)
+    _uppercase_header_tokens(rows)
+    return _drop_empty(rows)
+
+
 def normalize_sheet_matrix(
     path: Union[str, Path],
     sheet_name: str,
@@ -125,37 +138,11 @@ def normalize_sheet_matrix(
         return []
     width = max(len(row) for row in matrix)
     hidden = _hidden_column_indexes(file_path, sheet_name, width)
-    if hidden:
-        matrix = [
-            [cell for idx, cell in enumerate(row) if idx not in hidden]
-            for row in matrix
-        ]
-    _trim_and_numbers(matrix)
-    _convert_header_dates(matrix)
-    _uppercase_header_tokens(matrix)
-    return _drop_empty(matrix)
-
-
-def visible_sheets(path: Union[str, Path]) -> List[str]:
-    """Non-empty visible worksheets, in workbook order."""
-    file_path = Path(path)
-    names = list_candidate_sheets(file_path)
-    wb = load_workbook_safe(file_path)
-    try:
-        visible = []
-        for name in names:
-            ws = wb[name]
-            if getattr(ws, "sheet_state", "visible") == "visible":
-                visible.append(name)
-        return visible or names
-    finally:
-        wb.close()
+    return normalize_matrix(matrix, hidden)
 
 
 def normalize_workbook(path: Union[str, Path]) -> List[Dict[str, Any]]:
-    sheets: List[Dict[str, Any]] = []
-    for name in visible_sheets(path):
-        matrix = normalize_sheet_matrix(path, name)
-        if matrix:
-            sheets.append({"sheet_name": name, "matrix": matrix})
-    return sheets
+    """Normalize every visible sheet from a single workbook open."""
+    from app.erp_parser.workbook_lifecycle import open_workbook_once
+
+    return open_workbook_once(path).sheets

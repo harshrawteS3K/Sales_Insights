@@ -7,6 +7,8 @@ from typing import List
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.llm.model_registry import default_model_id
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 _DEFAULT_CORS = (
@@ -133,21 +135,21 @@ class Settings(BaseSettings):
     auth_jwt_algorithm: str = Field(default="HS256", alias="AUTH_JWT_ALGORITHM")
     auth_jwt_audience: str = Field(default="", alias="AUTH_JWT_AUDIENCE")
 
-    # RBAC header keys (Phase 1 – role passed via headers for enforcement hooks)
+    # Legacy header names. Authorization does not read these.
     rbac_role_header: str = Field(default="X-User-Role", alias="RBAC_ROLE_HEADER")
     rbac_user_header: str = Field(default="X-User-Name", alias="RBAC_USER_HEADER")
     rbac_user_id_header: str = Field(default="X-User-Id", alias="RBAC_USER_ID_HEADER")
 
-    # Super Admin credentials are hardcoded in AuthService (not env / not DB).
-    # These settings are deprecated leftovers and are ignored at login.
+    # Initial Super Admin password for scripts/seed.py only. Login never reads this.
+    # Leave empty in source. Set SUPER_ADMIN_PASSWORD in the environment before the first seed.
     super_admin_username: str = Field(default="superadmin", alias="SUPER_ADMIN_USERNAME")
     super_admin_password: str = Field(default="", alias="SUPER_ADMIN_PASSWORD")
     password_min_length: int = Field(default=8, alias="PASSWORD_MIN_LENGTH", ge=6)
 
-    # OpenAI — ERP LLM header resolver fallback (mapping only; never extracts rows)
-    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-5.4-mini", alias="OPENAI_MODEL")
-    openai_timeout_seconds: float = Field(default=30.0, alias="OPENAI_TIMEOUT_SECONDS", gt=0)
+    # Amazon Bedrock — IAM role on the host. No access keys.
+    aws_region: str = Field(default="ap-south-1", alias="AWS_REGION")
+    default_model: str = Field(default_factory=default_model_id, alias="DEFAULT_MODEL")
+    bedrock_timeout: float = Field(default=30.0, alias="BEDROCK_TIMEOUT", gt=0)
 
     # ERP Excel quantity unit. App stores/displays MT.
     # Default MT = use Excel numbers as-is (no ÷1000). Set KG only if workbook is truly kilograms.

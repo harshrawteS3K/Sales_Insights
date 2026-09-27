@@ -210,54 +210,14 @@ def test_bug10_template_scales(tmp_path: Path, n: int):
 
 
 # ---------------------------------------------------------------------------
-# BUG 11 — Auth modes
+# Auth — role headers are not credentials
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_bug11_trusted_headers_rejects_missing_secret(monkeypatch):
-    monkeypatch.setattr(settings, "auth_mode", "trusted_headers")
-    monkeypatch.setattr(settings, "auth_trusted_secret", "corp-secret")
-    monkeypatch.setattr(settings, "auth_trusted_header", "X-Internal-Auth")
-    monkeypatch.setattr(settings, "app_env", "production")
-
+def test_role_headers_do_not_authenticate():
     request = MagicMock()
-    request.headers = {}
+    request.cookies = {}
+    request.headers = {"X-User-Role": "super_admin", "X-Role": "admin"}
 
     with pytest.raises(UnauthorizedError):
-        await get_current_user(request, x_user_role="admin", x_user_name="Admin", x_user_id=None)
-
-
-@pytest.mark.asyncio
-async def test_bug11_trusted_headers_accepts_valid_secret(monkeypatch):
-    monkeypatch.setattr(settings, "auth_mode", "trusted_headers")
-    monkeypatch.setattr(settings, "auth_trusted_secret", "corp-secret")
-    monkeypatch.setattr(settings, "auth_trusted_header", "X-Internal-Auth")
-    monkeypatch.setattr(settings, "app_env", "production")
-
-    request = MagicMock()
-    request.headers = {"X-Internal-Auth": "corp-secret"}
-    request.state = MagicMock()
-
-    user = await get_current_user(
-        request, x_user_role="admin", x_user_name="Admin User", x_user_id="7"
-    )
-    assert user.role == UserRole.ADMIN
-    assert user.name == "Admin User"
-    assert user.user_id == 7
-
-
-@pytest.mark.asyncio
-async def test_bug11_headers_mode_preserves_dev_workflow(monkeypatch):
-    monkeypatch.setattr(settings, "auth_mode", "headers")
-    monkeypatch.setattr(settings, "app_env", "development")
-
-    request = MagicMock()
-    request.headers = {}
-    request.state = MagicMock()
-
-    user = await get_current_user(
-        request, x_user_role="admin", x_user_name="Local Admin", x_user_id=None
-    )
-    assert user.role == UserRole.ADMIN
-    assert user.name == "Local Admin"
+        get_current_user(request, MagicMock())

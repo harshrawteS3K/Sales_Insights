@@ -75,12 +75,24 @@ export type ERPPreviewResponse = {
     product_name: string;
     status: string;
   }>;
+  duplicate_review?: {
+    detected: boolean;
+    message: string;
+    distributor: string;
+    financial_year: string;
+    quarter: string;
+    existing_rows: number;
+    new_rows: number;
+    periods?: string[];
+  } | null;
 };
 
 export type ERPImportResult = {
   report_id: number;
   records_inserted: number;
   duplicate: boolean;
+  requires_review?: boolean;
+  duplicate_review?: ERPPreviewResponse['duplicate_review'];
   quality_score: number;
   distributor_id: number;
   reporting_quarter: string;
@@ -260,6 +272,7 @@ export const EmailsService = {
       period?: string | null;
       reporting_quarter?: string | null;
     }>;
+    replace_existing?: boolean;
   }): Promise<ERPImportResult> => {
     const res = await apiRequest<{ success: boolean; data: ERPImportResult }>('/erp/import', {
       method: 'POST',

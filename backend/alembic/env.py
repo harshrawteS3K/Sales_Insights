@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.database.base import Base
 from app.models import (  # noqa: F401 — ensure models are registered
     AuditTrail,
+    AuthSession,
     CustomerMaster,
     Distributor,
     DistributorParserProfile,

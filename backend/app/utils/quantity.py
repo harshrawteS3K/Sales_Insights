@@ -154,6 +154,39 @@ def format_quantity(value: Decimal | float | int) -> str:
     return f"{number:,.6f}".rstrip("0").rstrip(".")
 
 
+def quantity_as_mt(
+    value: Union[Decimal, float, int, str],
+    *,
+    unit: Optional[str] = None,
+    original_unit: Optional[str] = None,
+) -> Decimal:
+    """
+    Canonical MT for analytics.
+
+    Consolidation stores converted MT on ``quantity`` and sets ``unit`` to MT,
+    keeping the workbook unit on ``original_unit``. Rows still marked KG
+    (column default) hold kilograms and are divided by 1000 here.
+    """
+    amount = Decimal(str(value or 0))
+    stored = normalize_unit(unit or "")
+    source = normalize_unit(original_unit or "")
+    if stored == "KG" or (stored != "MT" and source == "KG"):
+        return kg_to_mt(amount)
+    return amount
+
+
+def format_mt(value: Union[Decimal, float, int, str]) -> str:
+    """Display MT with exactly two decimal places (1.00, 12.40, 184.56)."""
+    number = Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return f"{number:,.2f}"
+
+
+def round_mt(value: Union[Decimal, float, int, str]) -> float:
+    """Numeric MT rounded half-up to two decimal places."""
+    number = Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(number)
+
+
 def safe_str(value: object, default: str = "") -> str:
     """Coerce a cell value to a trimmed string."""
     if value is None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,6 +17,7 @@ from app.models.sales_record import SalesRecord
 from app.repositories.sales_record_repository import (
     SalesRecordRepository,
     company_expr,
+    mt_quantity_expr,
     reporting_month_expr,
 )
 from app.utils.period_calendar import (
@@ -27,9 +29,10 @@ from app.utils.period_calendar import (
     month_label,
     months_for_fy_quarter,
     parse_month_label,
+    parse_quarter_label,
     quarter_of_month,
 )
-from app.utils.quantity import format_quantity
+from app.utils.quantity import format_mt, round_mt
 
 
 PERIOD_FULL_YEAR = "full_year"
@@ -304,12 +307,87 @@ _SHORT_MONTHS = (
 )
 
 
-def _month_from_submission(source_month: Optional[str], report_name: Optional[str]) -> Optional[Tuple[int, int]]:
-    """Resolve a calendar month from the stored source month or the email subject."""
-    parsed = parse_month_label(str(source_month or ""))
-    if parsed:
+_MONTH_TOKEN = (
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+)
+_FLEX_MONTH_RE = re.compile(
+    rf"(?i)(?:(\d{{1,2}})[-/\s]+)?({_MONTH_TOKEN})[a-z]*[-/\s,]*(\d{{2,4}})?"
+)
+_YM_RE = re.compile(r"^\s*(\d{4})[-/](\d{1,2})\s*$")
+_MONTH_NUMBER = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+
+def _coerce_year(raw: Optional[str], fallback: Optional[int] = None) -> Optional[int]:
+    if not raw:
+        return fallback
+    year = int(raw)
+    if year < 100:
+        year += 2000
+    if 1990 <= year <= 2100:
+        return year
+    return fallback
+
+
+def _parse_flexible_month(text: Optional[str]) -> Optional[Tuple[int, Optional[int]]]:
+    """Return ``(month, year-or-None)`` for April 2026, Apr-26, 01-Apr-26, 2026-04."""
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    labeled = parse_month_label(raw)
+    if labeled:
+        month, year = labeled
+        return month, year
+    ym = _YM_RE.match(raw)
+    if ym:
+        year = int(ym.group(1))
+        month = int(ym.group(2))
+        if 1 <= month <= 12:
+            return month, year
+    match = _FLEX_MONTH_RE.search(raw)
+    if not match:
+        return None
+    month = _MONTH_NUMBER[match.group(2).lower()[:3]]
+    return month, _coerce_year(match.group(3))
+
+
+def _quarter_of_text(text: Optional[str]) -> Optional[Tuple[int, int]]:
+    spec = parse_quarter_label(str(text or "").strip())
+    if spec and spec.kind == "quarter" and spec.year and spec.quarter:
+        return int(spec.year), int(spec.quarter)
+    return None
+
+
+def _month_from_submission(
+    source_month: Optional[str],
+    report_name: Optional[str],
+    period: Optional[str] = None,
+    reporting_month: Optional[str] = None,
+) -> Optional[Tuple[int, int]]:
+    """Resolve a calendar month from source month, period, or the email subject."""
+    quarter = _quarter_of_text(reporting_month) or _quarter_of_text(period)
+    for candidate in (source_month, period, reporting_month):
+        parsed = _parse_flexible_month(candidate)
+        if not parsed:
+            continue
         month, year = parsed
-        return year, month
+        if year is None and quarter:
+            year = calendar_year_for_fy_month(quarter[0], month)
+        if year is not None:
+            return year, month
     if not report_name:
         return None
     from app.utils.email_subject_parser import try_parse_email_subject
@@ -317,29 +395,103 @@ def _month_from_submission(source_month: Optional[str], report_name: Optional[st
     subject = try_parse_email_subject(str(report_name))
     if not subject or not subject.get("source_month"):
         return None
-    parsed = parse_month_label(str(subject["source_month"]))
-    if not parsed:
+    parsed = _parse_flexible_month(str(subject["source_month"]))
+    if not parsed or parsed[1] is None:
         return None
     month, year = parsed
-    return year, month
+    return int(year), month
+
+
+def _align_month_to_window(
+    key: Tuple[int, int],
+    allowed: Optional[set],
+    reporting_month: Optional[str],
+    period: Optional[str],
+) -> Optional[Tuple[int, int]]:
+    """Keep a month inside the selected FY window, correcting a drifted calendar year."""
+    if allowed is None or key in allowed:
+        return key
+    quarter = _quarter_of_text(reporting_month) or _quarter_of_text(period)
+    if not quarter:
+        return None
+    for year, month in allowed:
+        if month != key[1]:
+            continue
+        if fy_start_for_calendar_month(month, year) == quarter[0] and quarter_of_month(month) == quarter[1]:
+            return year, month
+    return None
 
 
 def _month_trend_points(
-    rows: List[Tuple[Optional[str], Optional[str], float]],
+    rows: List[Tuple[Optional[str], Optional[str], Optional[str], Optional[str], float]],
     window: Optional[List[Tuple[int, int]]],
 ) -> List[Dict[str, Any]]:
-    """Month points that actually have quantity. Missing months are omitted."""
+    """
+    Monthly sales points for every filtered record.
+
+    A zero month stays on the chart. The series is empty only when the
+    filtered row set itself is empty.
+    """
+    if not rows:
+        return []
     allowed = set(window) if window is not None else None
     totals: Dict[Tuple[int, int], float] = {}
-    for source_month, report_name, qty in rows:
-        if qty <= 0:
+    exact: set = set()
+    unassigned: Dict[Tuple[int, int], float] = {}
+    quarters: set = set()
+    for source_month, report_name, period, reporting_month, qty in rows:
+        if qty < 0:
             continue
-        key = _month_from_submission(source_month, report_name)
-        if not key:
+        key = _month_from_submission(source_month, report_name, period, reporting_month)
+        if key:
+            key = _align_month_to_window(key, allowed, reporting_month, period)
+        if key:
+            totals[key] = totals.get(key, 0.0) + qty
+            exact.add(key)
+            fy = fy_start_for_calendar_month(key[1], key[0])
+            quarters.add((fy, quarter_of_month(key[1])))
             continue
-        if allowed is not None and key not in allowed:
-            continue
-        totals[key] = totals.get(key, 0.0) + qty
+        quarter = _quarter_of_text(reporting_month) or _quarter_of_text(period)
+        if quarter:
+            quarters.add(quarter)
+            unassigned[quarter] = unassigned.get(quarter, 0.0) + qty
+
+    def _in_window(year: int, month: int) -> bool:
+        return allowed is None or (year, month) in allowed
+
+    for fy_start, quarter in quarters:
+        for label in months_for_fy_quarter(fy_start, quarter):
+            parsed = parse_month_label(label)
+            if not parsed:
+                continue
+            month, year = parsed
+            if not _in_window(year, month):
+                continue
+            totals.setdefault((year, month), 0.0)
+
+    if not exact and unassigned:
+        for (fy_start, quarter), qty in unassigned.items():
+            slots = []
+            for label in months_for_fy_quarter(fy_start, quarter):
+                parsed = parse_month_label(label)
+                if not parsed:
+                    continue
+                month, year = parsed
+                if _in_window(year, month):
+                    slots.append((year, month))
+            if not slots or qty == 0:
+                continue
+            from decimal import Decimal, ROUND_HALF_UP
+
+            remaining = Decimal(str(qty))
+            share = (remaining / Decimal(len(slots))).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            for index, slot in enumerate(slots):
+                part = remaining if index == len(slots) - 1 else min(share, remaining)
+                totals[slot] = totals.get(slot, 0.0) + float(part)
+                remaining -= part
+
     points: List[Dict[str, Any]] = []
     for year, month in sorted(totals):
         short = _SHORT_MONTHS[month - 1]
@@ -347,7 +499,7 @@ def _month_trend_points(
             {
                 "month": short,
                 "tooltip": f"{short} {year}",
-                "qty": round(totals[(year, month)], 3),
+                "qty": round_mt(totals[(year, month)]),
             }
         )
     return points
@@ -576,7 +728,7 @@ class SalesInsightsService:
 
         kpi_q = self._scoped(
             select(
-                func.coalesce(func.sum(SalesRecord.quantity), 0),
+                func.coalesce(func.sum(mt_quantity_expr()), 0),
                 func.count(func.distinct(SalesRecord.customer_name)),
                 func.count(func.distinct(SalesRecord.product)),
             )
@@ -586,7 +738,7 @@ class SalesInsightsService:
             **scope_kw,
         )
         total_qty, total_customers, total_products = self.db.execute(kpi_q).one()
-        total_qty_f = _to_float(total_qty)
+        total_qty_f = round_mt(total_qty)
         n_quarters = max(len(axis_months), 1)
         avg_monthly = total_qty_f / n_quarters
 
@@ -594,12 +746,19 @@ class SalesInsightsService:
             select(
                 SalesRecord.source_month,
                 Report.name,
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                SalesRecord.period,
+                Report.reporting_month,
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
-            .group_by(SalesRecord.source_month, Report.name),
+            .group_by(
+                SalesRecord.source_month,
+                Report.name,
+                SalesRecord.period,
+                Report.reporting_month,
+            ),
             **scope_kw,
         )
         window = _period_year_months(
@@ -610,8 +769,8 @@ class SalesInsightsService:
         )
         monthly_trend = _month_trend_points(
             [
-                (src, name, _to_float(qty))
-                for src, name, qty in self.db.execute(trend_q).all()
+                (src, name, period_value, reporting_month, _to_float(qty))
+                for src, name, period_value, reporting_month, qty in self.db.execute(trend_q).all()
             ],
             window,
         )
@@ -619,18 +778,18 @@ class SalesInsightsService:
         top_q = self._scoped(
             select(
                 SalesRecord.customer_name,
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .group_by(SalesRecord.customer_name)
-            .order_by(func.sum(SalesRecord.quantity).desc())
+            .order_by(func.sum(mt_quantity_expr()).desc())
             .limit(10),
             **scope_kw,
         )
         top_customers = [
-            {"customer": str(c), "qty": round(_to_float(q), 3)}
+            {"customer": str(c), "qty": round_mt(q)}
             for c, q in self.db.execute(top_q).all()
             if c
         ]
@@ -638,17 +797,17 @@ class SalesInsightsService:
         prod_q = self._scoped(
             select(
                 SalesRecord.product,
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .group_by(SalesRecord.product)
-            .order_by(func.sum(SalesRecord.quantity).desc()),
+            .order_by(func.sum(mt_quantity_expr()).desc()),
             **scope_kw,
         )
         prod_rows = [
-            {"product": str(p), "qty": round(_to_float(q), 3)}
+            {"product": str(p), "qty": round_mt(q)}
             for p, q in self.db.execute(prod_q).all()
             if p
         ]
@@ -657,7 +816,7 @@ class SalesInsightsService:
             head = prod_rows[:top_n]
             others = sum(r["qty"] for r in prod_rows[top_n:])
             if others > 0:
-                head.append({"product": "Others", "qty": round(others, 3)})
+                head.append({"product": "Others", "qty": round_mt(others)})
             product_contribution = head
         else:
             product_contribution = prod_rows
@@ -679,7 +838,7 @@ class SalesInsightsService:
                 SalesRecord.product,
                 SalesRecord.location,
                 reporting_month_expr().label("month"),
-                SalesRecord.quantity,
+                mt_quantity_expr().label("qty"),
                 company_expr().label("distributor"),
             )
             .select_from(SalesRecord)
@@ -696,7 +855,8 @@ class SalesInsightsService:
                 "product": str(p or ""),
                 "location": str(loc or ""),
                 "month": format_period_display(str(m or "")),
-                "qty": round(_to_float(q), 3),
+                "qty": round_mt(q),
+                "qty_display": format_mt(q),
                 "distributor": str(d or ""),
             }
             for c, p, loc, m, q, d in self.db.execute(rows_q).all()
@@ -704,12 +864,12 @@ class SalesInsightsService:
 
         return {
             "kpis": {
-                "total_sales_mt": round(total_qty_f, 3),
-                "total_sales_mt_display": format_quantity(total_qty_f),
+                "total_sales_mt": total_qty_f,
+                "total_sales_mt_display": format_mt(total_qty_f),
                 "total_customers": int(total_customers or 0),
                 "total_products": int(total_products or 0),
-                "avg_monthly_sales_mt": round(avg_monthly, 3),
-                "avg_monthly_sales_mt_display": format_quantity(avg_monthly),
+                "avg_monthly_sales_mt": round_mt(avg_monthly),
+                "avg_monthly_sales_mt_display": format_mt(avg_monthly),
             },
             "monthly_trend": monthly_trend,
             "top_customers": top_customers,
@@ -763,7 +923,7 @@ class SalesInsightsService:
                 SalesRecord.product,
                 SalesRecord.location,
                 reporting_month_expr().label("month"),
-                SalesRecord.quantity,
+                mt_quantity_expr().label("qty"),
                 company_expr().label("distributor"),
             )
             .select_from(SalesRecord)
@@ -779,7 +939,7 @@ class SalesInsightsService:
                 "Product": str(p or ""),
                 "Location": str(loc or ""),
                 "Quarter": format_period_display(str(m or "")),
-                "Sales Quantity (MT)": round(_to_float(q), 3),
+                "Sales Quantity (MT)": round_mt(q),
                 "Distributor": str(d or ""),
             }
             for c, p, loc, m, q, d in self.db.execute(rows_q).all()

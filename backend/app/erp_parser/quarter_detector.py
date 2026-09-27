@@ -7,17 +7,15 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-import httpx
-
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.llm.bedrock_client import BedrockError, complete
+from app.llm.model_registry import default_model_id, resolve_model_id
 from app.erp_parser.fiscal_quarters import month_key_to_quarter, quarter_label
 from app.erp_parser.workbook_detector import list_candidate_sheets, read_sheet_matrix
 from app.utils.period_calendar import parse_month_label, parse_quarter_label
 
 logger = get_logger(__name__)
-
-OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 
 # Apr-Jun 2026, Jul-Sep 2026, July 2026, Q2 2026, Secondary Sales Jul-Sep 2026
 _RANGE_RE = re.compile(
@@ -233,54 +231,34 @@ def _llm_detect_quarter(path: Union[str, Path]) -> Optional[Dict[str, Any]]:
     except Exception:  # noqa: BLE001
         settings = get_settings()
         rt = {
-            "enabled": bool((settings.openai_api_key or "").strip()),
-            "api_key": (settings.openai_api_key or "").strip(),
-            "model": settings.openai_model or "gpt-4o-mini",
-            "timeout": float(settings.openai_timeout_seconds or 60),
+            "enabled": True,
+            "model": default_model_id(),
+            "timeout": float(settings.bedrock_timeout or 60),
         }
 
     if not rt.get("enabled"):
-        return None
-    api_key = (rt.get("api_key") or "").strip()
-    if not api_key:
         return None
 
     snippets = [f"{src}: {txt}" for src, txt in _collect_probe_texts(path)[:25]]
     if not snippets:
         return None
 
-    model = rt.get("model") or "gpt-4o-mini"
-    body = {
-        "model": model,
-        "temperature": 0,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Detect APCOTEX Indian financial-year reporting quarter from Excel metadata. "
-                    "FY Apr-Mar: Q1=Apr-Jun, Q2=Jul-Sep, Q3=Oct-Dec, Q4=Jan-Mar. "
-                    "Return JSON only with FY label: "
-                    "{\"reporting_quarter\":\"FY 2025-26 • Q2\",\"confidence\":95}"
-                ),
-            },
-            {"role": "user", "content": json.dumps({"snippets": snippets}, ensure_ascii=True)},
-        ],
-    }
+    model = resolve_model_id(rt.get("model"))
+    system = (
+        "Detect APCOTEX Indian financial-year reporting quarter from Excel metadata. "
+        "FY Apr-Mar: Q1=Apr-Jun, Q2=Jul-Sep, Q3=Oct-Dec, Q4=Jan-Mar. "
+        "Return JSON only with FY label: "
+        "{\"reporting_quarter\":\"FY 2025-26 • Q2\",\"confidence\":95}"
+    )
     try:
-        with httpx.Client(timeout=float(rt.get("timeout") or 60)) as client:
-            resp = client.post(
-                OPENAI_CHAT_URL,
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=body,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-            content = (
-                (((payload.get("choices") or [{}])[0].get("message") or {}).get("content"))
-                or ""
-            )
-        usage = payload.get("usage") if isinstance(payload, dict) else None
+        result = complete(
+            system=system,
+            user=json.dumps({"snippets": snippets}, ensure_ascii=True),
+            model_id=model,
+            timeout=float(rt.get("timeout") or 60),
+            reason="Quarter detection",
+        )
+        usage = result.usage()
         try:
             from app.database.session import SessionLocal
             from app.services.llm_settings_service import LlmSettingsService
@@ -289,9 +267,9 @@ def _llm_detect_quarter(path: Union[str, Path]) -> Optional[Dict[str, Any]]:
             try:
                 LlmSettingsService(_db).record_usage(
                     purpose="quarter_detect",
-                    usage=usage if isinstance(usage, dict) else {},
-                    model=model,
-                    provider="openai",
+                    usage=usage,
+                    model=result.model_id,
+                    provider="bedrock",
                 )
                 _db.commit()
             finally:
@@ -299,12 +277,12 @@ def _llm_detect_quarter(path: Union[str, Path]) -> Optional[Dict[str, Any]]:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to persist LLM usage | purpose=quarter_detect | err={}", exc)
 
-        data = json.loads(content)
+        data = json.loads(result.text)
         label = str(data.get("reporting_quarter") or "").strip()
         conf = float(data.get("confidence") or 0)
         parsed = parse_quarter_label(label) if label else None
         if parsed and parsed.label:
             return _score_candidate(parsed.label, conf, "llm")
-    except Exception as exc:  # noqa: BLE001
+    except (BedrockError, json.JSONDecodeError, TypeError, ValueError) as exc:
         logger.warning("LLM quarter detection failed | err={}", exc)
     return None

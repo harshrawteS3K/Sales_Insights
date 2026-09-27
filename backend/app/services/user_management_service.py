@@ -19,7 +19,7 @@ from app.repositories.user_segment_repository import UserSegmentRepository
 from app.schemas.audit import AuditTrailCreate
 from app.schemas.user import PasswordChange, RoleUpdate, StatusUpdate, UserCreate, UsernameUpdate, UserUpdate
 from app.services.audit_service import AuditService
-from app.services.auth_service import HARDCODED_SUPER_ADMIN_USERNAME
+from app.services.auth_service import RESERVED_SUPER_ADMIN_USERNAME
 from app.utils.files import ensure_dir
 from app.utils.passwords import (
     hash_password,
@@ -252,7 +252,7 @@ class UserManagementService:
         username = username_or_err
 
         # Never collide with hardcoded Super Admin username
-        if username == HARDCODED_SUPER_ADMIN_USERNAME:
+        if username == RESERVED_SUPER_ADMIN_USERNAME:
             raise ConflictError("Username is reserved for the system Super Admin")
 
         if self.users.get_by_username(username):
@@ -320,7 +320,7 @@ class UserManagementService:
             if not ok:
                 raise ValidationAppError(username_or_err)
             username = username_or_err
-            if username == HARDCODED_SUPER_ADMIN_USERNAME:
+            if username == RESERVED_SUPER_ADMIN_USERNAME:
                 raise ConflictError("Username is reserved for the system Super Admin")
             conflict = self.users.get_by_username(username)
             if conflict and conflict.id != user_id:

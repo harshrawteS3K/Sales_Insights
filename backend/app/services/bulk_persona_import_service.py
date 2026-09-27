@@ -87,14 +87,14 @@ class BulkPersonaImportService:
     @classmethod
     def _generate_username(cls, full_name: str, existing_usernames: set[str]) -> str:
         """Generate first-name based lowercase username (e.g. 'Anup Pandey' -> 'anup')."""
-        from app.services.auth_service import HARDCODED_SUPER_ADMIN_USERNAME
+        from app.services.auth_service import RESERVED_SUPER_ADMIN_USERNAME
 
         parts = [p.strip().lower() for p in full_name.split() if p.strip()]
         base = parts[0] if parts else "user"
         base = "".join(c for c in base if c.isalnum()) or "user"
         candidate = base
         idx = 1
-        reserved = existing_usernames | {HARDCODED_SUPER_ADMIN_USERNAME, "admin"}
+        reserved = existing_usernames | {RESERVED_SUPER_ADMIN_USERNAME, "admin"}
         while candidate in reserved:
             candidate = f"{base}{idx}"
             idx += 1

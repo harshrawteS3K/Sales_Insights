@@ -140,6 +140,7 @@ export const MasterDataService = {
       {
         method: 'GET',
         headers,
+        credentials: 'include',
       },
     );
     if (!res.ok) {

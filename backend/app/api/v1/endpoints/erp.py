@@ -171,10 +171,15 @@ def import_erp_rows(
         mapping=mapping,
         rows=rows,
         fiscal_year_start=payload.fiscal_year_start,
+        replace_existing=bool(payload.replace_existing),
     )
     return DataResponse(
         data=ERPImportResponse.model_validate(result),
-        message=f"Imported {result['records_inserted']} sales rows",
+        message=(
+            result["duplicate_review"]["message"]
+            if result.get("requires_review") and result.get("duplicate_review")
+            else f"Imported {result['records_inserted']} sales rows"
+        ),
     )
 
 

@@ -316,7 +316,7 @@ export function EmailsModule() {
     (preview?.monthly_pivot ? Boolean(fiscalYearStart) : Boolean(detectedQuarter)) &&
     !previewBusy;
 
-  const approveImport = async () => {
+  const approveImport = async (replaceExisting = false) => {
     if (!previewEmail || !preview || !distributorId) return;
     setImportBusy(true);
     setPreviewError(null);
@@ -330,7 +330,14 @@ export function EmailsModule() {
         fiscal_year_start: preview.monthly_pivot ? fiscalYearStart : undefined,
         mapping: mappings,
         rows: preview.rows,
+        replace_existing: replaceExisting,
       });
+      if (result.requires_review && result.duplicate_review?.detected) {
+        setPreview(current =>
+          current ? { ...current, duplicate_review: result.duplicate_review } : current,
+        );
+        return;
+      }
       const qLabel =
         result.quarters_imported?.length
           ? result.quarters_imported.map(formatPeriodDisplay).join(', ')
@@ -482,6 +489,18 @@ export function EmailsModule() {
             fiscal_year_start: periodArgs.fiscal_year_start,
             rows: data.rows,
           });
+          if (result.requires_review) {
+            results.push({
+              emailId: email.id,
+              subject: email.subject,
+              status: 'skipped',
+              detail:
+                result.duplicate_review?.message ||
+                'Duplicate records detected for this Financial Year & Quarter. Review before proceeding.',
+            });
+            setBatchResults([...results]);
+            continue;
+          }
           totalRows += result.records_inserted || 0;
           const qLabel =
             result.quarters_imported?.length
@@ -1255,7 +1274,37 @@ export function EmailsModule() {
                   </table>
                 </div>
 
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                {preview.duplicate_review?.detected && !importDone && (
+                  <div
+                    style={{
+                      marginTop: 14,
+                      padding: '12px 14px',
+                      borderRadius: 8,
+                      background: '#FFFBEB',
+                      border: '1px solid #FCD34D',
+                      color: '#92400E',
+                      fontSize: '0.8125rem',
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                      {preview.duplicate_review.message}
+                    </div>
+                    <div>
+                      Distributor : {preview.duplicate_review.distributor || '—'}
+                      <br />
+                      FY : {preview.duplicate_review.financial_year || '—'}
+                      <br />
+                      Quarter : {preview.duplicate_review.quarter || '—'}
+                      <br />
+                      Existing Rows : {preview.duplicate_review.existing_rows}
+                      <br />
+                      New Rows : {preview.duplicate_review.new_rows}
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
                   <button
                     type="button"
                     style={btnSecondary}
@@ -1264,9 +1313,9 @@ export function EmailsModule() {
                       setPreview(null);
                     }}
                   >
-                    Close
+                    {preview.duplicate_review?.detected && !importDone ? 'Cancel Import' : 'Close'}
                   </button>
-                  {!importDone && (
+                  {!importDone && preview.duplicate_review?.detected && (
                     <button
                       type="button"
                       style={{
@@ -1275,7 +1324,21 @@ export function EmailsModule() {
                         cursor: canImport && !importBusy ? 'pointer' : 'not-allowed',
                       }}
                       disabled={!canImport || importBusy}
-                      onClick={() => void approveImport()}
+                      onClick={() => void approveImport(true)}
+                    >
+                      {importBusy ? 'Replacing…' : 'Replace Existing Records'}
+                    </button>
+                  )}
+                  {!importDone && !preview.duplicate_review?.detected && (
+                    <button
+                      type="button"
+                      style={{
+                        ...btnPrimary,
+                        background: canImport ? TEAL : '#9CA3AF',
+                        cursor: canImport && !importBusy ? 'pointer' : 'not-allowed',
+                      }}
+                      disabled={!canImport || importBusy}
+                      onClick={() => void approveImport(false)}
                     >
                       {importBusy ? 'Importing…' : 'Approve Import'}
                     </button>

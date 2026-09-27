@@ -12,7 +12,6 @@ from pydantic import ValidationError
 
 from app.api.v1.endpoints import auth as auth_endpoints
 from app.api.v1.endpoints import users as users_endpoints
-from app.core.config import settings
 from app.dependencies.rbac import RequestUser, require_roles
 from app.dependencies.services import get_auth_service, get_user_service
 from app.enums import UserRole
@@ -59,10 +58,7 @@ async def test_require_roles_super_admin_passes_admin_gate():
         await user_only(super_user)
 
 
-def test_auth_service_super_admin_from_env(monkeypatch):
-    monkeypatch.setattr(settings, "super_admin_username", "superadmin")
-    monkeypatch.setattr(settings, "super_admin_password", "SuPeR@dmin@123")
-
+def test_auth_service_unknown_user_has_no_special_path():
     users_repo = MagicMock()
     users_repo.get_by_username.return_value = None
     audit = MagicMock()
@@ -72,16 +68,12 @@ def test_auth_service_super_admin_from_env(monkeypatch):
     service.users = users_repo
     service.audit = audit
 
-    result = service.login("superadmin", "SuPeR@dmin@123")
-    assert result.role == UserRole.SUPER_ADMIN.value
-    assert result.user_id is None
-    assert result.name == "Super Admin"
+    with pytest.raises(UnauthorizedError):
+        service.login("superadmin", "not-a-stored-password")
     audit.log.assert_called()
 
 
-def test_auth_service_db_user_inactive_blocked(monkeypatch):
-    monkeypatch.setattr(settings, "super_admin_username", "superadmin")
-    monkeypatch.setattr(settings, "super_admin_password", "SuPeR@dmin@123")
+def test_auth_service_db_user_inactive_blocked():
 
     inactive = SimpleNamespace(
         id=3,
@@ -105,10 +97,8 @@ def test_auth_service_db_user_inactive_blocked(monkeypatch):
         service.login("bob", "GoodPass1!")
 
 
-def test_auth_service_db_user_before_super_admin(monkeypatch):
-    """If a DB user matches the username, never fall through to Super Admin."""
-    monkeypatch.setattr(settings, "super_admin_username", "admin")
-    monkeypatch.setattr(settings, "super_admin_password", "SuPeR@dmin@123")
+def test_auth_service_db_user_login():
+    """Database users authenticate on the same path, including admins."""
 
     db_user = SimpleNamespace(
         id=1,
@@ -116,6 +106,7 @@ def test_auth_service_db_user_before_super_admin(monkeypatch):
         full_name="Debabrata C",
         title="CMO",
         role=UserRole.ADMIN.value,
+        email="admin@apcotex.com",
         is_active=True,
         password_hash=hash_password("admin123"),
     )
@@ -128,9 +119,10 @@ def test_auth_service_db_user_before_super_admin(monkeypatch):
     service.users = users_repo
     service.audit = audit
 
-    result = service.login("admin", "admin123")
+    result, token = service.login("admin", "admin123")
     assert result.role == UserRole.ADMIN.value
     assert result.user_id == 1
+    assert token
 
 
 def _app_with_handlers() -> FastAPI:
@@ -141,8 +133,9 @@ def _app_with_handlers() -> FastAPI:
     return app
 
 
-def test_users_endpoints_require_admin():
+def test_users_endpoints_ignore_role_headers():
     from app.database.session import get_db
+    from app.dependencies.rbac import get_current_user
 
     app = _app_with_handlers()
     app.include_router(users_endpoints.router, prefix="/api")
@@ -160,18 +153,21 @@ def test_users_endpoints_require_admin():
     app.dependency_overrides[get_db] = lambda: MagicMock()
     client = TestClient(app, raise_server_exceptions=False)
 
-    res_admin = client.get("/api/users", headers={"X-User-Role": "admin", "X-User-Name": "Admin"})
-    assert res_admin.status_code == 200
+    for role in ("admin", "user", "super_admin"):
+        res = client.get("/api/users", headers={"X-User-Role": role, "X-User-Name": "Spoofed"})
+        assert res.status_code == 401
 
-    res_user = client.get("/api/users", headers={"X-User-Role": "user", "X-User-Name": "User"})
-    assert res_user.status_code == 403
-
-    res_ok = client.get(
-        "/api/users",
-        headers={"X-User-Role": "super_admin", "X-User-Name": "Super Admin"},
+    app.dependency_overrides[get_current_user] = lambda: RequestUser(
+        role=UserRole.ADMIN, name="Admin", user_id=1
     )
-    assert res_ok.status_code == 200
-    assert res_ok.json()["total"] == 0
+    allowed = client.get("/api/users", headers={"X-User-Role": "user"})
+    assert allowed.status_code == 200
+
+    app.dependency_overrides[get_current_user] = lambda: RequestUser(
+        role=UserRole.USER, name="Sales", user_id=2
+    )
+    denied = client.get("/api/users", headers={"X-User-Role": "super_admin"})
+    assert denied.status_code == 403
 
 
 def test_login_endpoint():
@@ -181,12 +177,15 @@ def test_login_endpoint():
     class FakeAuth:
         def login(self, username, password):
             if username == "superadmin" and password == "ok":
-                return LoginUserData(
-                    role="super_admin",
-                    name="Super Admin",
-                    title="Identity Administrator",
-                    username="superadmin",
-                    user_id=None,
+                return (
+                    LoginUserData(
+                        role="super_admin",
+                        name="Super Admin",
+                        title="Identity Administrator",
+                        username="superadmin",
+                        user_id=9,
+                    ),
+                    "server-session-token",
                 )
             raise UnauthorizedError("Invalid username or password")
 

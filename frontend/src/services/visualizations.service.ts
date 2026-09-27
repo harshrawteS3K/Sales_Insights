@@ -47,6 +47,7 @@ export type SalesInsightsPayload = {
       location?: string;
       month: string;
       qty: number;
+      qty_display?: string;
       distributor: string;
     }>;
     total: number;
@@ -114,7 +115,7 @@ export const VisualizationsService = {
     if (session?.email) headers['X-User-Email'] = session.email;
     if (session?.segments?.length) headers['X-User-Segments'] = session.segments.join(',');
 
-    const response = await fetch(url, { headers });
+    const response = await fetch(url, { headers, credentials: 'include' });
     if (!response.ok) {
       throw new Error('Failed to export Sales Insights');
     }

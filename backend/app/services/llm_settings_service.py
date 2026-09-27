@@ -1,4 +1,4 @@
-"""Admin LLM settings + usage logging (OpenAI today)."""
+"""Admin LLM settings + usage logging (Amazon Bedrock)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,13 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.llm.model_registry import (
+    display_name_for,
+    is_known_model,
+    public_model_names,
+    rates_for,
+    resolve_model_id,
+)
 from app.models.llm_usage_log import LlmUsageLog
 from app.models.system_setting import SystemSetting
 
@@ -18,28 +25,13 @@ LLM_PROVIDER_KEY = "llm_provider"
 LLM_ENABLED_KEY = "llm_enabled"
 LLM_MODEL_KEY = "llm_model"
 
-AVAILABLE_PROVIDERS = ["openai"]
-AVAILABLE_MODELS = [
-    "gpt-4o-mini",
-    "gpt-4o",
-    "gpt-4.1-mini",
-    "gpt-4.1",
-    "gpt-5.4-mini",
-]
+AVAILABLE_PROVIDERS = ["bedrock"]
 
-# Approx USD per 1M tokens (input, output) — used for admin cost estimates only.
-_MODEL_RATES_PER_1M: Dict[str, tuple[float, float]] = {
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4o": (2.50, 10.00),
-    "gpt-4.1-mini": (0.40, 1.60),
-    "gpt-4.1": (2.00, 8.00),
-    "gpt-5.4-mini": (0.25, 2.00),
-}
+# Approx USD per 1M tokens — admin cost estimates only. Rates live on the registry.
 
 
 def estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    rates = _MODEL_RATES_PER_1M.get((model or "").strip(), (0.50, 1.50))
-    inp, out = rates
+    inp, out = rates_for(model)
     return round((prompt_tokens / 1_000_000.0) * inp + (completion_tokens / 1_000_000.0) * out, 6)
 
 
@@ -67,18 +59,17 @@ class LlmSettingsService:
     def is_enabled(self) -> bool:
         raw = self._get(LLM_ENABLED_KEY)
         if raw is None:
-            return bool((self.env.openai_api_key or "").strip())
+            return True
         return raw.lower() in {"1", "true", "yes", "on"}
 
     def get_provider(self) -> str:
-        return (self._get(LLM_PROVIDER_KEY) or "openai").lower()
+        return "bedrock"
 
     def get_model(self) -> str:
-        return self._get(LLM_MODEL_KEY) or (self.env.openai_model or "gpt-4o-mini")
+        return resolve_model_id(self._get(LLM_MODEL_KEY) or self.env.default_model)
 
     def get_api_key(self) -> str:
-        # API key stays in env only (never stored in DB / returned to UI in full).
-        return (self.env.openai_api_key or "").strip()
+        return ""
 
     def get_settings_payload(self) -> Dict[str, Any]:
         key = self.get_api_key()
@@ -88,12 +79,12 @@ class LlmSettingsService:
         return {
             "provider": self.get_provider(),
             "enabled": self.is_enabled(),
-            "model": self.get_model(),
+            "model": display_name_for(self.get_model()),
             "api_key_configured": bool(key),
             "api_key_masked": masked,
             "available_providers": AVAILABLE_PROVIDERS,
-            "available_models": AVAILABLE_MODELS,
-            "timeout_seconds": float(self.env.openai_timeout_seconds or 30),
+            "available_models": public_model_names(),
+            "timeout_seconds": float(self.env.bedrock_timeout or 30),
         }
 
     def update_settings(
@@ -117,12 +108,14 @@ class LlmSettingsService:
         if enabled is not None:
             self._set(LLM_ENABLED_KEY, "true" if enabled else "false")
         if model is not None:
-            m = model.strip()
-            if not m:
+            if not is_known_model(model):
                 from app.exceptions import ValidationAppError
 
-                raise ValidationAppError("model cannot be empty")
-            self._set(LLM_MODEL_KEY, m)
+                raise ValidationAppError(
+                    f"Unsupported model '{model}'",
+                    details={"allowed": public_model_names()},
+                )
+            self._set(LLM_MODEL_KEY, resolve_model_id(model))
         logger.info(
             "LLM settings updated | actor={} | provider={} | enabled={} | model={}",
             actor,
@@ -192,7 +185,7 @@ class LlmSettingsService:
                 {
                     "id": r.id,
                     "provider": r.provider,
-                    "model": r.model,
+                    "model": display_name_for(r.model),
                     "purpose": r.purpose,
                     "prompt_tokens": r.prompt_tokens,
                     "completion_tokens": r.completion_tokens,
@@ -216,17 +209,15 @@ def resolve_runtime_llm(db: Optional[Session] = None) -> Dict[str, Any]:
     env = get_settings()
     if db is None:
         return {
-            "enabled": bool((env.openai_api_key or "").strip()),
-            "provider": "openai",
-            "model": env.openai_model or "gpt-4o-mini",
-            "api_key": (env.openai_api_key or "").strip(),
-            "timeout": float(env.openai_timeout_seconds or 30),
+            "enabled": True,
+            "provider": "bedrock",
+            "model": resolve_model_id(env.default_model),
+            "timeout": float(env.bedrock_timeout or 30),
         }
     svc = LlmSettingsService(db)
     return {
-        "enabled": svc.is_enabled() and bool(svc.get_api_key()),
-        "provider": svc.get_provider(),
+        "enabled": svc.is_enabled(),
+        "provider": "bedrock",
         "model": svc.get_model(),
-        "api_key": svc.get_api_key(),
-        "timeout": float(env.openai_timeout_seconds or 30),
+        "timeout": float(env.bedrock_timeout or 30),
     }
