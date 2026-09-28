@@ -1,6 +1,7 @@
 """Outlook / Microsoft Graph synchronization service."""
 
 import hashlib
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -947,8 +948,18 @@ class OutlookSyncService:
             merged.append(message)
         return merged
 
-    def _email_body_attachment(self, graph_id: str, mailbox: str) -> Optional[Dict[str, Any]]:
-        """Build an xlsx attachment when the message body contains a sales table."""
+    def _email_body_attachment(
+        self,
+        graph_id: str,
+        mailbox: str,
+        *,
+        subject: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Read the body, detect a sales matrix, and build the queue workbook.
+
+        GPT-5.4 is asked for layout only when the deterministic score is below 80.
+        The email is left unqueued only when that score stays zero.
+        """
         try:
             body = self.graph.get_message_body(graph_id, mailbox=mailbox)
         except Exception as exc:  # noqa: BLE001
@@ -957,12 +968,33 @@ class OutlookSyncService:
         content_type = (body.get("content_type") or "").lower()
         content = body.get("content") or ""
         preview = body.get("preview") or ""
-        html = content if "html" in content_type else ""
-        text = content if not html else preview
-        from app.erp_parser.documents.email_body import email_body_workbook_bytes
+        is_html = "html" in content_type or bool(
+            re.search(r"<(?:html|table|div|p|br)\b", content, flags=re.IGNORECASE)
+        )
+        html = content if is_html else ""
+        text = "" if html else (content or preview)
+        from app.erp_parser.documents.email_body import ingest_email_body
 
-        data = email_body_workbook_bytes(html, text)
-        if not data:
+        result = ingest_email_body(subject, html, text)
+        logger.info(
+            "Email Body Extracted\n\nCharacters : {}\n\nHTML Tables : {}",
+            result.characters,
+            result.html_tables,
+        )
+        logger.info(
+            "Email Body Detected\n\nHTML : {}\n\nBusiness Matrix : {}\n\nMonths : {}\n\nCustomers : {}\n\nProduct : {}\n\nConfidence : {}",
+            "Yes" if result.html else "No",
+            "Yes" if result.business_matrix else "No",
+            ", ".join(result.months) or "—",
+            result.customers,
+            result.product or "—",
+            result.confidence,
+        )
+        if result.llm_invoked:
+            logger.info(
+                "GPT Layout Analyzer Invoked\n\nReason : Low deterministic confidence"
+            )
+        if not result.workbook or result.confidence <= 0:
             return None
         digest = hashlib.sha256(graph_id.encode("utf-8")).hexdigest()[:40]
         logger.info(
@@ -972,8 +1004,8 @@ class OutlookSyncService:
             "id": f"email-body:{digest}",
             "name": "Email Body.xlsx",
             "contentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "size": len(data),
-            "_bytes": data,
+            "size": len(result.workbook),
+            "_bytes": result.workbook,
         }
 
     def _process_message(
@@ -1129,7 +1161,11 @@ class OutlookSyncService:
                 len(excel_attachments),
             )
         else:
-            body_attachment = self._email_body_attachment(graph_id, mailbox)
+            body_attachment = self._email_body_attachment(
+                graph_id,
+                mailbox,
+                subject=email.subject or "",
+            )
             if body_attachment is not None:
                 excel_attachments = [body_attachment]
                 email.has_attachments = True

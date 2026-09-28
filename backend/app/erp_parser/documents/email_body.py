@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
 from app.erp_parser.documents.grid import GridSheet, NormalizedGrid
@@ -45,12 +46,93 @@ _CUSTOMER_RE = re.compile(
 )
 
 
-def extract_email_body_grid(html: str = "", text: str = "") -> Optional[NormalizedGrid]:
-    """Return one sheet named ``Email Body``, or None when no sales matrix exists."""
-    best_rows: Optional[List[List[str]]] = None
-    best_score = -1
-    best_placed = -1
+@dataclass
+class EmailBodyIngest:
+    """Result of reading one Outlook body before it enters the email queue."""
+
+    characters: int
+    html_tables: int
+    html: bool
+    business_matrix: bool
+    months: List[str]
+    customers: int
+    product: str
+    confidence: int
+    llm_invoked: bool
+    llm_used: bool
+    workbook: Optional[bytes]
+
+
+def ingest_email_body(subject: str, html: str = "", text: str = "") -> EmailBodyIngest:
+    """Convert the body to text, score the matrix, and ask GPT-5.4 only below 80.
+
+    A score of zero after that layout call is the only body failure. Python
+    still extracts every quantity row.
+    """
+    rows, score, llm_invoked, llm_used, cleaned, table_count = _select_matrix(subject, html, text)
+    months = _month_labels(rows or [])
+    product = _first_product(rows or [])
+    customers = _customer_hits(rows or [])
+    usable = bool(rows) and score > 0 and _has_month_row(rows or [])
+    if not usable:
+        return EmailBodyIngest(
+            characters=len(cleaned),
+            html_tables=table_count,
+            html=bool((html or "").strip()),
+            business_matrix=False,
+            months=months,
+            customers=customers,
+            product=product,
+            confidence=0,
+            llm_invoked=llm_invoked,
+            llm_used=False,
+            workbook=None,
+        )
+    grid_rows = _mark_llm(rows or []) if llm_used else list(rows or [])
+    confidence = min(97, max(85, score)) if llm_used else (98 if score >= 80 else score)
+    grid = NormalizedGrid(document_type="Email Body", sheets=[GridSheet(name=SHEET_NAME, rows=grid_rows)])
+    return EmailBodyIngest(
+        characters=len(cleaned),
+        html_tables=table_count,
+        html=bool((html or "").strip()),
+        business_matrix=True,
+        months=months,
+        customers=customers,
+        product=product,
+        confidence=confidence,
+        llm_invoked=llm_invoked,
+        llm_used=llm_used,
+        workbook=_workbook_bytes(grid),
+    )
+
+
+def _select_matrix(
+    subject: str,
+    html: str,
+    text: str,
+) -> tuple:
+    body_html = html or ""
+    cleaned = _normalize_text(text or _visible_text(body_html))
+    table_count = len(re.findall(r"<table\b", body_html, flags=re.IGNORECASE))
+    best_rows, best_score = _best_rows(body_html, cleaned)
+    llm_invoked = False
     llm_used = False
+    if best_score < 80 and cleaned.strip():
+        llm_invoked = True
+        assisted = _llm_layout_rows(subject, cleaned, best_rows)
+        if assisted:
+            assisted_score = business_matrix_score(assisted)
+            if assisted_score > best_score or (best_rows is None and _has_month_row(assisted)):
+                best_rows = assisted
+                best_score = max(assisted_score, 85)
+                llm_used = True
+    return best_rows, best_score, llm_invoked, llm_used, cleaned, table_count
+
+
+def _best_rows(html: str, text: str) -> tuple:
+    best_rows: Optional[List[List[str]]] = None
+    best_score = 0
+    best_placed = -1
     for rows in _candidate_grids(html, text):
         score = business_matrix_score(rows)
         placed = _products_with_customers(rows)
@@ -58,21 +140,43 @@ def extract_email_body_grid(html: str = "", text: str = "") -> Optional[Normaliz
             best_rows = rows
             best_score = score
             best_placed = placed
-    if best_rows is None or best_score < 80:
-        assisted = _llm_layout_rows(html, text, best_rows)
-        if assisted:
-            assisted_score = business_matrix_score(assisted)
-            if assisted_score >= best_score:
-                best_rows = assisted
-                best_score = assisted_score
-                llm_used = True
-    if not best_rows or best_score < 80 or not _has_month_row(best_rows):
+    return best_rows, best_score
+
+
+def _normalize_text(value: str) -> str:
+    text = (value or "").replace("\xa0", " ").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
+    return "\n".join(line for line in lines if line)
+
+
+def _first_product(rows: Sequence[Sequence[str]]) -> str:
+    for row in rows:
+        label = _row_label(row)
+        if _is_product_text(label) and _numeric_cells([row]) == 0:
+            return label
+    return ""
+
+
+def _workbook_bytes(grid: NormalizedGrid) -> Optional[bytes]:
+    from app.erp_parser.documents.materialize import materialize_grid
+
+    path = materialize_grid(grid, source_name="Email Body.xlsx")
+    try:
+        return path.read_bytes()
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def extract_email_body_grid(html: str = "", text: str = "") -> Optional[NormalizedGrid]:
+    """Return one sheet named ``Email Body``, or None when no sales matrix exists."""
+    rows, score, _invoked, llm_used, _cleaned, _tables = _select_matrix("", html, text)
+    if not rows or score <= 0 or not _has_month_row(rows):
         return None
     if llm_used:
-        best_rows = _mark_llm(best_rows)
+        rows = _mark_llm(rows)
     return NormalizedGrid(
         document_type="Email Body",
-        sheets=[GridSheet(name=SHEET_NAME, rows=best_rows)],
+        sheets=[GridSheet(name=SHEET_NAME, rows=rows)],
     )
 
 
@@ -343,30 +447,25 @@ def _split_line(line: str, *, month_count: int) -> List[str]:
 
 
 def _llm_layout_rows(
-    html: str,
+    subject: str,
     text: str,
     rows: Optional[List[List[str]]],
 ) -> Optional[List[List[str]]]:
-    """Ask for column layout only when the deterministic score is below 80.
-
-    The model returns header positions. Python still builds every quantity row.
-    """
-    preview_rows = rows or _rows_from_text(text or "") or []
-    if _month_count(preview_rows) < 2 and not _month_count_in_text(html or text):
-        return None
-    sample = preview_rows[:15]
-    months = _month_labels(sample)
+    """Ask GPT-5.4 for column layout only. Python still builds every quantity row."""
+    cleaned = _normalize_text(text)
+    lines = [line for line in cleaned.splitlines() if line.strip()]
+    preview_rows = rows or _rows_from_text(cleaned) or []
     payload = {
-        "extracted_text": (text or _visible_text(html))[:4000],
-        "header_candidates": sample[:5],
-        "first_rows": sample,
-        "month_candidates": months,
+        "subject": subject or "",
+        "cleaned_email_text": cleaned[:4000],
+        "first_20_lines": lines[:20],
+        "month_candidates": _month_labels(preview_rows) or _months_in_text(cleaned),
     }
     system = (
         "Classify an email sales matrix. Return JSON only. "
-        "Do not list customers or quantities. "
-        '{"layout_type":"cross_product_matrix","customer_column":0,'
-        '"product_header_row":1,"month_columns":["Apr","May","Jun"]}'
+        "Do not list customers, quantities, or transaction rows. "
+        '{"layout_type":"cross_product_matrix","product":"APCOTEX TX 400",'
+        '"customer_column":0,"month_columns":["Apr","May","June"]}'
     )
     try:
         from app.llm.bedrock_client import complete
@@ -455,6 +554,15 @@ def _month_labels(rows: Sequence[Sequence[str]]) -> List[str]:
         if len(labels) >= 2:
             return labels
     return []
+
+
+def _months_in_text(raw: str) -> List[str]:
+    found: List[str] = []
+    for token in re.split(r"\s+", raw or ""):
+        cleaned = token.strip(".,;:")
+        if _is_month(cleaned) and cleaned not in found:
+            found.append(cleaned)
+    return found
 
 
 def _month_count_in_text(raw: str) -> bool:
