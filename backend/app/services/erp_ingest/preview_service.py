@@ -46,13 +46,16 @@ class PreviewMixin:
 
         split = quarter_split(merged_rows)
         split_lines = "\n".join(f"{name} : {count}" for name, count in sorted(split.items())) or "—"
+        parser_name = dominant.get("parser_used") or ""
+        if str(document_type).upper() == "PDF":
+            parser_name = "PDF Adapter"
         logger.info(
-            "AI Job\n\nDistributor : {}\n\nDocument : {}\n\nType : {}\n\nLayout : {}\n\nParser : {}\n\nRows Parsed : {}\n\nQuarter Split\n{}\n\nConfidence : {}\n\nLLM Used : {}\n\nDuration : {:.2f} sec",
+            "AI Job\n\nDistributor : {}\n\nDocument : {}\n\nType : {}\n\nLayout : {}\n\nParser : {}\n\nRows Parsed : {}\n\nQuarter Split :\n{}\n\nConfidence : {}\n\nLLM Used : {}\n\nDuration : {:.2f} sec",
             email_name,
             document_name,
             document_type,
             dominant.get("layout") or "",
-            dominant.get("parser_used") or "",
+            parser_name,
             len(merged_rows),
             split_lines,
             int(round(confidence)),

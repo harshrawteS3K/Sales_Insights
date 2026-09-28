@@ -349,6 +349,11 @@ class ERPParserService:
                         if r.get("original_unit")
                         else {}
                     ),
+                    **(
+                        {"transaction_date": r["transaction_date"]}
+                        if r.get("transaction_date") not in (None, "")
+                        else {}
+                    ),
                 }
                 for r in raw_rows
             ],

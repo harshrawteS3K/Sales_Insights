@@ -15,7 +15,7 @@ Resolved fields also include ``financial_year`` (e.g. ``FY 2025-26``) and
 from __future__ import annotations
 
 import re
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from app.constants.business_segments import normalize_business_segment
 from app.exceptions import ValidationAppError
@@ -47,9 +47,19 @@ _UNIT_CANONICAL = {
 # Repeated pipes and surrounding spaces are one separator.
 _SUBJECT_SPLIT_RE = re.compile(r"\s*(?:\|+|\s-\s|–|—)\s*")
 
-# Q1+Q2 FY 2026-27  |  Q2+Q3+Q4 FY 2026-27
-_MULTI_Q_FY_RE = re.compile(
-    r"^\s*((?:Q\s*[1-4]\s*\+\s*)+Q\s*[1-4])\s+FY\s*(\d{4})\s*[-–—/]\s*(\d{2}|\d{4})\s*$",
+# Q1+Q2 FY 2026-27 | Q1+Q2 2026-27 | Q2+Q3+Q4 2026-27
+_QUARTER_LIST_RE = re.compile(
+    r"^\s*((?:Q\s*[1-4]\s*\+\s*)*Q\s*[1-4])\s+(?:FY\s*)?(\d{4})\s*[-–—/]\s*(\d{2}|\d{4})\s*$",
+    re.IGNORECASE,
+)
+_MONTH_TOKEN = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+)
+# APRIL+MAY 2026-27 | APR+JUN FY 2026-27 | APRIL+MAY 2026
+_MONTH_LIST_RE = re.compile(
+    rf"^\s*((?:{_MONTH_TOKEN}\s*\+\s*)+{_MONTH_TOKEN})\s+"
+    rf"(?:FY\s*)?(\d{{4}})(?:\s*[-–—/]\s*(\d{{2}}|\d{{4}}))?\s*$",
     re.IGNORECASE,
 )
 # Q2 FY 2025-26  |  Q2 FY2025-26
@@ -123,22 +133,58 @@ def source_month_from_period_token(raw: Optional[str]) -> Optional[str]:
 
 
 def multi_quarter_scope(raw: Optional[str]) -> Optional[Dict[str, str]]:
-    """``Q1+Q2 FY 2026-27`` → allowed quarters and the financial year. Single quarters return None."""
-    text = re.sub(r"\s+", " ", (raw or "").strip())
-    match = _MULTI_Q_FY_RE.match(text)
-    if not match:
+    """Quarter or month list plus a year span. ``FY`` is optional. One quarter returns None."""
+    parsed = _period_span(raw)
+    if not parsed or len(parsed["quarters"]) < 2:
         return None
-    fy_start = int(match.group(2))
-    if not _fy_end_ok(fy_start, match.group(3)):
-        return None
-    quarters = [f"Q{number}" for number in re.findall(r"Q\s*([1-4])", match.group(1), flags=re.IGNORECASE)]
-    if len(quarters) < 2:
-        return None
+    fy_start = parsed["fy_start"]
     return {
-        "allowed_quarters": ",".join(quarters),
-        "financial_year": fy_short(fy_start),
+        "allowed_quarters": ",".join(parsed["quarters"]),
+        "financial_year": f"{fy_start}-{(fy_start + 1) % 100:02d}",
         "period": fy_annual_label(fy_start),
     }
+
+
+def _period_span(raw: Optional[str]) -> Optional[Dict[str, object]]:
+    """Parse ``Q1+Q2 2026-27`` or ``APRIL+JULY 2026-27``. Malformed tokens return None."""
+    text = re.sub(r"\s+", " ", (raw or "").strip())
+    if not text:
+        return None
+    quarter_match = _QUARTER_LIST_RE.match(text)
+    if quarter_match:
+        fy_start = int(quarter_match.group(2))
+        if not _fy_end_ok(fy_start, quarter_match.group(3)):
+            return None
+        quarters = []
+        for number in re.findall(r"Q\s*([1-4])", quarter_match.group(1), flags=re.IGNORECASE):
+            label = f"Q{number}"
+            if label not in quarters:
+                quarters.append(label)
+        if not quarters:
+            return None
+        return {"quarters": quarters, "fy_start": fy_start}
+
+    month_match = _MONTH_LIST_RE.match(text)
+    if not month_match:
+        return None
+    fy_start = int(month_match.group(2))
+    end_raw = month_match.group(3)
+    if end_raw and not _fy_end_ok(fy_start, end_raw):
+        return None
+    from app.utils.period_calendar import quarter_of_month
+
+    quarters = []
+    for token in re.split(r"\s*\+\s*", month_match.group(1)):
+        hit = parse_month_label(f"{token} {fy_start}")
+        if not hit:
+            return None
+        month, _year = hit
+        label = f"Q{quarter_of_month(month)}"
+        if label not in quarters:
+            quarters.append(label)
+    if not quarters:
+        return None
+    return {"quarters": quarters, "fy_start": fy_start}
 
 
 def normalize_subject_period(raw: Optional[str]) -> Optional[str]:
@@ -154,6 +200,11 @@ def normalize_subject_period(raw: Optional[str]) -> Optional[str]:
     multi = multi_quarter_scope(text)
     if multi:
         return multi["period"]
+
+    span = _period_span(text)
+    if span and len(span["quarters"]) == 1:
+        quarter_number = int(str(span["quarters"][0])[1])
+        return fy_quarter_label(int(span["fy_start"]), quarter_number)
 
     # Monthly subject (APRIL 2026) → Indian FY quarter. Month is kept separately.
     from app.utils.period_calendar import quarter_of_month, fy_start_for_calendar_month
@@ -205,7 +256,7 @@ def normalize_subject_period(raw: Optional[str]) -> Optional[str]:
     )
 
 
-def parse_email_subject(subject: Optional[str]) -> Dict[str, Optional[str]]:
+def parse_email_subject(subject: Optional[str]) -> Dict[str, Any]:
     """
     Parse ``DISTRIBUTOR | LOCATION | SEGMENT | PERIOD | UNIT``.
 
@@ -291,20 +342,23 @@ def parse_email_subject(subject: Optional[str]) -> Dict[str, Optional[str]]:
                 quarter = f"Q{spec.quarter}"
                 allowed_quarters = quarter
 
+    quarter_values = [part for part in str(allowed_quarters or "").split(",") if part]
+
     return {
         "distributor": distributor,
         "location": location,
+        "region": location,
         "segment": segment,
         "period": period,
         "financial_year": financial_year,
         "quarter": quarter,
-        "allowed_quarters": allowed_quarters,
+        "allowed_quarters": quarter_values,
         "source_month": source_month,
         "unit": unit,
     }
 
 
-def try_parse_email_subject(subject: Optional[str]) -> Optional[Dict[str, Optional[str]]]:
+def try_parse_email_subject(subject: Optional[str]) -> Optional[Dict[str, Any]]:
     """Return parsed subject dict or None when invalid (no exception)."""
     try:
         return parse_email_subject(subject)

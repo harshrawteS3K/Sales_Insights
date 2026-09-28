@@ -35,8 +35,16 @@ _TOKEN_RE = re.compile(
 
 
 def allowed_quarter_list(parsed: Optional[Dict[str, Any]]) -> List[str]:
-    raw = str((parsed or {}).get("allowed_quarters") or "")
-    found = [part.strip().upper() for part in raw.split(",") if part.strip()]
+    raw = (parsed or {}).get("allowed_quarters")
+    if isinstance(raw, (list, tuple)):
+        parts = [str(item).strip().upper() for item in raw if str(item).strip()]
+    else:
+        parts = [part.strip().upper() for part in str(raw or "").split(",") if part.strip()]
+    found = []
+    for part in parts:
+        token = part if part.startswith("Q") else f"Q{part}" if part in {"1", "2", "3", "4"} else part
+        if token in {"Q1", "Q2", "Q3", "Q4"} and token not in found:
+            found.append(token)
     if found:
         return found
     single = str((parsed or {}).get("quarter") or "").strip().upper()

@@ -91,8 +91,8 @@ async def parse_erp_preview(
 ) -> DataResponse[ERPParsePreviewResponse]:
     """Detect sheet/headers, map columns, extract rows. Does not import."""
     filename = (file.filename or "").lower()
-    if not filename.endswith((".xlsx", ".xlsm", ".xls")):
-        raise ValidationAppError("Only .xlsx, .xlsm, and .xls files are accepted")
+    if not filename.endswith((".xlsx", ".xlsm", ".xls", ".pdf")):
+        raise ValidationAppError("Only Excel and PDF sales files are accepted")
 
     path = await save_upload_file(file, get_upload_subdir("erp_preview"))
     try:
