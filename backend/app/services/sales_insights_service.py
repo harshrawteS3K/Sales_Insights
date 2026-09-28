@@ -32,7 +32,7 @@ from app.utils.period_calendar import (
     parse_quarter_label,
     quarter_of_month,
 )
-from app.utils.quantity import format_mt, round_mt
+from app.utils.quantity import format_mt, kg_to_mt_display, round_mt
 
 
 PERIOD_FULL_YEAR = "full_year"
@@ -738,7 +738,7 @@ class SalesInsightsService:
             **scope_kw,
         )
         total_kg, total_customers, total_products = self.db.execute(kpi_q).one()
-        total_qty_f = round_mt(Decimal(str(total_kg or 0)) / Decimal("1000"))
+        total_qty_f = kg_to_mt_display(total_kg)
         n_quarters = max(len(axis_months), 1)
         avg_monthly = total_qty_f / n_quarters
 
@@ -778,48 +778,67 @@ class SalesInsightsService:
         top_q = self._scoped(
             select(
                 SalesRecord.customer_name,
-                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
+                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .group_by(SalesRecord.customer_name)
-            .order_by(func.sum(mt_quantity_expr()).desc())
+            .order_by(func.sum(SalesRecord.quantity).desc())
             .limit(10),
             **scope_kw,
         )
-        top_customers = [
-            {"customer": str(c), "qty": round_mt(q)}
-            for c, q in self.db.execute(top_q).all()
-            if c
-        ]
+        top_customers = []
+        for customer_name, qty_kg in self.db.execute(top_q).all():
+            if not customer_name:
+                continue
+            quantity_mt = kg_to_mt_display(qty_kg)
+            top_customers.append(
+                {
+                    "customer": str(customer_name),
+                    "qty": quantity_mt,
+                    "quantity": quantity_mt,
+                    "unit": "MT",
+                }
+            )
 
         prod_q = self._scoped(
             select(
                 SalesRecord.product,
-                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
+                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .group_by(SalesRecord.product)
-            .order_by(func.sum(mt_quantity_expr()).desc()),
+            .order_by(func.sum(SalesRecord.quantity).desc()),
             **scope_kw,
         )
-        prod_rows = [
-            {"product": str(p), "qty": round_mt(q)}
-            for p, q in self.db.execute(prod_q).all()
-            if p
+        prod_kg = [
+            {"product": str(name), "kg": qty_kg}
+            for name, qty_kg in self.db.execute(prod_q).all()
+            if name
         ]
         top_n = 8
-        if len(prod_rows) > top_n:
-            head = prod_rows[:top_n]
-            others = sum(r["qty"] for r in prod_rows[top_n:])
-            if others > 0:
-                head.append({"product": "Others", "qty": round_mt(others)})
-            product_contribution = head
+        if len(prod_kg) > top_n:
+            head = prod_kg[:top_n]
+            others_kg = sum((row["kg"] or 0) for row in prod_kg[top_n:])
+            if others_kg:
+                head.append({"product": "Others", "kg": others_kg})
+            contribution_kg = head
         else:
-            product_contribution = prod_rows
+            contribution_kg = prod_kg
+        product_contribution = []
+        for row in contribution_kg:
+            quantity_mt = kg_to_mt_display(row["kg"])
+            product_contribution.append(
+                {
+                    "product": row["product"],
+                    "qty": quantity_mt,
+                    "quantity": quantity_mt,
+                    "unit": "MT",
+                }
+            )
 
         page = max(int(page or 1), 1)
         page_size = min(max(int(page_size or 25), 1), 200)
@@ -838,7 +857,7 @@ class SalesInsightsService:
                 SalesRecord.product,
                 SalesRecord.location,
                 reporting_month_expr().label("month"),
-                mt_quantity_expr().label("qty"),
+                SalesRecord.quantity.label("qty"),
                 company_expr().label("distributor"),
             )
             .select_from(SalesRecord)
@@ -849,18 +868,22 @@ class SalesInsightsService:
             .limit(page_size),
             **scope_kw,
         )
-        table_rows = [
-            {
-                "customer": str(c or ""),
-                "product": str(p or ""),
-                "location": str(loc or ""),
-                "month": format_period_display(str(m or "")),
-                "qty": round_mt(q),
-                "qty_display": format_mt(q),
-                "distributor": str(d or ""),
-            }
-            for c, p, loc, m, q, d in self.db.execute(rows_q).all()
-        ]
+        table_rows = []
+        for customer_name, product_name, location, month, qty_kg, distributor in self.db.execute(rows_q).all():
+            quantity_mt = kg_to_mt_display(qty_kg)
+            table_rows.append(
+                {
+                    "customer": str(customer_name or ""),
+                    "product": str(product_name or ""),
+                    "location": str(location or ""),
+                    "month": format_period_display(str(month or "")),
+                    "qty": quantity_mt,
+                    "qty_display": format_mt(quantity_mt),
+                    "quantity": quantity_mt,
+                    "unit": "MT",
+                    "distributor": str(distributor or ""),
+                }
+            )
 
         return {
             "kpis": {

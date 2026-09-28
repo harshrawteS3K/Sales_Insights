@@ -36,6 +36,11 @@ def kg_to_mt(value: Union[Decimal, float, int, str]) -> Decimal:
     )
 
 
+def kg_to_mt_display(value: Union[Decimal, float, int, str, None]) -> float:
+    """Stored kilograms to MT for analytics responses. Half-up, two decimal places."""
+    return round_mt(kg_to_mt(value or 0))
+
+
 def mt_to_kg(value: Union[Decimal, float, int, str]) -> Decimal:
     """Convert metric tonnes to kilograms."""
     return (Decimal(str(value)) * KG_PER_MT).quantize(
