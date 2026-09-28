@@ -14,6 +14,7 @@ from app.repositories.sales_record_repository import (
     SalesRecordRepository,
     company_expr,
 )
+from app.services.analytics_aggregation import AnalyticsFilter
 from app.services.sales_insights_service import (
     PERIOD_CUSTOM,
     PERIOD_FULL_YEAR,
@@ -25,7 +26,6 @@ from app.services.sales_insights_service import (
     PERIOD_Q3,
     PERIOD_Q4,
     _to_float,
-    resolve_period_month_keys,
 )
 from app.services.distributor_service import DistributorService
 from app.utils.distributor_location import country_group, country_label, normalize_location
@@ -102,6 +102,7 @@ class DistributorPerformanceService:
         location: Optional[str] = None,
         country: Optional[str] = None,
         distributor_id: Optional[int] = None,
+        distributor: Optional[str] = None,
         customer: Optional[str] = None,
         product: Optional[str] = None,
         start_month: Optional[str] = None,
@@ -109,12 +110,6 @@ class DistributorPerformanceService:
         allowed_segments: Optional[List[str]] = None,
         allowed_companies: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        month_keys = resolve_period_month_keys(
-            period,
-            fiscal_year_start=fiscal_year_start,
-            start_month=start_month,
-            end_month=end_month,
-        )
         seg = (segment or "").strip()
         if seg.lower() == "all":
             seg = None
@@ -135,18 +130,42 @@ class DistributorPerformanceService:
         prod = (product or "").strip()
         if prod.lower() == "all":
             prod = None
-
+        filt = AnalyticsFilter(
+            financial_year=fiscal_year_start,
+            period=period,
+            distributor_id=distributor_id,
+            distributor=distributor,
+            customer=cust,
+            product=prod,
+            location=loc,
+            segment=seg,
+            start_month=start_month,
+            end_month=end_month,
+        )
         directory = self._directory_distributors(allowed_companies=allowed_companies)
-        if distributor_id:
-            directory = [d for d in directory if d.id == int(distributor_id)]
+        selected = (distributor or "").strip().casefold()
+        if distributor_id or selected:
+            directory = [
+                d
+                for d in directory
+                if (distributor_id and d.id == int(distributor_id))
+                or (
+                    selected
+                    and selected
+                    in {
+                        (d.company or "").strip().casefold(),
+                        (d.name or "").strip().casefold(),
+                    }
+                )
+            ]
 
         filter_kw = dict(
             segment=seg,
             location=loc,
             customer=cust,
             product=prod,
-            distributor_id=distributor_id,
-            month_keys=month_keys,
+            distributor_id=None,
+            month_keys=None,
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
@@ -169,7 +188,7 @@ class DistributorPerformanceService:
             )
             .group_by(SalesRecord.distributor_id)
         )
-        agg_q = self.sales._apply_filters(agg_q, **filter_kw)
+        agg_q = filt.restrict(self.sales._apply_filters(agg_q, **filter_kw))
 
         stats_by_id: Dict[int, Dict[str, Any]] = {}
         for row in self.db.execute(agg_q).all():
@@ -200,7 +219,7 @@ class DistributorPerformanceService:
             )
             .group_by(SalesRecord.distributor_id, SalesRecord.location)
         )
-        loc_q = self.sales._apply_filters(loc_q, **filter_kw)
+        loc_q = filt.restrict(self.sales._apply_filters(loc_q, **filter_kw))
 
         best_location: Dict[int, tuple[str, float]] = {}
         for row in self.db.execute(loc_q).all():
@@ -238,7 +257,7 @@ class DistributorPerformanceService:
                 func.sum(SalesRecord.quantity).desc(),
             )
         )
-        cust_q = self.sales._apply_filters(cust_q, **filter_kw)
+        cust_q = filt.restrict(self.sales._apply_filters(cust_q, **filter_kw))
 
         customers_by_id: Dict[int, List[Dict[str, Any]]] = {}
         for row in self.db.execute(cust_q).all():

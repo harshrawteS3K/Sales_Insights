@@ -128,6 +128,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
       method: options.method || 'GET',
       headers: buildHeaders(options.headers),
       credentials: 'include',
+      cache: 'no-store',
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: options.signal,
     });

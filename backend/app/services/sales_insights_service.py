@@ -23,6 +23,7 @@ from app.utils.period_calendar import (
     calendar_year_for_fy_month,
     format_period_display,
     fy_quarter_label,
+    fy_short,
     fy_short_display,
     fy_start_for_calendar_month,
     month_label,
@@ -31,7 +32,11 @@ from app.utils.period_calendar import (
     parse_quarter_label,
     quarter_of_month,
 )
+from app.core.logging import get_logger
+from app.services.analytics_aggregation import AnalyticsFilter, align_quantities, log_integrity
 from app.utils.quantity import format_mt, kg_to_mt_display, round_mt
+
+logger = get_logger(__name__)
 
 
 PERIOD_FULL_YEAR = "full_year"
@@ -191,8 +196,12 @@ def _period_year_months(
         return None
 
     today = as_of or date.today()
-    if period_key in _PERIOD_MONTH_COUNT:
-        return _last_n_rolling(_PERIOD_MONTH_COUNT[period_key], as_of=today)
+    if period_key == PERIOD_LAST_3:
+        return _last_n_rolling(3, as_of=today)
+    if period_key == PERIOD_LAST_6:
+        return _last_n_rolling(6, as_of=today)
+    if period_key == PERIOD_LAST_12:
+        return _last_n_rolling(12, as_of=today)
 
     fy_start = _normalize_fy_start(fiscal_year_start, as_of=today)
     if period_key in {PERIOD_FULL_YEAR, "full_financial_year", "fy"}:
@@ -246,7 +255,22 @@ def resolve_period_month_keys(
         return None
     if not pairs:
         return []
-    return _keys_for_year_months(pairs)
+    keys = _keys_for_year_months(pairs)
+    period_key = (period or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if period_key in {PERIOD_FULL_YEAR, "full_financial_year", "fy"}:
+        fy_start = _normalize_fy_start(fiscal_year_start, as_of=as_of)
+        keys.extend([fy_short(fy_start), fy_short_display(fy_start)])
+    expanded: List[str] = []
+    for label in keys:
+        expanded.append(label)
+        if "-" in label:
+            expanded.append(label.replace("-", "–"))
+        if "–" in label:
+            expanded.append(label.replace("–", "-"))
+        if "•" in label:
+            expanded.append(label.replace("•", "·"))
+            expanded.append(label.replace(" • ", " "))
+    return list(dict.fromkeys(expanded))
 
 
 def trend_month_labels(
@@ -363,6 +387,13 @@ def _parse_flexible_month(text: Optional[str]) -> Optional[Tuple[int, Optional[i
     return month, _coerce_year(match.group(3))
 
 
+def _fy_year_of_text(text: Optional[str]) -> Optional[int]:
+    spec = parse_quarter_label(str(text or "").strip())
+    if spec and spec.kind == "year" and spec.year:
+        return int(spec.year)
+    return None
+
+
 def _quarter_of_text(text: Optional[str]) -> Optional[Tuple[int, int]]:
     spec = parse_quarter_label(str(text or "").strip())
     if spec and spec.kind == "quarter" and spec.year and spec.quarter:
@@ -421,6 +452,18 @@ def _align_month_to_window(
     return None
 
 
+def _spread_kg(totals: Dict[Tuple[int, int], float], slots: List[Tuple[int, int]], qty: float) -> None:
+    """Split kilograms across months. The last month receives the remainder."""
+    if not slots or qty == 0:
+        return
+    remaining = Decimal(str(qty))
+    share = remaining / Decimal(len(slots))
+    for index, slot in enumerate(slots):
+        part = remaining if index == len(slots) - 1 else min(share, remaining)
+        totals[slot] = totals.get(slot, 0.0) + float(part)
+        remaining -= part
+
+
 def _month_trend_points(
     rows: List[Tuple[Optional[str], Optional[str], Optional[str], Optional[str], float]],
     window: Optional[List[Tuple[int, int]]],
@@ -437,6 +480,7 @@ def _month_trend_points(
     totals: Dict[Tuple[int, int], float] = {}
     exact: set = set()
     unassigned: Dict[Tuple[int, int], float] = {}
+    unassigned_years: Dict[int, float] = {}
     quarters: set = set()
     for source_month, report_name, period, reporting_month, qty in rows:
         if qty < 0:
@@ -454,6 +498,10 @@ def _month_trend_points(
         if quarter:
             quarters.add(quarter)
             unassigned[quarter] = unassigned.get(quarter, 0.0) + qty
+            continue
+        fy_year = _fy_year_of_text(reporting_month) or _fy_year_of_text(period)
+        if fy_year:
+            unassigned_years[fy_year] = unassigned_years.get(fy_year, 0.0) + qty
 
     def _in_window(year: int, month: int) -> bool:
         return allowed is None or (year, month) in allowed
@@ -468,7 +516,7 @@ def _month_trend_points(
                 continue
             totals.setdefault((year, month), 0.0)
 
-    if not exact and unassigned:
+    if unassigned:
         for (fy_start, quarter), qty in unassigned.items():
             slots = []
             for label in months_for_fy_quarter(fy_start, quarter):
@@ -478,29 +526,32 @@ def _month_trend_points(
                 month, year = parsed
                 if _in_window(year, month):
                     slots.append((year, month))
-            if not slots or qty == 0:
-                continue
-            from decimal import Decimal, ROUND_HALF_UP
+            _spread_kg(totals, slots, qty)
 
-            remaining = Decimal(str(qty))
-            share = (remaining / Decimal(len(slots))).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP
-            )
-            for index, slot in enumerate(slots):
-                part = remaining if index == len(slots) - 1 else min(share, remaining)
-                totals[slot] = totals.get(slot, 0.0) + float(part)
-                remaining -= part
+    if unassigned_years:
+        for fy_start, qty in unassigned_years.items():
+            slots = [
+                (year, month)
+                for year, month in fy_calendar_months(fy_start)
+                if _in_window(year, month)
+            ]
+            _spread_kg(totals, slots, qty)
+
+    if window:
+        for year, month in window:
+            totals.setdefault((year, month), 0.0)
 
     points: List[Dict[str, Any]] = []
-    for year, month in sorted(totals):
+    ordered = list(window) if window else sorted(totals)
+    for year, month in ordered:
         short = _SHORT_MONTHS[month - 1]
-        quantity = kg_to_mt_display(totals[(year, month)])
         points.append(
             {
                 "month": short,
                 "tooltip": f"{short} {year}",
-                "qty": quantity,
-                "quantity": quantity,
+                "kg": totals[(year, month)],
+                "qty": 0.0,
+                "quantity": 0.0,
                 "unit": "MT",
             }
         )
@@ -686,10 +737,21 @@ class SalesInsightsService:
             allowed_companies=allowed_companies,
         )
 
+    def _with_filter(self, query, filt: AnalyticsFilter, **scope_kw):
+        """Dimension filters plus the shared financial-year / period predicate."""
+        scoped = self._scoped(
+            query,
+            distributor_id=None,
+            month_keys=None,
+            **scope_kw,
+        )
+        return filt.restrict(scoped)
+
     def sales_insights(
         self,
         *,
         distributor_id: Optional[int] = None,
+        distributor: Optional[str] = None,
         customer: Optional[str] = None,
         product: Optional[str] = None,
         location: Optional[str] = None,
@@ -704,9 +766,15 @@ class SalesInsightsService:
         allowed_segments: Optional[List[str]] = None,
         allowed_companies: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        month_keys = resolve_period_month_keys(
-            period,
-            fiscal_year_start=fiscal_year_start,
+        filt = AnalyticsFilter(
+            financial_year=fiscal_year_start,
+            period=period,
+            distributor_id=distributor_id,
+            distributor=distributor,
+            customer=customer,
+            product=product,
+            location=location,
+            segment=segment,
             start_month=start_month,
             end_month=end_month,
         )
@@ -717,18 +785,16 @@ class SalesInsightsService:
             end_month=end_month,
         )
         scope_kw = dict(
-            distributor_id=distributor_id,
             customer=customer,
             product=product,
             location=location,
             segment=segment,
             search=search,
-            month_keys=month_keys,
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
 
-        kpi_q = self._scoped(
+        kpi_q = self._with_filter(
             select(
                 func.coalesce(func.sum(SalesRecord.quantity), 0),
                 func.count(func.distinct(SalesRecord.customer_name)),
@@ -737,14 +803,16 @@ class SalesInsightsService:
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id),
+            filt,
             **scope_kw,
         )
         total_kg, total_customers, total_products = self.db.execute(kpi_q).one()
-        total_qty_f = kg_to_mt_display(total_kg)
+        total_kg_f = _to_float(total_kg)
+        total_qty_f = kg_to_mt_display(total_kg_f)
         n_quarters = max(len(axis_months), 1)
         avg_monthly = total_qty_f / n_quarters
 
-        trend_q = self._scoped(
+        trend_q = self._with_filter(
             select(
                 SalesRecord.source_month,
                 Report.name,
@@ -761,23 +829,34 @@ class SalesInsightsService:
                 SalesRecord.period,
                 Report.reporting_month,
             ),
+            filt,
             **scope_kw,
-        )
-        window = _period_year_months(
-            period,
-            fiscal_year_start=fiscal_year_start,
-            start_month=start_month,
-            end_month=end_month,
         )
         monthly_trend = _month_trend_points(
             [
                 (src, name, period_value, reporting_month, _to_float(qty))
                 for src, name, period_value, reporting_month, qty in self.db.execute(trend_q).all()
             ],
-            window,
+            filt.month_window(),
         )
+        placed_kg = sum(float(point["kg"]) for point in monthly_trend)
+        gap = total_kg_f - placed_kg
+        if monthly_trend and abs(gap) > 0.001:
+            logger.warning(
+                "Monthly trend was missing {:.3f} KG from the filtered total; assigned to the latest month",
+                gap,
+            )
+            monthly_trend[-1]["kg"] = float(monthly_trend[-1]["kg"]) + gap
+        month_mt = align_quantities(
+            [float(point["kg"]) for point in monthly_trend],
+            total_kg=total_kg_f,
+        )
+        for point, qty in zip(monthly_trend, month_mt):
+            point["qty"] = qty
+            point["quantity"] = qty
+            point.pop("kg", None)
 
-        top_q = self._scoped(
+        top_q = self._with_filter(
             select(
                 SalesRecord.customer_name,
                 func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
@@ -786,25 +865,35 @@ class SalesInsightsService:
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .group_by(SalesRecord.customer_name)
-            .order_by(func.sum(SalesRecord.quantity).desc())
-            .limit(10),
+            .order_by(func.sum(SalesRecord.quantity).desc()),
+            filt,
             **scope_kw,
         )
-        top_customers = []
-        for customer_name, qty_kg in self.db.execute(top_q).all():
-            if not customer_name:
-                continue
-            quantity_mt = kg_to_mt_display(qty_kg)
-            top_customers.append(
-                {
-                    "customer": str(customer_name),
-                    "qty": quantity_mt,
-                    "quantity": quantity_mt,
-                    "unit": "MT",
-                }
-            )
+        customer_kg = [
+            {"customer": str(name), "kg": _to_float(qty_kg)}
+            for name, qty_kg in self.db.execute(top_q).all()
+            if name
+        ]
+        if len(customer_kg) > 10:
+            others_kg = sum(row["kg"] for row in customer_kg[10:])
+            customer_kg = customer_kg[:10]
+            if others_kg:
+                customer_kg.append({"customer": "Others", "kg": others_kg})
+        covered_customers = sum(row["kg"] for row in customer_kg)
+        customer_gap = total_kg_f - covered_customers
+        if customer_gap > 0.001:
+            others = next((row for row in customer_kg if row["customer"] == "Others"), None)
+            if others is None:
+                customer_kg.append({"customer": "Others", "kg": customer_gap})
+            else:
+                others["kg"] += customer_gap
+        customer_mt = align_quantities([row["kg"] for row in customer_kg], total_kg=total_kg_f)
+        top_customers = [
+            {"customer": row["customer"], "qty": qty, "quantity": qty, "unit": "MT"}
+            for row, qty in zip(customer_kg, customer_mt)
+        ]
 
-        prod_q = self._scoped(
+        prod_q = self._with_filter(
             select(
                 SalesRecord.product,
                 func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
@@ -814,46 +903,53 @@ class SalesInsightsService:
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .group_by(SalesRecord.product)
             .order_by(func.sum(SalesRecord.quantity).desc()),
+            filt,
             **scope_kw,
         )
         prod_kg = [
-            {"product": str(name), "kg": qty_kg}
+            {"product": str(name), "kg": _to_float(qty_kg)}
             for name, qty_kg in self.db.execute(prod_q).all()
             if name
         ]
         top_n = 8
         if len(prod_kg) > top_n:
-            head = prod_kg[:top_n]
-            others_kg = sum((row["kg"] or 0) for row in prod_kg[top_n:])
+            others_kg = sum(row["kg"] for row in prod_kg[top_n:])
+            prod_kg = prod_kg[:top_n]
             if others_kg:
-                head.append({"product": "Others", "kg": others_kg})
-            contribution_kg = head
-        else:
-            contribution_kg = prod_kg
-        product_contribution = []
-        for row in contribution_kg:
-            quantity_mt = kg_to_mt_display(row["kg"])
-            product_contribution.append(
-                {
-                    "product": row["product"],
-                    "qty": quantity_mt,
-                    "quantity": quantity_mt,
-                    "unit": "MT",
-                }
-            )
+                prod_kg.append({"product": "Others", "kg": others_kg})
+        covered_products = sum(row["kg"] for row in prod_kg)
+        product_gap = total_kg_f - covered_products
+        if product_gap > 0.001:
+            others = next((row for row in prod_kg if row["product"] == "Others"), None)
+            if others is None:
+                prod_kg.append({"product": "Others", "kg": product_gap})
+            else:
+                others["kg"] += product_gap
+        product_mt = align_quantities([row["kg"] for row in prod_kg], total_kg=total_kg_f)
+        product_contribution = [
+            {"product": row["product"], "qty": qty, "quantity": qty, "unit": "MT"}
+            for row, qty in zip(prod_kg, product_mt)
+        ]
+        log_integrity(
+            kpi=total_qty_f,
+            monthly=monthly_trend,
+            products=product_contribution,
+            customers=top_customers,
+        )
 
         page = max(int(page or 1), 1)
         page_size = min(max(int(page_size or 25), 1), 200)
-        count_q = self._scoped(
+        count_q = self._with_filter(
             select(func.count(SalesRecord.id))
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id),
+            filt,
             **scope_kw,
         )
         total_rows = int(self.db.scalar(count_q) or 0)
 
-        rows_q = self._scoped(
+        rows_q = self._with_filter(
             select(
                 SalesRecord.customer_name,
                 SalesRecord.product,
@@ -868,6 +964,7 @@ class SalesInsightsService:
             .order_by(SalesRecord.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size),
+            filt,
             **scope_kw,
         )
         table_rows = []
@@ -912,6 +1009,7 @@ class SalesInsightsService:
         self,
         *,
         distributor_id: Optional[int] = None,
+        distributor: Optional[str] = None,
         customer: Optional[str] = None,
         product: Optional[str] = None,
         location: Optional[str] = None,
@@ -925,24 +1023,28 @@ class SalesInsightsService:
         allowed_companies: Optional[List[str]] = None,
         limit: int = 10000,
     ) -> List[Dict[str, Any]]:
-        month_keys = resolve_period_month_keys(
-            period,
-            fiscal_year_start=fiscal_year_start,
+        filt = AnalyticsFilter(
+            financial_year=fiscal_year_start,
+            period=period,
+            distributor_id=distributor_id,
+            distributor=distributor,
+            customer=customer,
+            product=product,
+            location=location,
+            segment=segment,
             start_month=start_month,
             end_month=end_month,
         )
         scope_kw = dict(
-            distributor_id=distributor_id,
             customer=customer,
             product=product,
             location=location,
             segment=segment,
             search=search,
-            month_keys=month_keys,
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
-        rows_q = self._scoped(
+        rows_q = self._with_filter(
             select(
                 SalesRecord.customer_name,
                 SalesRecord.product,
@@ -956,6 +1058,7 @@ class SalesInsightsService:
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .order_by(SalesRecord.id.desc())
             .limit(limit),
+            filt,
             **scope_kw,
         )
         return [

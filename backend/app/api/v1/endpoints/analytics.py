@@ -54,6 +54,7 @@ def get_sales_insights(
     db: Session = Depends(get_db),
     service: SalesInsightsService = Depends(_service),
     distributor_id: Optional[int] = Query(None),
+    distributor: Optional[str] = Query(None),
     customer: Optional[str] = Query(None),
     product: Optional[str] = Query(None),
     location: Optional[str] = Query(None),
@@ -63,7 +64,7 @@ def get_sales_insights(
     ),
     period: Optional[str] = Query(
         "full_year",
-        description="full_year | q1 | q2 | q3 | q4 | last_3_months | last_6_months | custom",
+        description="full_year | q1 | q2 | q3 | q4 | last_3_months | last_6_months | last_12_months | custom",
     ),
     start_month: Optional[str] = Query(None, description="YYYY-MM for custom range"),
     end_month: Optional[str] = Query(None, description="YYYY-MM for custom range"),
@@ -75,6 +76,7 @@ def get_sales_insights(
     companies = distributor_companies_scope_for_user(current, db)
     data = service.sales_insights(
         distributor_id=distributor_id,
+        distributor=_clean(distributor),
         customer=_clean(customer),
         product=_clean(product),
         location=_clean(location),
@@ -98,6 +100,7 @@ def export_sales_insights(
     db: Session = Depends(get_db),
     service: SalesInsightsService = Depends(_service),
     distributor_id: Optional[int] = Query(None),
+    distributor: Optional[str] = Query(None),
     customer: Optional[str] = Query(None),
     product: Optional[str] = Query(None),
     location: Optional[str] = Query(None),
@@ -112,6 +115,7 @@ def export_sales_insights(
     companies = distributor_companies_scope_for_user(current, db)
     rows = service.export_rows(
         distributor_id=distributor_id,
+        distributor=_clean(distributor),
         customer=_clean(customer),
         product=_clean(product),
         location=_clean(location),

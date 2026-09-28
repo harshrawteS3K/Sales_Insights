@@ -148,6 +148,7 @@ export function toAnalyticsQuery(state: EnterpriseFilterState) {
   const custom = isCustomPeriod(state.period);
   return {
     distributor_id: state.distributorId,
+    distributor: state.distributorLabel !== 'All' ? state.distributorLabel : null,
     customer: state.customer !== 'All' ? state.customer : null,
     product: state.product !== 'All' ? state.product : null,
     location: state.location !== 'All' ? state.location : null,

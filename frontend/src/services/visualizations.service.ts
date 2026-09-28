@@ -15,6 +15,7 @@ export type SalesInsightsPeriod =
 
 export type SalesInsightsQuery = {
   distributor_id?: number | null;
+  distributor?: string | null;
   customer?: string | null;
   product?: string | null;
   location?: string | null;
@@ -70,6 +71,7 @@ export type SalesInsightsFilterOptions = {
 function cleanParams(q: SalesInsightsQuery): Record<string, string | number | boolean | undefined | null> {
   return {
     distributor_id: q.distributor_id || undefined,
+    distributor: q.distributor && q.distributor !== 'All' ? q.distributor : undefined,
     customer: q.customer && q.customer !== 'All' ? q.customer : undefined,
     product: q.product && q.product !== 'All' ? q.product : undefined,
     location: q.location && q.location !== 'All' ? q.location : undefined,

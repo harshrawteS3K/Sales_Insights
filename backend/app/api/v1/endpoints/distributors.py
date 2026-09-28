@@ -126,6 +126,7 @@ def distributor_performance(
         None, description="all | india | other"
     ),
     distributor_id: Optional[int] = Query(None),
+    distributor: Optional[str] = Query(None, description="Distributor company name"),
     customer: Optional[str] = Query(None),
     product: Optional[str] = Query(None),
     start_month: Optional[str] = Query(None, description="YYYY-MM for custom range"),
@@ -139,6 +140,7 @@ def distributor_performance(
         location=_clean(location),
         country=_clean(country),
         distributor_id=distributor_id,
+        distributor=_clean(distributor),
         customer=_clean(customer),
         product=_clean(product),
         start_month=start_month,

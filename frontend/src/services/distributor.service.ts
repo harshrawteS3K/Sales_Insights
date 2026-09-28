@@ -31,6 +31,7 @@ export type DistributorPerformanceQuery = {
   location?: string | null;
   country?: string | null;
   distributor_id?: number | null;
+  distributor?: string | null;
   customer?: string | null;
   product?: string | null;
   start_month?: string | null;
@@ -107,6 +108,7 @@ function cleanPerformanceParams(
     location: q.location && q.location !== 'All' ? q.location : undefined,
     country: q.country && q.country !== 'All' ? q.country : undefined,
     distributor_id: q.distributor_id || undefined,
+    distributor: q.distributor && q.distributor !== 'All' ? q.distributor : undefined,
     customer: q.customer && q.customer !== 'All' ? q.customer : undefined,
     product: q.product && q.product !== 'All' ? q.product : undefined,
     start_month: q.start_month || undefined,

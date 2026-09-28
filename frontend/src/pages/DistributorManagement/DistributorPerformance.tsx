@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, Fragment, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, Fragment, type CSSProperties } from 'react';
 import {
   Bar,
   BarChart,
@@ -81,6 +81,7 @@ export function DistributorPerformance() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const requestSeq = useRef(0);
 
   useEffect(() => {
     DistributorService.getPerformanceFilterOptions()
@@ -103,22 +104,32 @@ export function DistributorPerformance() {
     const validation = validateEnterpriseFilters(filters);
     if (validation) {
       setError(validation);
+      setData(null);
+      setLoaded(false);
       return;
     }
+    const seq = ++requestSeq.current;
     setLoading(true);
     setError(null);
+    setData(null);
     try {
       const payload = await DistributorService.getPerformance(query);
+      if (seq !== requestSeq.current) return;
       setData(payload);
       setLoaded(true);
       setExpandedId(null);
     } catch (err) {
+      if (seq !== requestSeq.current) return;
       setError(err instanceof ApiError ? err.message : 'Failed to load distributor performance');
       setData(null);
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) setLoading(false);
     }
   }, [query, filters]);
+
+  useEffect(() => {
+    void runCompare();
+  }, [query, runCompare]);
 
   const chartData = useMemo(() => {
     return (data?.ranking || []).map(r => ({

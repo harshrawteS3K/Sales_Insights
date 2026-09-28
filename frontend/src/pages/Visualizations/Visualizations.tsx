@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   Bar,
   BarChart,
@@ -81,6 +81,7 @@ export function Visualizations() {
   const [exporting, setExporting] = useState(false);
 
   const pageSize = 25;
+  const requestSeq = useRef(0);
 
   useEffect(() => {
     VisualizationsService.getFilterOptions()
@@ -104,10 +105,14 @@ export function Visualizations() {
       const validation = validateEnterpriseFilters(filters);
       if (validation) {
         setError(validation);
+        setData(null);
+        setLoaded(false);
         return;
       }
+      const seq = ++requestSeq.current;
       setLoading(true);
       setError(null);
+      setData(null);
       try {
         const payload = await VisualizationsService.getSalesInsights({
           ...queryBase,
@@ -115,17 +120,53 @@ export function Visualizations() {
           page: nextPage,
           page_size: pageSize,
         });
+        if (seq !== requestSeq.current) return;
         setData(payload);
         setPage(nextPage);
         setLoaded(true);
       } catch (err) {
+        if (seq !== requestSeq.current) return;
         setError(err instanceof ApiError ? err.message : 'Failed to load sales insights');
+        setData(null);
       } finally {
-        setLoading(false);
+        if (seq === requestSeq.current) setLoading(false);
       }
     },
     [queryBase, filters, tableSearch],
   );
+
+  useEffect(() => {
+    const validation = validateEnterpriseFilters(filters);
+    if (validation) {
+      setError(validation);
+      setData(null);
+      setLoaded(false);
+      return;
+    }
+    const seq = ++requestSeq.current;
+    setLoading(true);
+    setError(null);
+    setData(null);
+    VisualizationsService.getSalesInsights({
+      ...queryBase,
+      page: 1,
+      page_size: pageSize,
+    })
+      .then(payload => {
+        if (seq !== requestSeq.current) return;
+        setData(payload);
+        setPage(1);
+        setLoaded(true);
+      })
+      .catch(err => {
+        if (seq !== requestSeq.current) return;
+        setError(err instanceof ApiError ? err.message : 'Failed to load sales insights');
+        setData(null);
+      })
+      .finally(() => {
+        if (seq === requestSeq.current) setLoading(false);
+      });
+  }, [queryBase, filters]);
 
   const onExport = async () => {
     setExporting(true);
