@@ -663,6 +663,11 @@ class UniversalParserOrchestrator:
                 "Yes" if winner.llm_used else "No",
                 duration,
             )
+            logger.info(
+                "Body Downloaded: Yes\nBusiness Matrix: Detected\nGPT Invoked: {}\nRows Parsed: {}\nImport Status: Success",
+                "Yes" if winner.llm_used else "No",
+                len(winner.rows),
+            )
         elif winner.parser_name == "pdf_stock_register":
             from app.erp_parser.documents.row_quarters import quarter_split
 

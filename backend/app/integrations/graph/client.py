@@ -237,11 +237,11 @@ class GraphClient:
         *,
         mailbox: Optional[str] = None,
         top: int = 50,
-        has_attachments: bool = True,
+        has_attachments: Optional[bool] = None,
         sender_email: Optional[str] = None,
         page_size: int = 50,
     ) -> List[Dict[str, Any]]:
-        """Return unread messages (optional sender filter)."""
+        """Return every unread message. Attachment type is decided after download."""
         return self.list_messages(
             mailbox=mailbox,
             top=top,
@@ -249,10 +249,11 @@ class GraphClient:
             sender_email=sender_email,
             page_size=page_size,
             unread_only=True,
+            include_body=True,
         )
 
     def get_message_body(self, message_id: str, *, mailbox: Optional[str] = None) -> Dict[str, str]:
-        """Fetch the message body. List responses omit it."""
+        """Fetch the message body when the list response did not include it."""
         payload = self._request(
             "GET",
             f"{self._user_path(mailbox)}/messages/{quote(message_id)}",
@@ -270,10 +271,11 @@ class GraphClient:
         *,
         mailbox: Optional[str] = None,
         top: int = 50,
-        has_attachments: bool = True,
+        has_attachments: Optional[bool] = None,
         sender_email: Optional[str] = None,
         page_size: int = 50,
         unread_only: Optional[bool] = True,
+        include_body: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Return mailbox messages, optionally filtered by unread and/or sender_email.
@@ -284,27 +286,31 @@ class GraphClient:
         user_path = self._user_path(mailbox)
         limit = max(int(top), 1)
         per_page = min(max(int(page_size), 1), 200)
+        # Attachment presence is not a Graph filter. It is decided after the body is stored.
+        _ = has_attachments
         # receivedDateTime MUST lead $filter when ordering by receivedDateTime.
         filters = ["receivedDateTime ge 1970-01-01T00:00:00Z"]
         if unread_only is True:
             filters.append("isRead eq false")
         elif unread_only is False:
             filters.append("isRead eq true")
-        if has_attachments is True:
-            filters.append("hasAttachments eq true")
-        elif has_attachments is False:
-            filters.append("hasAttachments eq false")
         if sender_email and sender_email.strip():
             filters.append(f"from/emailAddress/address eq '{sender_email.strip().lower()}'")
 
+        select_fields = (
+            "id,subject,body,bodyPreview,hasAttachments,sender,receivedDateTime,"
+            "from,isRead,conversationId,internetMessageId,webLink"
+            if include_body
+            else (
+                "id,subject,receivedDateTime,hasAttachments,isRead,bodyPreview,"
+                "conversationId,internetMessageId,from,sender,webLink"
+            )
+        )
         params = {
             "$filter": " and ".join(filters),
             "$top": per_page,
             "$orderby": "receivedDateTime desc",
-            "$select": (
-                "id,subject,receivedDateTime,hasAttachments,isRead,bodyPreview,"
-                "conversationId,internetMessageId,from,sender,webLink"
-            ),
+            "$select": select_fields,
         }
         logger.info(
             "Graph Connected | Listing messages (paginated) | mailbox={} | "
@@ -324,8 +330,22 @@ class GraphClient:
         try:
             payload = self._request("GET", f"{user_path}/messages", params=params)
         except Exception as exc:  # noqa: BLE001
-            # Fallback without OData nested filter if Graph OData engine rejects nested from/emailAddress filter
-            if sender_email and "from/emailAddress/address" in params.get("$filter", ""):
+            if include_body:
+                logger.warning(
+                    "Graph body select failed; listing metadata then downloading each body | err={}",
+                    exc,
+                )
+                params["$select"] = (
+                    "id,subject,receivedDateTime,hasAttachments,isRead,bodyPreview,"
+                    "conversationId,internetMessageId,from,sender,webLink"
+                )
+                try:
+                    payload = self._request("GET", f"{user_path}/messages", params=params)
+                except Exception:
+                    payload = None
+            else:
+                payload = None
+            if payload is None and sender_email and "from/emailAddress/address" in params.get("$filter", ""):
                 logger.warning(
                     "Graph OData sender filter failed; falling back to in-memory sender filtering | err={}",
                     exc,
@@ -335,7 +355,7 @@ class GraphClient:
                     "",
                 )
                 payload = self._request("GET", f"{user_path}/messages", params=params)
-            else:
+            elif payload is None:
                 raise
 
         target_sender = sender_email.strip().lower() if sender_email and sender_email.strip() else None

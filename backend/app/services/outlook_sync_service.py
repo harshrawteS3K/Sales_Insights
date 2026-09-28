@@ -475,7 +475,6 @@ class OutlookSyncService:
                     probe = self.graph.list_unread_messages(
                         mailbox=mailbox,
                         top=20,
-                        has_attachments=True,
                         sender_email=None,
                     )
                     other_senders: List[str] = []
@@ -923,30 +922,53 @@ class OutlookSyncService:
         sender_email: Optional[str],
         unread_only: Optional[bool],
     ) -> List[Dict[str, Any]]:
-        """Unread or recent mail, with and without attachments."""
-        attached = self.graph.list_messages(
+        """One Graph query. Attachment type is decided after the body is downloaded."""
+        messages = self.graph.list_messages(
             mailbox=mailbox,
             top=top,
-            has_attachments=True,
             sender_email=sender_email,
             unread_only=unread_only,
+            include_body=True,
         )
-        plain = self.graph.list_messages(
-            mailbox=mailbox,
-            top=top,
-            has_attachments=False,
-            sender_email=sender_email,
-            unread_only=unread_only,
+        logger.info("Graph Retrieved: {} email", len(messages))
+        return messages
+
+    def _capture_message_body(
+        self,
+        message: Dict[str, Any],
+        *,
+        graph_id: str,
+        mailbox: str,
+        email: EmailMessage,
+    ) -> None:
+        """Store the HTML body before the attachment decision."""
+        payload = message.get("body") if isinstance(message.get("body"), dict) else {}
+        content = str((payload or {}).get("content") or "")
+        content_type = str((payload or {}).get("contentType") or "")
+        preview = str(message.get("bodyPreview") or "")
+        if not content:
+            try:
+                fetched = self.graph.get_message_body(graph_id, mailbox=mailbox)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Email body fetch failed | message_id={} | err={}", graph_id, exc)
+                fetched = {}
+            content = str(fetched.get("content") or "")
+            content_type = str(fetched.get("content_type") or content_type)
+            preview = preview or str(fetched.get("preview") or "")
+        is_html = "html" in content_type.lower() or bool(
+            re.search(r"<(?:html|table|div|p|br)\b", content, flags=re.IGNORECASE)
         )
-        seen = set()
-        merged: List[Dict[str, Any]] = []
-        for message in list(attached) + list(plain):
-            message_id = message.get("id")
-            if not message_id or message_id in seen:
-                continue
-            seen.add(message_id)
-            merged.append(message)
-        return merged
+        message["_body_html"] = content if is_html else ""
+        message["_body_text"] = "" if is_html else (content or preview)
+        if preview and not email.body_preview:
+            email.body_preview = preview[:4000]
+        logger.info(
+            "Email Downloaded\nSubject: {}\nHTML Length: {}\nAttachments: {}",
+            email.subject or message.get("subject") or "",
+            len(content),
+            "True" if message.get("hasAttachments") else "False",
+        )
+        logger.info("Body Downloaded: Yes")
 
     def _email_body_attachment(
         self,
@@ -954,25 +976,28 @@ class OutlookSyncService:
         mailbox: str,
         *,
         subject: str,
+        html: str = "",
+        text: str = "",
     ) -> Optional[Dict[str, Any]]:
-        """Read the body, detect a sales matrix, and build the queue workbook.
+        """Detect a sales matrix in an already downloaded body and build the queue workbook.
 
         GPT-5.4 is asked for layout only when the deterministic score is below 80.
-        The email is left unqueued only when that score stays zero.
+        Supported attachments never reach this method.
         """
-        try:
-            body = self.graph.get_message_body(graph_id, mailbox=mailbox)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Email body fetch failed | message_id={} | err={}", graph_id, exc)
-            return None
-        content_type = (body.get("content_type") or "").lower()
-        content = body.get("content") or ""
-        preview = body.get("preview") or ""
-        is_html = "html" in content_type or bool(
-            re.search(r"<(?:html|table|div|p|br)\b", content, flags=re.IGNORECASE)
-        )
-        html = content if is_html else ""
-        text = "" if html else (content or preview)
+        if not html and not text:
+            try:
+                body = self.graph.get_message_body(graph_id, mailbox=mailbox)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Email body fetch failed | message_id={} | err={}", graph_id, exc)
+                return None
+            content_type = (body.get("content_type") or "").lower()
+            content = body.get("content") or ""
+            preview = body.get("preview") or ""
+            is_html = "html" in content_type or bool(
+                re.search(r"<(?:html|table|div|p|br)\b", content, flags=re.IGNORECASE)
+            )
+            html = content if is_html else ""
+            text = "" if html else (content or preview)
         from app.erp_parser.documents.email_body import ingest_email_body
 
         result = ingest_email_body(subject, html, text)
@@ -989,6 +1014,11 @@ class OutlookSyncService:
             result.customers,
             result.product or "—",
             result.confidence,
+        )
+        logger.info(
+            "Business Matrix: {}\nGPT Invoked: {}",
+            "Detected" if result.business_matrix else "No",
+            "Yes" if result.llm_invoked else "No",
         )
         if result.llm_invoked:
             logger.info(
@@ -1133,6 +1163,7 @@ class OutlookSyncService:
                     "mark_as_read_ok": None,
                 }
 
+        self._capture_message_body(message, graph_id=graph_id, mailbox=mailbox, email=email)
         attachments = self.graph.list_attachments(graph_id, mailbox=mailbox)
         excel_attachments = []
         for attachment in attachments:
@@ -1165,6 +1196,8 @@ class OutlookSyncService:
                 graph_id,
                 mailbox,
                 subject=email.subject or "",
+                html=str(message.get("_body_html") or ""),
+                text=str(message.get("_body_text") or ""),
             )
             if body_attachment is not None:
                 excel_attachments = [body_attachment]
