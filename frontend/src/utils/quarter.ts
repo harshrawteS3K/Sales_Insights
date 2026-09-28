@@ -323,10 +323,10 @@ export function overviewFromPeriodSummaries(
 
 export function formatMt(qty: number): string {
   const amount = Number(qty);
-  if (!Number.isFinite(amount)) return '0.00';
+  if (!Number.isFinite(amount)) return '0.000';
   return amount.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
   });
 }
 

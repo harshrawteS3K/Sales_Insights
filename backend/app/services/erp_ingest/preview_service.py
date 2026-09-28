@@ -25,7 +25,7 @@ from app.services.erp_ingest.constants import (
 )
 from app.services.report_service import DUPLICATE_SUBMISSION_MESSAGE
 from app.utils.hashing import build_sales_row_hash
-from app.utils.quantity import format_quantity, parse_quantity
+from app.utils.quantity import format_quantity, kg_to_mt_display, parse_quantity
 
 class PreviewMixin:
     def _log_email_job(self, email: Any, attachment_summary: List[Dict[str, Any]], merged_rows: List[Dict[str, Any]]) -> None:
@@ -221,6 +221,11 @@ class PreviewMixin:
                 details={"attachment_summary": attachment_summary},
             )
 
+        for row in merged_rows:
+            if not isinstance(row, dict):
+                continue
+            row["sales_quantity_mt"] = kg_to_mt_display(row.get("sales_quantity"))
+            row["unit"] = "MT"
         preview["rows"] = merged_rows
         preview["row_count"] = len(merged_rows)
         if confidences and preview.get("confidence"):

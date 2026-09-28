@@ -29,6 +29,8 @@ export type ERPPreviewResponse = {
     customer_name: string;
     product: string;
     sales_quantity: number;
+    sales_quantity_mt?: number | null;
+    unit?: string | null;
     period?: string | null;
     reporting_quarter?: string | null;
   }>;

@@ -82,21 +82,46 @@ class ValidationMixin:
 
         by_period: Dict[str, List[ParsedSalesRow]] = defaultdict(list)
         for raw in use_rows:
-            qty = raw.get("sales_quantity", raw.get("quantity"))
+            qty = raw.get("sales_quantity")
+            if qty is None:
+                qty = raw.get("sales_qty")
+            if qty is None:
+                qty = raw.get("quantity")
+            if qty is None:
+                qty = raw.get("qty")
             row_unit = str(raw.get("original_unit") or "").strip()
+            if qty is None or str(qty).strip() == "":
+                logger.warning(
+                    "Quantity missing; row not inserted | customer={} | product={}",
+                    raw.get("customer_name") or raw.get("customer"),
+                    raw.get("product"),
+                )
+                continue
             try:
                 if isinstance(qty, Decimal):
                     qty_val = qty
                 else:
                     qty_val, _qty_disp = parse_quantity(qty)
-                from app.utils.quantity import to_mt
-
-                row_unit = str(raw.get("original_unit") or "").strip()
-                applied_unit = row_unit or source_unit or "MT"
-                qty_val = to_mt(qty_val, source_unit=applied_unit)
-                qty_disp = format_quantity(qty_val)
             except ValueError as exc:
-                raise ValidationAppError(f"Invalid quantity in import rows: {exc}") from exc
+                logger.warning(
+                    "Quantity not parsed; row not inserted | customer={} | product={} | raw={!r} | err={}",
+                    raw.get("customer_name") or raw.get("customer"),
+                    raw.get("product"),
+                    qty,
+                    exc,
+                )
+                continue
+            if qty_val <= 0:
+                logger.warning(
+                    "Quantity is zero; row not inserted | customer={} | product={} | raw={!r}",
+                    raw.get("customer_name") or raw.get("customer"),
+                    raw.get("product"),
+                    qty,
+                )
+                continue
+            applied_unit = row_unit or source_unit or "KG"
+            qty_disp = format_quantity(qty_val)
+            logger.info("DB Value:\n{}", qty_val)
             customer = str(raw.get("customer_name") or raw.get("customer") or "").strip()
             product = str(raw.get("product") or "").strip()
             if not customer or not product:
@@ -143,7 +168,7 @@ class ValidationMixin:
                     quantity_display=qty_disp,
                     period=period,
                     source_month=source_month or None,
-                    unit="MT",
+                    unit="KG" if str(applied_unit).strip().upper().startswith("KG") else "MT",
                     original_unit=(row_unit or source_unit or "MT").strip().upper() or "MT",
                     company=company,
                     row_hash=build_sales_row_hash(

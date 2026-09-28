@@ -65,7 +65,7 @@ export function SalesHeatmap({ data, height = 320 }: Props) {
               return (
                 <div
                   key={`${dist}-${m}`}
-                  title={`${dist} · ${m}: ${qty.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MT`}
+                  title={`${dist} · ${m}: ${qty.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} MT`}
                   style={{
                     ...cellBase,
                     background: colorFor(qty),
@@ -73,7 +73,7 @@ export function SalesHeatmap({ data, height = 320 }: Props) {
                   }}
                 >
                   {qty
-                    ? qty.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                    ? qty.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })
                     : '—'}
                 </div>
               );

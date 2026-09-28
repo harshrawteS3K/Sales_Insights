@@ -334,6 +334,8 @@ class ERPParserService:
                     "customer_name": r["customer_name"],
                     "product": r["product"],
                     "sales_quantity": float(r["sales_quantity"]),
+                    "quantity": float(r["sales_quantity"]),
+                    "sales_qty": float(r["sales_quantity"]),
                     **(
                         {"period": r["period"], "reporting_quarter": r["period"]}
                         if r.get("period")

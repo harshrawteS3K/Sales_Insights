@@ -21,7 +21,7 @@ from app.utils.quantity import format_mt, kg_to_mt_display
 
 logger = get_logger(__name__)
 
-# Display + storage unit for all business reporting (ERP converted KG→MT on ingest)
+# Display unit. Stored sales quantities remain kilograms.
 QUANTITY_UNIT = "MT"
 
 
@@ -68,8 +68,8 @@ class BusinessAggregationService:
             spec.month_list,
             company=company,
         )
+        kg_total = 0.0
         data = []
-        kg_total = 0
         for row in rows:
             kg_total += float(row["qty"] or 0)
             quantity = kg_to_mt_display(row["qty"])
@@ -164,7 +164,7 @@ class BusinessAggregationService:
                 "company": company_name,
                 "unit": QUANTITY_UNIT,
                 "totalQuantity": 0.0,
-                "totalQuantityDisplay": "0.00",
+                "totalQuantityDisplay": format_mt(0),
                 "productsSold": 0,
                 "customerCount": 0,
                 "reportsIncluded": 0,

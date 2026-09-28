@@ -9,7 +9,7 @@ import type {
   QuarterlyReportResponse,
   QuarterlySummaryResponse,
 } from '../../types';
-import { formatPeriodDisplay } from '../../utils/quarter';
+import { formatMt, formatPeriodDisplay } from '../../utils/quarter';
 
 type Props = {
   quarters: string[];
@@ -117,7 +117,7 @@ export function QuarterlyView({ quarters, companies }: Props) {
         {summary && (
           <div style={{ marginLeft: 'auto', fontSize: '0.8125rem', color: '#6B7280' }}>
             {summary.totalCompanies} compan{summary.totalCompanies === 1 ? 'y' : 'ies'} ·{' '}
-            {summary.grandTotalQuantity.toLocaleString()} {summary.unit}
+            {formatMt(summary.grandTotalQuantity)} {summary.unit}
           </div>
         )}
       </div>

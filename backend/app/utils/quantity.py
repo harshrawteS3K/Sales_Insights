@@ -37,12 +37,11 @@ def kg_to_mt(value: Union[Decimal, float, int, str]) -> Decimal:
 
 
 def kg_to_mt_display(value: Union[Decimal, float, int, str, None]) -> float:
-    """
-    Analytics conversion. Stored kilograms become MT.
+    """Stored kilograms to MT for every display API.
 
-    Divide the full value, then half-up to two decimal places.
-    ``None`` and zero stay ``0.0``. This is the only converter visualization
-    responses may use.
+    MT = KG / 1000, half-up to three decimal places.
+    ``None`` and blank values return ``0.0``. This is the only converter
+    display responses may use. Database values are never changed here.
     """
     if value is None or value == "":
         return 0.0
@@ -50,7 +49,7 @@ def kg_to_mt_display(value: Union[Decimal, float, int, str, None]) -> float:
         amount = Decimal(str(value))
     except (InvalidOperation, ValueError):
         return 0.0
-    converted = (amount / Decimal("1000")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    converted = (amount / Decimal("1000")).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
     return float(converted)
 
 
@@ -194,14 +193,14 @@ def quantity_as_mt(
 
 
 def format_mt(value: Union[Decimal, float, int, str]) -> str:
-    """Display MT with exactly two decimal places (1.00, 12.40, 184.56)."""
-    number = Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    return f"{number:,.2f}"
+    """Display an already-converted MT value with three decimal places (1.000, 0.075)."""
+    number = Decimal(str(value or 0)).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+    return f"{number:,.3f}"
 
 
 def round_mt(value: Union[Decimal, float, int, str]) -> float:
-    """Numeric MT rounded half-up to two decimal places."""
-    number = Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    """Numeric MT rounded half-up to three decimal places."""
+    number = Decimal(str(value or 0)).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
     return float(number)
 
 

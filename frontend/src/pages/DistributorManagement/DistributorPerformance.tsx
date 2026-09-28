@@ -232,7 +232,7 @@ export function DistributorPerformance() {
                     tick={{ fontSize: 11, fill: '#6B7280' }}
                     axisLine={{ stroke: BORDER }}
                     allowDecimals
-                    tickFormatter={(value: number) => Number(value).toFixed(2)}
+                    tickFormatter={(value: number) => Number(value).toFixed(3)}
                   />
                   <YAxis
                     type="category"
@@ -243,7 +243,7 @@ export function DistributorPerformance() {
                     tickLine={false}
                   />
                   <Tooltip
-                    formatter={(value: number) => [`${Number(value).toFixed(2)} MT`, 'Sales']}
+                    formatter={(value: number) => [`${Number(value).toFixed(3)} MT`, 'Sales']}
                     labelFormatter={(_, payload) =>
                       (payload?.[0]?.payload?.fullName as string) || ''
                     }

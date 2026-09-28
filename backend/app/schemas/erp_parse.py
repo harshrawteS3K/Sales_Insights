@@ -37,6 +37,13 @@ class ERPPreviewRow(BaseModel):
     sales_quantity: float
     period: Optional[str] = None
     reporting_quarter: Optional[str] = None
+    source_month: Optional[str] = None
+    transaction_date: Optional[str] = None
+    original_unit: Optional[str] = None
+    quantity: Optional[float] = None
+    sales_qty: Optional[float] = None
+    sales_quantity_mt: Optional[float] = None
+    unit: Optional[str] = None
 
 
 class ERPDistributorOption(BaseModel):

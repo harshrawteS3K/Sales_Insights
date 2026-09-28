@@ -37,7 +37,7 @@ import { formatPeriodDisplay } from '../../utils/quarter';
 function formatMt(value: number): string {
   const amount = Number(value);
   if (!Number.isFinite(amount)) return '0.00 MT';
-  return `${amount.toFixed(2)} MT`;
+  return `${amount.toFixed(3)} MT`;
 }
 
 const btnPrimary: CSSProperties = {
@@ -227,7 +227,7 @@ export function Visualizations() {
                   <YAxis
                     tick={{ fontSize: 11, fill: '#6B7280' }}
                     allowDecimals
-                    tickFormatter={(value: number) => Number(value).toFixed(2)}
+                    tickFormatter={(value: number) => Number(value).toFixed(3)}
                   />
                   <Tooltip
                     formatter={(value: number) => [formatMt(value), 'Sales']}
@@ -272,7 +272,7 @@ export function Visualizations() {
                       type="number"
                       tick={{ fontSize: 11, fill: '#6B7280' }}
                       allowDecimals
-                      tickFormatter={(value: number) => Number(value).toFixed(2)}
+                      tickFormatter={(value: number) => Number(value).toFixed(3)}
                     />
                     <YAxis
                       type="category"

@@ -11,8 +11,11 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence
 
 from app.erp_parser.stock_item_parser import _as_date, _period_for_date, detect_stock_item_register
+from app.core.logging import get_logger
 from app.utils.period_calendar import month_label
 from app.utils.quantity import format_quantity, parse_quantity
+
+logger = get_logger(__name__)
 
 _MONTH = r"jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec"
 _DATE = rf"\d{{1,2}}[-/\s.](?:{_MONTH})[a-z]*[-/\s.]\d{{2,4}}"
@@ -22,11 +25,30 @@ _CUSTOMER_RE = re.compile(
     re.IGNORECASE,
 )
 _PRODUCT_RE = re.compile(
-    r"(?P<product>Apcotex\b.*?)(?=\s+\d[\d,]*(?:\.\d+)?\s*kgs?\.?\s*$)",
+    r"(?P<product>Apcotex\b.*?)(?=\s+(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:\s*kgs?\.?)?\s*$)",
     re.IGNORECASE,
 )
-_QTY_RE = re.compile(r"(?P<qty>\d[\d,]*(?:\.\d+)?)\s*kgs?\.?\s*$", re.IGNORECASE)
+_QTY_RE = re.compile(
+    r"(?P<qty>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?:\s*kgs?\.?)?\s*$",
+    re.IGNORECASE,
+)
 _SKIP_NAME_RE = re.compile(r"^(grand\s+|sub\s+)?totals?\b", re.IGNORECASE)
+
+
+def _parse_kg(raw: str) -> Optional[Decimal]:
+    """Kilograms from ``1000 Kgs.``, ``1,250 KG``, ``225.50``, or ``750``."""
+    text = re.sub(r"\s+", " ", str(raw or "")).strip()
+    text = re.sub(r"\s*kgs?\.?\s*$", "", text, flags=re.IGNORECASE).strip()
+    text = text.replace(",", "")
+    if not text:
+        return None
+    try:
+        amount, _display = parse_quantity(text)
+    except (ValueError, ArithmeticError):
+        return None
+    if amount <= 0:
+        return None
+    return Decimal(str(amount))
 
 
 def _line(row: Sequence[Any]) -> str:
@@ -64,7 +86,7 @@ def _transaction(line: str) -> Optional[Dict[str, str]]:
     return {
         "date": dated.group("date"),
         "product": re.sub(r"\s+", " ", product.group("product")).strip(),
-        "quantity": quantity.group("qty"),
+        "quantity": quantity.group(0).strip(),
     }
 
 
@@ -126,20 +148,33 @@ def extract_pdf_stock_register_rows(
             continue
         tx_date = _as_date(item["date"])
         if tx_date is None:
+            logger.warning("PDF stock register date skipped | line={}", line)
             continue
-        try:
-            qty, _display = parse_quantity(item["quantity"])
-        except (ValueError, ArithmeticError):
+        raw_quantity = item["quantity"]
+        amount = _parse_kg(raw_quantity)
+        if amount is None:
+            logger.warning(
+                "PDF stock register quantity not parsed | line={} | raw={!r}",
+                line,
+                raw_quantity,
+            )
             continue
-        if qty <= 0:
-            continue
-        amount = Decimal(str(qty))
         period = _period_for_date(tx_date)
+        sales_qty = float(amount)
+        logger.info(
+            "Raw Line:\n{}\n\nRaw Quantity:\n\"{}\"\n\nParsed KG:\n{}\n\nMapped sales_qty:\n{}",
+            line,
+            raw_quantity,
+            sales_qty,
+            sales_qty,
+        )
         rows.append(
             {
                 "customer_name": current,
                 "product": item["product"],
                 "sales_quantity": amount,
+                "quantity": amount,
+                "sales_qty": amount,
                 "sales_quantity_display": format_quantity(amount),
                 "period": period,
                 "reporting_quarter": period,

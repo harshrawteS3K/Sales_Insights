@@ -19,7 +19,7 @@ import {
 } from '../../services/emails.service';
 import { ApiError, getSession } from '../../api';
 import { isAdminRole } from '../../utils/rbac';
-import { formatPeriodDisplay, fyQuarterLabel } from '../../utils/quarter';
+import { formatMt, formatPeriodDisplay, fyQuarterLabel } from '../../utils/quarter';
 
 const MAP_OPTIONS = ['Customer Name', 'Product', 'Sales Quantity', 'Ignored'] as const;
 
@@ -1269,7 +1269,7 @@ export function EmailsModule() {
                         {preview.monthly_pivot && <th style={th}>Quarter</th>}
                         <th style={th}>Customer</th>
                         <th style={th}>Product</th>
-                        <th style={{ ...th, textAlign: 'right' }}>Sales Qty</th>
+                        <th style={{ ...th, textAlign: 'right' }}>Sales Qty (MT)</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1283,7 +1283,9 @@ export function EmailsModule() {
                           )}
                           <td style={td}>{r.customer_name}</td>
                           <td style={td}>{r.product}</td>
-                          <td style={{ ...td, textAlign: 'right' }}>{r.sales_quantity}</td>
+                          <td style={{ ...td, textAlign: 'right' }}>
+                            {formatMt(r.sales_quantity_mt ?? 0)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
