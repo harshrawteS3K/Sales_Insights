@@ -59,6 +59,40 @@ def test_subject_region_segment_period_unit():
     assert "Q1" in (parsed["period"] or "")
 
 
+_OUTLOOK_DIVS = """
+<html><body>
+<div>Badamikar</div>
+<div>Apr</div><div>May</div><div>Jun</div>
+<div><strong>APCOTEX TX 400</strong></div>
+<div>Vijay Anand Fabric</div><div>100</div><div>0</div><div>100</div>
+<div>Maruti Cottex Ltd</div><div>100</div><div>100</div><div>50</div>
+<div>Radha Madhav Corporation</div><div>100</div><div>0</div><div>100</div>
+<div>Navshakti Textiles</div><div>50</div><div>100</div><div>0</div>
+<div>VR Tex Processor Pvt Ltd</div><div>150</div><div>50</div><div>50</div>
+</body></html>
+"""
+
+
+def test_outlook_divs_without_table_still_parse():
+    from app.erp_parser.documents.email_body import business_matrix_score
+
+    grid = extract_email_body_grid(html=_OUTLOOK_DIVS, text="")
+    assert grid is not None
+    assert business_matrix_score(grid.sheets[0].rows) >= 80
+    extracted = extract_email_body_matrix_rows(
+        grid.sheets[0].rows,
+        sheet_name="Email Body",
+        fiscal_year_start=2026,
+        reporting_quarter="FY 2026-27 • Q1",
+    )
+    assert extracted is not None
+    assert extracted["products_detected"] == 1
+    assert extracted["customers_detected"] == 5
+    assert len(extracted["rows"]) == 15
+    assert extracted["llm_used"] is False
+    assert extracted["score"] == 98
+
+
 def test_v5_body_matrix_fifteen_rows():
     parsed = parse_email_subject("Badamikar & Co.|WEST|RUBBER|Q1 FY 2026-27|KG")
     grid = extract_email_body_grid(text=_V5_BODY)

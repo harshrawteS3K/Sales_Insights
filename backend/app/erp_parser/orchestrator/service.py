@@ -76,7 +76,11 @@ def _terminal_state(winner: Optional[ParserResult]) -> str:
 
 def _score(result: ParserResult, **kwargs: Any) -> ParserResult:
     authored = float(result.confidence or 0)
-    result.confidence = max(authored, score_extraction(result.rows, **kwargs))
+    scored = score_extraction(result.rows, **kwargs)
+    if result.parser_name == "email_body_matrix" and result.llm_used:
+        result.confidence = min(97.0, max(85.0, authored))
+    else:
+        result.confidence = max(authored, scored)
     band = decision_band(result.confidence)
     result.warnings = [
         note

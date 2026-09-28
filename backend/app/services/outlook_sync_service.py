@@ -956,8 +956,9 @@ class OutlookSyncService:
             return None
         content_type = (body.get("content_type") or "").lower()
         content = body.get("content") or ""
+        preview = body.get("preview") or ""
         html = content if "html" in content_type else ""
-        text = "" if html else (content or body.get("preview") or "")
+        text = content if not html else preview
         from app.erp_parser.documents.email_body import email_body_workbook_bytes
 
         data = email_body_workbook_bytes(html, text)

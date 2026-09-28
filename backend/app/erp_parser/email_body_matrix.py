@@ -10,7 +10,7 @@ import re
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from app.erp_parser.documents.email_body import SHEET_NAME
+from app.erp_parser.documents.email_body import LLM_MARK, SHEET_NAME
 from app.erp_parser.fiscal_quarters import (
     month_number_from_key,
     quarter_label,
@@ -58,7 +58,7 @@ def extract_email_body_matrix_rows(
         if _is_month_header_row(raw, month_cols):
             continue
         label = _label_cell(raw, month_cols)
-        if not label or _TOTAL_RE.match(label):
+        if not label or label == LLM_MARK or _TOTAL_RE.match(label):
             continue
         quantities = _month_quantities(raw, months)
         if quantities is None:
@@ -92,6 +92,7 @@ def extract_email_body_matrix_rows(
             )
     if not rows or not products or not customers:
         return None
+    llm_used = any(str(cell).strip() == LLM_MARK for row in matrix for cell in row)
     periods = [str(row.get("period") or "") for row in rows if row.get("period")]
     quarter = ""
     if periods:
@@ -101,7 +102,8 @@ def extract_email_body_matrix_rows(
     return {
         "rows": rows,
         "layout": "email_matrix",
-        "score": 98,
+        "score": 90 if llm_used else 98,
+        "llm_used": llm_used,
         "header_row": header_idx + 1,
         "distributor": distributor_label,
         "products": products,

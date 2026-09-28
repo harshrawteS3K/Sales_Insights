@@ -290,7 +290,8 @@ def run_email_body_matrix(matrix: Sequence[Sequence[Any]], sheet_name: str, **kw
             reason="Product header, month columns, and customer quantities",
         )
         if result.rows:
-            result.confidence = 98.0
+            result.llm_used = bool((extracted or {}).get("llm_used"))
+            result.confidence = 90.0 if result.llm_used else 98.0
             result.layout = "email_matrix"
         return result
 
