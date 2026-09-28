@@ -95,6 +95,9 @@ export interface EmailRecord {
   errorMessage?: string | null;
   /** python = deterministic | llm = OpenAI fallback | manual = user mapping */
   mappingSource?: string | null;
+  scoringStatus?: string | null;
+  extractionStatus?: string | null;
+  completedAt?: string | null;
 }
 
 // ─── Distributors (admin CRUD) ────────────────────────────────────────────────

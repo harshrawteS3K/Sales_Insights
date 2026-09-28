@@ -346,14 +346,23 @@ class PreviewMixin:
             EmailProcessStatus.INSERTED.value,
             EmailProcessStatus.MARKED_READ.value,
         }:
-            email.process_status = EmailProcessStatus.PARSED.value
             conf = (preview.get("confidence") or {}).get("overall")
             if conf is not None:
                 email.confidence_score = int(round(float(conf)))
+            scored = int(email.confidence_score or 0)
+            if scored <= 0:
+                email.process_status = EmailProcessStatus.FAILED.value
+                email.confidence_score = 0
+                email.error_message = "Could not detect structured sales table"
+            elif scored < 70:
+                email.process_status = EmailProcessStatus.HUMAN_REVIEW.value
+                email.error_message = None
+            else:
+                email.process_status = EmailProcessStatus.PARSED.value
+                email.error_message = None
             src = preview.get("mapping_source")
             if src:
                 email.mapping_source = str(src)
-            email.error_message = None
             self.db.flush()
 
         return preview

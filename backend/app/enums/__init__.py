@@ -91,7 +91,10 @@ class EmailProcessStatus(str, Enum):
 
     UNREAD = "unread"
     DOWNLOADED = "downloaded"
+    QUEUED = "queued"
+    SCORING = "scoring"
     PARSED = "parsed"
+    HUMAN_REVIEW = "human_review"
     INSERTED = "inserted"
     MARKED_READ = "marked_read"
     FAILED = "failed"

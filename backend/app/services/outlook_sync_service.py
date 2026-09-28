@@ -25,6 +25,33 @@ from app.utils.hashing import sha256_bytes
 
 logger = get_logger(__name__)
 
+
+def _completed_stamp(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        return value.isoformat()
+    except Exception:  # noqa: BLE001
+        return str(value)
+
+
+def _score_view(status: str, updated_at: Any) -> tuple:
+    """Map a stored email status onto the scoring lifecycle the queue displays."""
+    key = (status or "").lower()
+    if key in {EmailProcessStatus.QUEUED.value, EmailProcessStatus.SCORING.value}:
+        return "SCORING", "Scoring", None
+    if key in {EmailProcessStatus.FAILED.value, EmailProcessStatus.SKIPPED.value}:
+        return "FAILED", "Failed", _completed_stamp(updated_at)
+    if key == EmailProcessStatus.HUMAN_REVIEW.value:
+        return "HUMAN_REVIEW", "Completed", _completed_stamp(updated_at)
+    if key in {
+        EmailProcessStatus.PARSED.value,
+        EmailProcessStatus.INSERTED.value,
+        EmailProcessStatus.MARKED_READ.value,
+    }:
+        return "COMPLETED", "Completed", _completed_stamp(updated_at)
+    return "NEW", None, None
+
 _TERMINAL_PROCESSED = {
     EmailProcessStatus.INSERTED.value,
     EmailProcessStatus.MARKED_READ.value,
@@ -153,7 +180,10 @@ class OutlookSyncService:
         status_label_map = {
             EmailProcessStatus.UNREAD.value: "New",
             EmailProcessStatus.DOWNLOADED.value: "New",
-            EmailProcessStatus.PARSED.value: "Parsed",
+            EmailProcessStatus.QUEUED.value: "Scoring",
+            EmailProcessStatus.SCORING.value: "Scoring",
+            EmailProcessStatus.PARSED.value: "Success",
+            EmailProcessStatus.HUMAN_REVIEW.value: "Human Review",
             EmailProcessStatus.INSERTED.value: "Imported",
             EmailProcessStatus.MARKED_READ.value: "Imported",
             EmailProcessStatus.FAILED.value: "Failed",
@@ -187,29 +217,27 @@ class OutlookSyncService:
                 has_excel
                 and excel_path
                 and msg.process_status
-                not in {
-                    EmailProcessStatus.INSERTED.value,
-                    EmailProcessStatus.MARKED_READ.value,
-                    EmailProcessStatus.FAILED.value,
-                    EmailProcessStatus.SKIPPED.value,
+                in {
+                    EmailProcessStatus.UNREAD.value,
+                    EmailProcessStatus.DOWNLOADED.value,
+                    EmailProcessStatus.QUEUED.value,
+                    EmailProcessStatus.SCORING.value,
                 }
             ):
                 try:
                     from app.services.erp_score_queue import enqueue_email_score, is_pending
 
                     path = Path(excel_path)
-                    if path.is_file():
-                        # Never re-parse synchronously on list load (latency + OpenAI).
-                        # Queue background score when accuracy is still pending.
-                        score = msg.confidence_score
-                        if score is None or int(score) <= 0:
-                            if not is_pending(int(msg.id)):
-                                enqueue_email_score(int(msg.id), allow_llm=True)
-                        elif msg.process_status in {
+                    score = msg.confidence_score
+                    pending_score = score is None or int(score) <= 0
+                    if path.is_file() and pending_score:
+                        if not is_pending(int(msg.id)):
+                            enqueue_email_score(int(msg.id), allow_llm=True)
+                        if msg.process_status in {
                             EmailProcessStatus.UNREAD.value,
                             EmailProcessStatus.DOWNLOADED.value,
                         }:
-                            msg.process_status = EmailProcessStatus.PARSED.value
+                            msg.process_status = EmailProcessStatus.QUEUED.value
                             self.db.flush()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
@@ -230,6 +258,7 @@ class OutlookSyncService:
                     dist_name = None
 
             status = msg.process_status or EmailProcessStatus.UNREAD.value
+            scoring_status, extraction_status, completed_at = _score_view(status, msg.updated_at)
             result.append(
                 FrontendEmailRecord(
                     id=msg.id,
@@ -256,6 +285,9 @@ class OutlookSyncService:
                     hasExcel=has_excel,
                     errorMessage=msg.error_message,
                     mappingSource=getattr(msg, "mapping_source", None),
+                    scoringStatus=scoring_status,
+                    extractionStatus=extraction_status,
+                    completedAt=completed_at,
                 )
             )
         return result
@@ -1088,19 +1120,25 @@ class OutlookSyncService:
                 MAX_EXCEL_ATTACHMENTS_PER_EMAIL,
             )
             excel_attachments = excel_attachments[:MAX_EXCEL_ATTACHMENTS_PER_EMAIL]
-        logger.info(
-            "Excel Attachment Found | message_id={} | total_attachments={} | excel={}",
-            graph_id,
-            len(attachments),
-            len(excel_attachments),
-        )
-        if not excel_attachments:
+        if excel_attachments:
+            logger.info(
+                "Supported attachment | message_id={} | total_attachments={} | ingest={}",
+                graph_id,
+                len(attachments),
+                len(excel_attachments),
+            )
+        else:
             body_attachment = self._email_body_attachment(graph_id, mailbox)
             if body_attachment is not None:
                 excel_attachments = [body_attachment]
+                email.has_attachments = True
+                logger.info(
+                    "Email body sales table | message_id={} | adapter=Email Body Adapter",
+                    graph_id,
+                )
         if not excel_attachments:
             email.process_status = EmailProcessStatus.SKIPPED.value
-            email.error_message = "No Excel attachments found"
+            email.error_message = "No supported attachment or sales table in the email body"
             self.db.flush()
             mark_ok = None
             if mark_as_read:

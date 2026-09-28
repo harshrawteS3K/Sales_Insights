@@ -68,22 +68,38 @@ function formatSyncTimeOnly(iso?: string | null): string {
   }
 }
 
-/** Single Accuracy badge (mapping quality for the full workbook). */
-function accuracyMeta(score?: number | null): {
+function isScoreRunning(email: EmailRecord): boolean {
+  const status = (email.processStatus || email.scoringStatus || '').toLowerCase();
+  return status === 'scoring' || status === 'queued';
+}
+
+/** Single Accuracy badge. Scoring is only shown while the job is still running. */
+function accuracyMeta(email: EmailRecord): {
   label: string;
   detail: string;
   bg: string;
   color: string;
 } {
-  const value = score ?? 0;
-  if (value <= 0) {
+  const status = (email.processStatus || '').toLowerCase();
+  const labelName = (email.statusLabel || '').toLowerCase();
+  const failed = status === 'failed' || status === 'skipped' || labelName === 'failed';
+  if (isScoreRunning(email)) {
     return {
       label: 'Scoring…',
-      detail: 'Background job running — refresh in a few seconds',
+      detail: 'Background job running',
       bg: 'rgba(107,114,128,0.12)',
       color: '#4B5563',
     };
   }
+  if (failed) {
+    return {
+      label: '0%',
+      detail: email.errorMessage || 'Could not detect structured sales table',
+      bg: 'rgba(220,38,38,0.12)',
+      color: RED,
+    };
+  }
+  const value = email.confidenceScore ?? 0;
   if (value >= 90) {
     return {
       label: `${value}% Accuracy`,
@@ -185,9 +201,9 @@ export function EmailsModule() {
     refreshAutoSyncStatus().catch(() => undefined);
   }, []);
 
-  // While any email is still scoring (confidence 0), poll so Accuracy updates without manual refresh.
+  // Poll only while a scoring job is queued or running. Terminal states stop the timer.
   useEffect(() => {
-    const pending = emails.some(e => !e.confidenceScore || e.confidenceScore <= 0);
+    const pending = emails.some(isScoreRunning);
     if (!pending) return undefined;
     const id = window.setInterval(() => {
       refreshEmails().catch(() => undefined);
@@ -814,7 +830,8 @@ export function EmailsModule() {
               </thead>
               <tbody>
                 {emails.map(email => {
-                  const acc = accuracyMeta(email.confidenceScore);
+                  const acc = accuracyMeta(email);
+                  const extraction = email.extractionStatus || '—';
                   const selected = selectedEmailId === email.id;
                   return (
                     <tr
@@ -863,38 +880,19 @@ export function EmailsModule() {
                               Subject: {email.subject || '—'}
                             </span>
                           </div>
+                        ) : (email.statusLabel || '').toLowerCase() === 'failed' ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 280 }}>
+                            <span>Failed</span>
+                            <span style={{ fontSize: '0.75rem', color: '#B91C1C', lineHeight: 1.4 }}>
+                              {email.errorMessage || 'Could not detect structured sales table'}
+                            </span>
+                          </div>
                         ) : (
                           email.statusLabel || 'New'
                         )}
                       </td>
-                      <td style={{ padding: '12px 14px' }}>
-                        {(() => {
-                          const src = (email.mappingSource || '').toLowerCase();
-                          if (!src) {
-                            return <span style={{ color: '#94A3B8', fontSize: '0.75rem' }}>—</span>;
-                          }
-                          const isLlm = src === 'llm';
-                          const isManual = src === 'manual';
-                          return (
-                            <span
-                              style={{
-                                display: 'inline-flex',
-                                padding: '3px 8px',
-                                borderRadius: 6,
-                                fontSize: '0.6875rem',
-                                fontWeight: 700,
-                                color: isLlm ? '#7C3AED' : isManual ? '#0369A1' : '#059669',
-                                background: isLlm
-                                  ? 'rgba(124,58,237,0.12)'
-                                  : isManual
-                                    ? 'rgba(3,105,161,0.1)'
-                                    : 'rgba(5,150,105,0.1)',
-                              }}
-                            >
-                              {isLlm ? 'LLM' : isManual ? 'Manual' : 'Deterministic'}
-                            </span>
-                          );
-                        })()}
+                      <td style={{ padding: '12px 14px', color: extraction === 'Failed' ? RED : '#374151' }}>
+                        {extraction}
                       </td>
                       <td style={{ padding: '12px 14px' }}>
                         <div

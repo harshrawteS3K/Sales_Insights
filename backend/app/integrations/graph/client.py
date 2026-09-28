@@ -290,8 +290,10 @@ class GraphClient:
             filters.append("isRead eq false")
         elif unread_only is False:
             filters.append("isRead eq true")
-        if has_attachments:
+        if has_attachments is True:
             filters.append("hasAttachments eq true")
+        elif has_attachments is False:
+            filters.append("hasAttachments eq false")
         if sender_email and sender_email.strip():
             filters.append(f"from/emailAddress/address eq '{sender_email.strip().lower()}'")
 

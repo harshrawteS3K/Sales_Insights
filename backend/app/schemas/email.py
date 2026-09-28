@@ -65,6 +65,9 @@ class FrontendEmailRecord(BaseModel):
     hasExcel: bool = False
     errorMessage: Optional[str] = None
     mappingSource: Optional[str] = None  # python | llm | manual
+    scoringStatus: Optional[str] = None
+    extractionStatus: Optional[str] = None
+    completedAt: Optional[str] = None
 
 
 class OutlookOpenLinkResponse(BaseModel):
