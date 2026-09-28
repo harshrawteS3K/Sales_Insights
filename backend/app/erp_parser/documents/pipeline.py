@@ -13,6 +13,17 @@ from app.erp_parser.documents.materialize import materialize_grid
 from app.erp_parser.documents.pdf_adapter import pdf_to_grid
 
 
+def adapter_for(document_type: str) -> str:
+    """Adapter name for a detected document. Excel types share one adapter."""
+    return {
+        "XLSX": "Excel Adapter",
+        "XLSM": "Excel Adapter",
+        "XLS": "Excel Adapter",
+        "PDF": "PDF Adapter",
+        "DOCX": "DOCX Adapter",
+    }.get((document_type or "").upper(), "Excel Adapter")
+
+
 @dataclass
 class OpenedDocument:
     workbook_path: Path

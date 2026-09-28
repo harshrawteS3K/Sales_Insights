@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
 from app.enums import AuditAction, AuditStatus, EmailProcessStatus, ReportSource, SyncStatus
-from app.exceptions import GraphAPIError
+from app.exceptions import GraphAPIError, ValidationAppError
 from app.integrations.graph.client import GraphClient
 from app.models.email_message import EmailAttachment, EmailMessage
 from app.models.sync_job import SyncJob
@@ -1025,7 +1025,15 @@ class OutlookSyncService:
                 }
 
         attachments = self.graph.list_attachments(graph_id, mailbox=mailbox)
-        excel_attachments = [a for a in attachments if GraphClient.is_ingest_attachment(a)]
+        excel_attachments = []
+        for attachment in attachments:
+            if GraphClient.is_ingest_attachment(attachment):
+                excel_attachments.append(attachment)
+                continue
+            logger.info(
+                "Unsupported Attachment\n\nFile : {}\n\nReason : Unsupported business document",
+                attachment.get("name") or "attachment",
+            )
         from app.services.erp_ingest_service import MAX_EXCEL_ATTACHMENTS_PER_EMAIL
 
         if len(excel_attachments) > MAX_EXCEL_ATTACHMENTS_PER_EMAIL:
@@ -1075,22 +1083,35 @@ class OutlookSyncService:
         for attachment in excel_attachments:
             att_id = attachment["id"]
             file_name = attachment.get("name") or "attachment.xlsx"
-            size_bytes = attachment.get("size")
-            logger.info(
-                "Attachment Downloaded starting | file={} | size={} | ext={}",
-                file_name,
-                size_bytes,
-                Path(file_name).suffix.lower(),
-            )
-            content = self.graph.download_attachment(graph_id, att_id, mailbox=mailbox)
-            content_hash = sha256_bytes(content)
-            path = save_bytes(content, get_upload_subdir("attachments"), file_name)
+            try:
+                content = self.graph.download_attachment(graph_id, att_id, mailbox=mailbox)
+                content_hash = sha256_bytes(content)
+                path = save_bytes(content, get_upload_subdir("attachments"), file_name)
+                from app.erp_parser.documents.detector import detect_document
+                from app.erp_parser.documents.pipeline import adapter_for
+
+                detection = detect_document(path)
+            except (ValidationAppError, ValueError):
+                logger.info(
+                    "Unsupported Attachment\n\nFile : {}\n\nReason : Unsupported business document",
+                    file_name,
+                )
+                continue
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Attachment failed | message_id={} | file={} | err={}",
+                    graph_id,
+                    file_name,
+                    exc,
+                )
+                continue
+
             attachments_downloaded += 1
             logger.info(
-                "Attachment Downloaded | file={} | bytes={} | path={}",
+                "Attachment Downloaded\n\nFile : {}\n\nDocument Type : {}\n\nAdapter : {}",
                 file_name,
-                len(content),
-                path,
+                detection.document_type,
+                adapter_for(detection.document_type),
             )
 
             att_entity = self.attachments.get_by_graph_id(att_id)

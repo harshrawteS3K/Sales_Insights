@@ -7,7 +7,11 @@ from typing import BinaryIO
 
 from fastapi import UploadFile
 
-from app.constants import ALLOWED_EXCEL_EXTENSIONS, MAX_UPLOAD_SIZE_BYTES
+from app.constants import (
+    ALLOWED_EXCEL_EXTENSIONS,
+    MAX_UPLOAD_SIZE_BYTES,
+    SUPPORTED_DOCUMENT_EXTENSIONS,
+)
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.exceptions import ValidationAppError
@@ -31,6 +35,16 @@ def validate_excel_filename(filename: str) -> str:
         raise ValidationAppError(
             f"Unsupported file type '{extension}'. Allowed: .xlsx, .xlsm, .xls"
         )
+    return extension
+
+
+def validate_supported_document(filename: str) -> str:
+    """Accept Excel, PDF, and Word sales documents. Reject every other type."""
+    if not filename:
+        raise ValidationAppError("Filename is required")
+    extension = Path(filename).suffix.lower()
+    if extension not in SUPPORTED_DOCUMENT_EXTENSIONS:
+        raise ValidationAppError("Unsupported business document")
     return extension
 
 
@@ -75,8 +89,8 @@ async def save_upload_file(upload: UploadFile, destination_dir: Path | str) -> P
 
 
 def save_bytes(data: bytes, destination_dir: Path | str, filename: str) -> Path:
-    """Write raw bytes to destination_dir/filename."""
-    validate_excel_filename(filename)
+    """Write a supported sales document to destination_dir. The folder is unchanged."""
+    validate_supported_document(filename)
     target_dir = ensure_dir(destination_dir)
     unique_name = f"{uuid.uuid4().hex}_{filename}"
     target_path = target_dir / unique_name

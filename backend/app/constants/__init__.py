@@ -31,6 +31,7 @@ EXCEL_MIME_TYPES = {
 }
 
 ALLOWED_EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
+SUPPORTED_DOCUMENT_EXTENSIONS = {".xlsx", ".xlsm", ".xls", ".pdf", ".docx"}
 
 # Chart palette aligned with frontend PRODUCT_COLORS (theme.ts)
 PRODUCT_MIX_COLORS = [
