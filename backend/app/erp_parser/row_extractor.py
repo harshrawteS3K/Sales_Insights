@@ -17,6 +17,7 @@ _TOTAL_RE = re.compile(
     r"^\s*(grand\s*)?total\b|\bsub\s*total\b|\btotals?\b",
     flags=re.IGNORECASE,
 )
+_DATE_HEADER_RE = re.compile(r"\b(transaction\s*date|invoice\s*date|voucher\s*date|bill\s*date|\bdate\b)", re.IGNORECASE)
 
 
 def _cell_str(value: Any) -> str:
@@ -31,6 +32,24 @@ def _is_total_row(row: Sequence[Any]) -> bool:
         if text and _TOTAL_RE.search(text):
             return True
     return False
+
+
+def _date_column(matrix: Sequence[Sequence[Any]], header_row_index: int) -> Optional[int]:
+    if header_row_index < 0 or header_row_index >= len(matrix):
+        return None
+    for index, cell in enumerate(matrix[header_row_index]):
+        if _DATE_HEADER_RE.search(_cell_str(cell)):
+            return index
+    return None
+
+
+def _with_transaction_date(payload: Dict[str, Any], row: Sequence[Any], date_index: Optional[int]) -> Dict[str, Any]:
+    if date_index is None or date_index >= len(row):
+        return payload
+    raw = row[date_index]
+    if raw not in (None, "") and _cell_str(raw):
+        payload["transaction_date"] = raw
+    return payload
 
 
 def _is_blank_row(row: Sequence[Any]) -> bool:
@@ -95,6 +114,7 @@ def extract_rows(
         reporting_quarter=reporting_quarter,
     )
     monthly_mode = bool(qty_cols) and bool(by_quarter)
+    date_index = _date_column(matrix, header_row_index)
 
     rows: List[Dict[str, Any]] = []
     skipped_total = 0
@@ -152,14 +172,18 @@ def extract_rows(
                     continue
                 period = quarter_label(fy_start, q_num)
                 rows.append(
-                    {
-                        "customer_name": customer,
-                        "product": product,
-                        "sales_quantity": qty_val,
-                        "sales_quantity_display": qty_display,
-                        "period": period,
-                        "reporting_quarter": period,
-                    }
+                    _with_transaction_date(
+                        {
+                            "customer_name": customer,
+                            "product": product,
+                            "sales_quantity": qty_val,
+                            "sales_quantity_display": qty_display,
+                            "period": period,
+                            "reporting_quarter": period,
+                        },
+                        row,
+                        date_index,
+                    )
                 )
                 qty_ok += 1
                 emitted += 1
@@ -190,12 +214,16 @@ def extract_rows(
             continue
 
         rows.append(
-            {
-                "customer_name": customer,
-                "product": product,
-                "sales_quantity": qty_val,
-                "sales_quantity_display": qty_display,
-            }
+            _with_transaction_date(
+                {
+                    "customer_name": customer,
+                    "product": product,
+                    "sales_quantity": qty_val,
+                    "sales_quantity_display": qty_display,
+                },
+                row,
+                date_index,
+            )
         )
 
     return {

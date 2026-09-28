@@ -219,20 +219,28 @@ class ERPParserService:
         known_profiles: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> ERPParseResult:
         """Parse one workbook through the universal orchestrator."""
+        from app.erp_parser.documents.pipeline import orchestrator_workbook
         from app.erp_parser.orchestrator.service import UniversalParserOrchestrator
 
-        return UniversalParserOrchestrator(self).parse(
-            path,
-            sheet_name=sheet_name,
-            distributor_label=distributor_label,
-            reporting_quarter=reporting_quarter,
-            fiscal_year_start=fiscal_year_start,
-            allow_llm_fallback=allow_llm_fallback,
-            subject=subject,
-            preferred_parser=preferred_parser,
-            known_fingerprint=known_fingerprint,
-            known_profiles=known_profiles,
-        )
+        with orchestrator_workbook(path) as opened:
+            result = UniversalParserOrchestrator(self).parse(
+                opened.workbook_path,
+                sheet_name=sheet_name,
+                distributor_label=distributor_label,
+                reporting_quarter=reporting_quarter,
+                fiscal_year_start=fiscal_year_start,
+                allow_llm_fallback=allow_llm_fallback,
+                subject=subject,
+                preferred_parser=preferred_parser,
+                known_fingerprint=known_fingerprint,
+                known_profiles=known_profiles,
+            )
+        breakdown = dict(result.confidence_breakdown or {})
+        breakdown["document_type"] = opened.document_type
+        breakdown["document_engine"] = opened.engine
+        breakdown["signature_override"] = opened.signature_override
+        result.confidence_breakdown = breakdown
+        return result
 
     def _finalize_result(
         self,
@@ -537,8 +545,9 @@ class ERPParserService:
             "cross_product_matrix",
             "monthly_product_sheets",
         }
+        doc_type = str((result.confidence_breakdown or {}).get("document_type") or "XLSX")
         quarter_hit = None
-        if not block_mode:
+        if not block_mode and doc_type in {"XLSX", "XLSM", "XLS"}:
             try:
                 from app.erp_parser.quarter_detector import detect_reporting_quarter
 

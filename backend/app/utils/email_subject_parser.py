@@ -47,6 +47,11 @@ _UNIT_CANONICAL = {
 # Repeated pipes and surrounding spaces are one separator.
 _SUBJECT_SPLIT_RE = re.compile(r"\s*(?:\|+|\s-\s|–|—)\s*")
 
+# Q1+Q2 FY 2026-27  |  Q2+Q3+Q4 FY 2026-27
+_MULTI_Q_FY_RE = re.compile(
+    r"^\s*((?:Q\s*[1-4]\s*\+\s*)+Q\s*[1-4])\s+FY\s*(\d{4})\s*[-–—/]\s*(\d{2}|\d{4})\s*$",
+    re.IGNORECASE,
+)
 # Q2 FY 2025-26  |  Q2 FY2025-26
 _Q_FY_RE = re.compile(
     r"^\s*Q\s*([1-4])\s+FY\s*(\d{4})\s*[-–—/]\s*(\d{2}|\d{4})\s*$",
@@ -117,6 +122,25 @@ def source_month_from_period_token(raw: Optional[str]) -> Optional[str]:
     return month_label(month, year)
 
 
+def multi_quarter_scope(raw: Optional[str]) -> Optional[Dict[str, str]]:
+    """``Q1+Q2 FY 2026-27`` → allowed quarters and the financial year. Single quarters return None."""
+    text = re.sub(r"\s+", " ", (raw or "").strip())
+    match = _MULTI_Q_FY_RE.match(text)
+    if not match:
+        return None
+    fy_start = int(match.group(2))
+    if not _fy_end_ok(fy_start, match.group(3)):
+        return None
+    quarters = [f"Q{number}" for number in re.findall(r"Q\s*([1-4])", match.group(1), flags=re.IGNORECASE)]
+    if len(quarters) < 2:
+        return None
+    return {
+        "allowed_quarters": ",".join(quarters),
+        "financial_year": fy_short(fy_start),
+        "period": fy_annual_label(fy_start),
+    }
+
+
 def normalize_subject_period(raw: Optional[str]) -> Optional[str]:
     """
     Normalize optional 4th subject part into a canonical FY period label.
@@ -126,6 +150,10 @@ def normalize_subject_period(raw: Optional[str]) -> Optional[str]:
     text = re.sub(r"\s+", " ", (raw or "").strip())
     if not text:
         return None
+
+    multi = multi_quarter_scope(text)
+    if multi:
+        return multi["period"]
 
     # Monthly subject (APRIL 2026) → Indian FY quarter. Month is kept separately.
     from app.utils.period_calendar import quarter_of_month, fy_start_for_calendar_month
@@ -248,12 +276,20 @@ def parse_email_subject(subject: Optional[str]) -> Dict[str, Optional[str]]:
 
     financial_year: Optional[str] = None
     quarter: Optional[str] = None
-    if period:
+    allowed_quarters = ""
+    period_token = raw_parts[3] if len(raw_parts) >= 4 else ""
+    multi = multi_quarter_scope(period_token) if period_token else None
+    if multi:
+        financial_year = multi["financial_year"]
+        allowed_quarters = multi["allowed_quarters"]
+        period = multi["period"]
+    elif period:
         spec = parse_quarter_label(period)
         if spec and spec.year is not None:
             financial_year = fy_short(spec.year)
             if spec.kind == "quarter" and spec.quarter:
                 quarter = f"Q{spec.quarter}"
+                allowed_quarters = quarter
 
     return {
         "distributor": distributor,
@@ -262,6 +298,7 @@ def parse_email_subject(subject: Optional[str]) -> Dict[str, Optional[str]]:
         "period": period,
         "financial_year": financial_year,
         "quarter": quarter,
+        "allowed_quarters": allowed_quarters,
         "source_month": source_month,
         "unit": unit,
     }

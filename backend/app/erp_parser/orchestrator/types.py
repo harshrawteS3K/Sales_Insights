@@ -23,6 +23,7 @@ class ParserResult:
     llm_used: bool = False
     llm_tokens: int = 0
     llm_reason: str = ""
+    llm_model: str = ""
     layout: str = ""
     parser_version: str = ""
 

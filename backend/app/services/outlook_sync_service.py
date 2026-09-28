@@ -169,7 +169,9 @@ class OutlookSyncService:
             for att in msg.attachments or []:
                 if getattr(att, "is_deleted", False):
                     continue
-                if att.is_excel or (att.file_name or "").lower().endswith((".xlsx", ".xlsm", ".xls")):
+                if att.is_excel or (att.file_name or "").lower().endswith(
+                    (".xlsx", ".xlsm", ".xls", ".pdf", ".docx")
+                ):
                     excel_count += 1
                     if excel_name is None:
                         excel_name = att.file_name
@@ -1021,7 +1023,7 @@ class OutlookSyncService:
                 }
 
         attachments = self.graph.list_attachments(graph_id, mailbox=mailbox)
-        excel_attachments = [a for a in attachments if GraphClient.is_excel_attachment(a)]
+        excel_attachments = [a for a in attachments if GraphClient.is_ingest_attachment(a)]
         from app.services.erp_ingest_service import MAX_EXCEL_ATTACHMENTS_PER_EMAIL
 
         if len(excel_attachments) > MAX_EXCEL_ATTACHMENTS_PER_EMAIL:
@@ -1098,7 +1100,7 @@ class OutlookSyncService:
                     size_bytes=attachment.get("size") or len(content),
                     file_path=str(path),
                     content_hash=content_hash,
-                    is_excel=True,
+                    is_excel=GraphClient.is_excel_attachment(attachment),
                     email_message_id=email.id,
                 )
                 self.attachments.create(att_entity)

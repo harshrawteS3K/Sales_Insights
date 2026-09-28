@@ -297,12 +297,15 @@ class UniversalParserOrchestrator:
                     ),
                 )
             except StageTimeout:
-                logger.info(
-                    "{}\nFingerprint : {}",
-                    HUMAN_REVIEW_TIMEOUT,
+                logger.warning(
+                    "LLM Structure Assist unavailable | human review | fingerprint={}",
                     fingerprint.digest,
                 )
-                raise ExcelProcessingError(HUMAN_REVIEW_TIMEOUT) from None
+                if winner is not None:
+                    winner.llm_reason = llm_reason or "Bedrock unavailable"
+                    winner.warnings.append(
+                        "Human review required. Structure assist was unavailable."
+                    )
             if llm_result is not None and llm_result.confidence > winner.confidence:
                 llm_result.llm_used = True
                 llm_result.llm_tokens = llm_tokens
@@ -364,6 +367,7 @@ class UniversalParserOrchestrator:
                 "llm_used": winner.llm_used,
                 "llm_tokens": winner.llm_tokens,
                 "llm_reason": winner.llm_reason,
+                "llm_model": winner.llm_model,
                 "warnings": winner.warnings,
                 "sheet_count": len(sheets),
                 "duration_sec": round(duration, 2),
@@ -485,9 +489,12 @@ class UniversalParserOrchestrator:
         tokens = int(getattr(resolver, "last_token_count", 0) or 0)
         prompt_tokens = int(getattr(resolver, "last_prompt_tokens", 0) or 0)
         completion_tokens = int(getattr(resolver, "last_completion_tokens", 0) or 0)
+        from app.llm.model_registry import display_name_for
+
         logger.info(
-            "LLM Structure Assist\n\nReason : {}\n\nInput Tokens : {}\nOutput Tokens : {}\nReturned Layout : {}\nDuration : {:.2f} sec",
+            "LLM Structure Assist\n\nReason : {}\n\nModel : {}\nInput Tokens : {}\nOutput Tokens : {}\nReturned Layout : {}\nDuration : {:.2f} sec",
             reason,
+            display_name_for(getattr(resolver, "last_model_id", None)),
             prompt_tokens,
             completion_tokens,
             llm.get("layout_type") or llm.get("parser_hint") or "",
@@ -551,6 +558,7 @@ class UniversalParserOrchestrator:
             chosen.llm_used = True
             chosen.llm_tokens = tokens
             chosen.llm_reason = reason
+            chosen.llm_model = display_name_for(getattr(resolver, "last_model_id", None))
         return chosen, tokens
 
     def _publish_confidence(self, winner: ParserResult) -> Dict[str, Any]:

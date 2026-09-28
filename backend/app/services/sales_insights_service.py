@@ -728,7 +728,7 @@ class SalesInsightsService:
 
         kpi_q = self._scoped(
             select(
-                func.coalesce(func.sum(mt_quantity_expr()), 0),
+                func.coalesce(func.sum(SalesRecord.quantity), 0),
                 func.count(func.distinct(SalesRecord.customer_name)),
                 func.count(func.distinct(SalesRecord.product)),
             )
@@ -737,8 +737,8 @@ class SalesInsightsService:
             .join(Distributor, Distributor.id == SalesRecord.distributor_id),
             **scope_kw,
         )
-        total_qty, total_customers, total_products = self.db.execute(kpi_q).one()
-        total_qty_f = round_mt(total_qty)
+        total_kg, total_customers, total_products = self.db.execute(kpi_q).one()
+        total_qty_f = round_mt(Decimal(str(total_kg or 0)) / Decimal("1000"))
         n_quarters = max(len(axis_months), 1)
         avg_monthly = total_qty_f / n_quarters
 

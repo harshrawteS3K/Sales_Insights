@@ -33,7 +33,11 @@ class ValidationMixin:
             return False
         if getattr(att, "is_excel", False):
             return True
-        return (getattr(att, "file_name", None) or "").lower().endswith((".xlsx", ".xlsm", ".xls"))
+        if not (getattr(att, "file_name", None) or "").lower().endswith(
+            (".xlsx", ".xlsm", ".xls", ".pdf", ".docx")
+        ):
+            return False
+        return True
 
     def _list_excel_attachments(
         self,
@@ -56,7 +60,7 @@ class ValidationMixin:
         email = self.emails.get_or_raise(email_id)
         attachments = self._list_excel_attachments(email)
         if not attachments:
-            raise ValidationAppError("No Excel attachment found for this email")
+            raise ValidationAppError("No Excel, PDF, or Word attachment found for this email")
         excel = attachments[0]
         if not excel.file_path or not Path(excel.file_path).is_file():
             raise ValidationAppError(

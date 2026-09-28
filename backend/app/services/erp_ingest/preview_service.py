@@ -33,7 +33,6 @@ class PreviewMixin:
         if not parsed:
             return
         dominant = max(parsed, key=lambda item: int(item.get("row_count") or 0))
-        sheets = sum(int(item.get("sheet_count") or 0) for item in parsed)
         confidence_values = [float(item.get("confidence") or 0) for item in parsed]
         confidence = min(confidence_values) if confidence_values else 0
         duration = sum(float(item.get("duration_sec") or 0) for item in parsed)
@@ -41,22 +40,32 @@ class PreviewMixin:
         tokens = sum(int(item.get("llm_tokens") or 0) for item in parsed if item.get("llm_used"))
         reasons = [str(item.get("llm_reason")) for item in parsed if item.get("llm_used") and item.get("llm_reason")]
         email_name = email.parsed_distributor or email.subject or "Email"
+        document_name = dominant.get("attachment_name") or ""
+        document_type = dominant.get("document_type") or ""
+        from app.erp_parser.documents.row_quarters import quarter_split
+
+        split = quarter_split(merged_rows)
+        split_lines = "\n".join(f"{name} : {count}" for name, count in sorted(split.items())) or "—"
         logger.info(
-            "AI Job\n\nDistributor : {}\n\nLayout : {}\n\nFingerprint : {}\n\nParser : {}\n\nVersion : {}\n\nConfidence : {}\n\nLLM Used : {}\n\nRows Parsed : {}\n\nDuration : {:.2f} sec",
+            "AI Job\n\nDistributor : {}\n\nDocument : {}\n\nType : {}\n\nLayout : {}\n\nParser : {}\n\nRows Parsed : {}\n\nQuarter Split\n{}\n\nConfidence : {}\n\nLLM Used : {}\n\nDuration : {:.2f} sec",
             email_name,
+            document_name,
+            document_type,
             dominant.get("layout") or "",
-            dominant.get("fingerprint") or "",
             dominant.get("parser_used") or "",
-            dominant.get("parser_version") or "",
+            len(merged_rows),
+            split_lines,
             int(round(confidence)),
             "Yes" if llm_used else "No",
-            len(merged_rows),
             duration,
         )
         if llm_used:
+            from app.llm.model_registry import display_name_for
+
             logger.info(
-                "LLM Structure Assist\n\nReason : {}\n\nInput Tokens : {}\nOutput Tokens : {}\nReturned Layout : {}",
-                reasons[0] if reasons else "Unknown ERP Layout",
+                "LLM Structure Assist\n\nReason : {}\n\nModel : {}\n\nInput Tokens : {}\nOutput Tokens : {}\nReturned Layout : {}",
+                reasons[0] if reasons else "Unknown Layout",
+                dominant.get("llm_model") or display_name_for(None),
                 tokens,
                 0,
                 dominant.get("layout") or "",
@@ -83,9 +92,13 @@ class PreviewMixin:
             )
         attachments = self._list_excel_attachments(email)
         if not attachments:
-            raise ValidationAppError("No Excel attachment found for this email")
+            raise ValidationAppError("No Excel, PDF, or Word attachment found for this email")
 
         subject_period = (email.detected_quarter or "").strip()
+        from app.erp_parser.documents.row_quarters import assign_row_periods
+        from app.utils.email_subject_parser import try_parse_email_subject
+
+        subject_meta = try_parse_email_subject(email.subject) or {}
         preferred_parser, known_fingerprint = self._preferred_parser_pair(email)
         known_profiles = self._known_profiles(email)
         merged_rows: List[Dict[str, Any]] = []
@@ -137,11 +150,14 @@ class PreviewMixin:
                     file_name,
                     exc,
                 )
+                message = str(exc)
+                status = "Human Review" if "Human review" in message or "Could not map" in message else "Failed"
                 attachment_summary.append(
                     {
                         "attachment_name": file_name,
                         "product_name": product_name,
-                        "status": "Failed",
+                        "status": status,
+                        "document_type": "",
                     }
                 )
                 continue
@@ -154,12 +170,18 @@ class PreviewMixin:
                     distinct_products.append(name)
             if len(distinct_products) == 1:
                 product_name = distinct_products[0]
-            if subject_period:
-                for row in rows:
-                    row["period"] = subject_period
-                    row["reporting_quarter"] = subject_period
-            merged_rows.extend(rows)
-            confidences.append(float((one.get("confidence") or {}).get("overall") or 0))
+            if subject_period or subject_meta.get("allowed_quarters"):
+                handled, review_notes = assign_row_periods(rows, subject_meta)
+                if not handled and subject_period:
+                    for row in rows:
+                        row["period"] = subject_period
+                        row["reporting_quarter"] = subject_period
+                elif review_notes:
+                    logger.warning(
+                        "Quarter outside subject range | file={} | count={}",
+                        file_name,
+                        len(review_notes),
+                    )
             job = (one.get("confidence") or {}).get("breakdown") or {}
             attachment_summary.append(
                 {
@@ -176,10 +198,14 @@ class PreviewMixin:
                     "llm_used": bool(one.get("llm_used")),
                     "llm_tokens": int(one.get("llm_tokens") or 0),
                     "llm_reason": str(one.get("llm_reason") or ""),
+                    "llm_model": str(job.get("llm_model") or ""),
                     "row_count": len(rows),
                     "duration_sec": float(one.get("duration_sec") or 0),
+                    "document_type": str(job.get("document_type") or ""),
                 }
             )
+            merged_rows.extend(rows)
+            confidences.append(float((one.get("confidence") or {}).get("overall") or 0))
             if not mapping_override:
                 self._remember_parser(email, one)
             if preview is None:

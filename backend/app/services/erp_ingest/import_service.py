@@ -311,15 +311,26 @@ class ImportMixin:
                 )
                 continue
 
-            if subject_period or subject_month:
-                for row in use_rows:
-                    if not isinstance(row, dict):
-                        continue
-                    if subject_period:
-                        row["period"] = subject_period
-                        row["reporting_quarter"] = subject_period
-                    if subject_month and not str(row.get("source_month") or "").strip():
-                        row["source_month"] = subject_month
+            if subject_period or subject_month or subject_meta.get("allowed_quarters"):
+                from app.erp_parser.documents.row_quarters import assign_row_periods
+
+                handled, review_notes = assign_row_periods(use_rows, subject_meta)
+                if review_notes:
+                    logger.warning(
+                        "Quarter outside subject range | email_id={} | count={}",
+                        email_id,
+                        len(review_notes),
+                    )
+                if not handled:
+                    for row in use_rows:
+                        if not isinstance(row, dict):
+                            continue
+                        if subject_period:
+                            row["period"] = subject_period
+                            row["reporting_quarter"] = subject_period
+                        if subject_month and not str(row.get("source_month") or "").strip():
+                            row["source_month"] = subject_month
+                use_rows = [row for row in use_rows if isinstance(row, dict) and not row.get("human_review")]
             merged_rows.extend(use_rows)
             workbooks_imported.append(att.file_name or f"attachment-{att.id}")
             qualities.append(overall)

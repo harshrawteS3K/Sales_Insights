@@ -21,5 +21,7 @@ email-validator==2.2.0
 loguru==0.7.3
 httpx==0.28.1
 boto3==1.37.38
+pdfplumber==0.11.5
+python-docx==1.1.2
 pytest==8.3.4
 pytest-asyncio==0.25.0

@@ -562,6 +562,21 @@ class GraphClient:
         return content_type in excel_types or extension == ".xls"
 
     @staticmethod
+    def is_ingest_attachment(attachment: Dict[str, Any]) -> bool:
+        """Excel, PDF, or Word sales documents. Magic bytes are checked after download."""
+        if GraphClient.is_excel_attachment(attachment):
+            return True
+        name = (attachment.get("name") or "").lower()
+        content_type = (attachment.get("contentType") or "").lower()
+        extension = Path(name).suffix.lower()
+        if extension in {".pdf", ".docx"}:
+            return True
+        return content_type in {
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+
+    @staticmethod
     def extract_sender(message: Dict[str, Any]) -> tuple[str, str]:
         """Extract (sender_name, sender_email) from a Graph message payload."""
         sender = message.get("from") or message.get("sender") or {}

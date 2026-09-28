@@ -248,6 +248,7 @@ class LLMHeaderResolver:
         except BedrockError as exc:
             raise LLMHeaderResolverError(str(exc)) from exc
 
+        self.last_model_id = result.model_id
         usage = result.usage()
         self.last_prompt_tokens = int(usage["prompt_tokens"])
         self.last_completion_tokens = int(usage["completion_tokens"])
