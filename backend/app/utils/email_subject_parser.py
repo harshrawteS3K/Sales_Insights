@@ -17,7 +17,11 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Optional
 
-from app.constants.business_segments import normalize_business_segment
+from app.constants.business_segments import (
+    BUSINESS_SEGMENTS,
+    SEGMENT_ALIASES,
+    normalize_business_segment,
+)
 from app.exceptions import ValidationAppError
 from app.utils.period_calendar import (
     fy_annual_label,
@@ -256,6 +260,49 @@ def normalize_subject_period(raw: Optional[str]) -> Optional[str]:
     )
 
 
+def _period_token_ok(token: str) -> bool:
+    try:
+        return normalize_subject_period(token) is not None
+    except ValidationAppError:
+        return False
+
+
+def _unit_token_ok(token: str) -> bool:
+    text = re.sub(r"\s+", " ", (token or "").strip()).upper()
+    if not text:
+        return False
+    try:
+        normalize_subject_unit(text)
+        return True
+    except ValidationAppError:
+        return False
+
+
+def _known_segment(token: str) -> Optional[str]:
+    key = " ".join((token or "").strip().split()).casefold()
+    if not key:
+        return None
+    if key in SEGMENT_ALIASES:
+        return SEGMENT_ALIASES[key]
+    for name in BUSINESS_SEGMENTS:
+        if name.casefold() == key:
+            return name
+    return None
+
+
+def _region_and_segment(token: str) -> Optional[tuple]:
+    """``WEST RUBBER`` → (``WEST``, ``Rubber``). Unknown suffixes stay unsplit."""
+    words = " ".join((token or "").strip().split()).split(" ")
+    if len(words) < 2:
+        return None
+    for size in range(len(words) - 1, 0, -1):
+        segment = _known_segment(" ".join(words[-size:]))
+        region = " ".join(words[:-size]).strip()
+        if segment and region:
+            return region, segment
+    return None
+
+
 def parse_email_subject(subject: Optional[str]) -> Dict[str, Any]:
     """
     Parse ``DISTRIBUTOR | LOCATION | SEGMENT | PERIOD | UNIT``.
@@ -287,7 +334,8 @@ def parse_email_subject(subject: Optional[str]) -> Dict[str, Any]:
             },
         )
 
-    parts = [_title_value(p) for p in _SUBJECT_SPLIT_RE.split(raw) if p.strip()]
+    raw_parts = [p.strip() for p in _SUBJECT_SPLIT_RE.split(raw) if p.strip()]
+    parts = [_title_value(p) for p in raw_parts]
     if len(parts) not in (3, 4, 5):
         raise ValidationAppError(
             f"Invalid email subject. Expected 3 to 5 parts: {EXPECTED_SUBJECT_FORMAT} "
@@ -300,10 +348,22 @@ def parse_email_subject(subject: Optional[str]) -> Dict[str, Any]:
             },
         )
 
-    distributor, location, segment_raw = parts[0], parts[1], parts[2]
-    period_raw = parts[3] if len(parts) >= 4 else None
-    unit_raw = parts[4] if len(parts) == 5 else None
-    segment = normalize_business_segment(segment_raw)
+    # ``Distributor|WEST RUBBER|Q1 FY 2026-27|KG`` keeps region and segment in one token.
+    compact = None
+    if len(raw_parts) == 4 and _period_token_ok(raw_parts[2]) and _unit_token_ok(raw_parts[3]):
+        compact = _region_and_segment(raw_parts[1])
+
+    if compact:
+        distributor = _title_value(raw_parts[0])
+        location = _title_value(compact[0])
+        segment = compact[1]
+        period_token = raw_parts[2]
+        unit = normalize_subject_unit(raw_parts[3])
+    else:
+        distributor, location, segment_raw = parts[0], parts[1], parts[2]
+        segment = normalize_business_segment(segment_raw)
+        period_token = raw_parts[3] if len(raw_parts) >= 4 else ""
+        unit = normalize_subject_unit(raw_parts[4] if len(raw_parts) == 5 else None)
     if not distributor or not location or not segment:
         raise ValidationAppError(
             f"Invalid email subject. Distributor, Location, and Segment must all be non-empty. "
@@ -315,20 +375,16 @@ def parse_email_subject(subject: Optional[str]) -> Dict[str, Any]:
             },
         )
 
-    # Period token should not be title-cased (breaks FY parsing) — re-read raw part
-    raw_parts = [p.strip() for p in _SUBJECT_SPLIT_RE.split(raw) if p.strip()]
+    # Period token stays in its original spelling so FY parsing is unchanged.
     period = None
     source_month = None
-    if period_raw:
-        period_token = raw_parts[3] if len(raw_parts) >= 4 else period_raw
+    if period_token:
         source_month = source_month_from_period_token(period_token)
         period = normalize_subject_period(period_token)
-    unit = normalize_subject_unit(raw_parts[4] if len(raw_parts) == 5 else unit_raw)
 
     financial_year: Optional[str] = None
     quarter: Optional[str] = None
     allowed_quarters = ""
-    period_token = raw_parts[3] if len(raw_parts) >= 4 else ""
     multi = multi_quarter_scope(period_token) if period_token else None
     if multi:
         financial_year = multi["financial_year"]

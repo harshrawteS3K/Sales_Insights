@@ -20,6 +20,7 @@ from app.erp_parser.metadata_parser import extract_metadata_rows
 from app.erp_parser.monthly_product_sheets import extract_monthly_product_sheets
 from app.erp_parser.orchestrator.types import ParserResult
 from app.erp_parser.row_extractor import extract_rows
+from app.erp_parser.email_body_matrix import extract_email_body_matrix_rows
 from app.erp_parser.pdf_stock_register import extract_pdf_stock_register_rows
 from app.erp_parser.stock_item_parser import extract_stock_item_rows
 
@@ -33,6 +34,7 @@ PARSER_LABEL = {
     "product_month_matrix": "Cross Tab Parser",
     "monthly_product_sheets": "Monthly Product Sheets",
     "pdf_stock_register": "PDF Stock Register",
+    "email_body_matrix": "Email Body Matrix",
 }
 
 # Tie-break only. The weighted score still decides the winner.
@@ -46,6 +48,7 @@ PRIORITY = {
     "monthly_product_sheets": 1,
     "header": 0,
     "pdf_stock_register": 7,
+    "email_body_matrix": 8,
 }
 
 
@@ -258,6 +261,42 @@ def run_pdf_stock_register(matrix: Sequence[Sequence[Any]], sheet_name: str, **k
     return _guard("pdf_stock_register", sheet_name, _run)
 
 
+def run_email_body_matrix(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: Any) -> ParserResult:
+    def _run() -> ParserResult:
+        extracted = extract_email_body_matrix_rows(
+            matrix,
+            sheet_name=sheet_name,
+            fiscal_year_start=kwargs.get("fiscal_year_start"),
+            reporting_quarter=kwargs.get("reporting_quarter"),
+            distributor_label=kwargs.get("distributor_label") or "",
+        )
+        field_conf = {"customer": 98.0, "product": 98.0, "quantity": 98.0}
+        result = _result(
+            "email_body_matrix",
+            extracted,
+            _mapped(
+                customer=0,
+                product=None,
+                quantity=None,
+                originals={
+                    "customer": "Customer",
+                    "product": "Product header",
+                    "quantity": "Month columns",
+                },
+                method="email_body_matrix",
+                field_conf=field_conf,
+            ),
+            sheet_name=sheet_name,
+            reason="Product header, month columns, and customer quantities",
+        )
+        if result.rows:
+            result.confidence = 98.0
+            result.layout = "email_matrix"
+        return result
+
+    return _guard("email_body_matrix", sheet_name, _run)
+
+
 def run_header(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: Any) -> ParserResult:
     def _run() -> ParserResult:
         from app.erp_parser.parser_service import _mapping_complete
@@ -424,6 +463,7 @@ _SHEET_RUNNERS = {
     "header": run_header,
     "product_month_matrix": run_cross_tab,
     "pdf_stock_register": run_pdf_stock_register,
+    "email_body_matrix": run_email_body_matrix,
 }
 
 

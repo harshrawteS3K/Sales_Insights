@@ -47,6 +47,8 @@ class PreviewMixin:
         split = quarter_split(merged_rows)
         split_lines = "\n".join(f"{name} : {count}" for name, count in sorted(split.items())) or "—"
         parser_name = dominant.get("parser_used") or ""
+        if "email body" in str(parser_name).lower():
+            return
         if str(document_type).upper() == "PDF" and "stock register" not in str(parser_name).lower():
             parser_name = "PDF Adapter"
         logger.info(

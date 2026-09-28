@@ -251,6 +251,20 @@ class GraphClient:
             unread_only=True,
         )
 
+    def get_message_body(self, message_id: str, *, mailbox: Optional[str] = None) -> Dict[str, str]:
+        """Fetch the message body. List responses omit it."""
+        payload = self._request(
+            "GET",
+            f"{self._user_path(mailbox)}/messages/{quote(message_id)}",
+            params={"$select": "body,bodyPreview"},
+        )
+        body = payload.get("body") or {}
+        return {
+            "content_type": str(body.get("contentType") or ""),
+            "content": str(body.get("content") or ""),
+            "preview": str(payload.get("bodyPreview") or ""),
+        }
+
     def list_messages(
         self,
         *,

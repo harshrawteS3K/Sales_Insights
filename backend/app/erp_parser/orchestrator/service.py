@@ -334,7 +334,8 @@ class UniversalParserOrchestrator:
         _score(winner, **score_kwargs)
         winner.parser_version = winner.parser_version or parser_version(winner.parser_name)
         winner.layout = winner.layout or classification.layout_name
-        self._log_selected(file_path, winner, distributor_label)
+        duration = time.perf_counter() - started
+        self._log_selected(file_path, winner, distributor_label, duration)
         confidence = self._publish_confidence(winner)
         result = self.parser._finalize_result(
             chosen=winner.sheet_name or (candidates[0] if candidates else file_path.stem),
@@ -349,12 +350,11 @@ class UniversalParserOrchestrator:
             reporting_quarter=reporting_quarter,
             python_overall=float(winner.confidence),
         )
-        duration = time.perf_counter() - started
         breakdown = dict(result.confidence_breakdown or {})
         state = _terminal_state(winner)
         layout_name = (
             str(winner.extracted.get("layout") or winner.layout)
-            if winner.parser_name == "pdf_stock_register"
+            if winner.parser_name in {"pdf_stock_register", "email_body_matrix"}
             else classification.layout_name
         )
         breakdown.update(
@@ -587,7 +587,13 @@ class UniversalParserOrchestrator:
         confidence["llm_used"] = winner.llm_used
         return confidence
 
-    def _log_selected(self, path: Path, winner: ParserResult, distributor_label: str) -> None:
+    def _log_selected(
+        self,
+        path: Path,
+        winner: ParserResult,
+        distributor_label: str,
+        duration: float = 0.0,
+    ) -> None:
         label = PARSER_LABEL.get(winner.parser_name, winner.parser_name)
         extracted = winner.extracted
         if winner.parser_name == "metadata":
@@ -631,6 +637,27 @@ class UniversalParserOrchestrator:
                 ", ".join(str(item) for item in months),
                 extracted.get("quarter") or "",
                 "True" if winner.llm_used else "False",
+            )
+        elif winner.parser_name == "email_body_matrix":
+            products = {
+                str(row.get("product") or "").strip()
+                for row in winner.rows
+                if str(row.get("product") or "").strip()
+            }
+            customers = {
+                str(row.get("customer_name") or "").strip()
+                for row in winner.rows
+                if str(row.get("customer_name") or "").strip()
+            }
+            logger.info(
+                "AI Job\n\nDocument Type : Email Body\n\nParser : Email Body Matrix\n\nProducts : {}\n\nCustomers : {}\n\nRows Parsed : {}\n\nQuarter : {}\n\nConfidence : {}\n\nLLM Used : {}\n\nDuration : {:.2f} sec",
+                int(winner.extracted.get("products_detected") or len(products)),
+                int(winner.extracted.get("customers_detected") or len(customers)),
+                len(winner.rows),
+                winner.extracted.get("quarter") or "",
+                int(round(winner.confidence)),
+                "Yes" if winner.llm_used else "No",
+                duration,
             )
         elif winner.parser_name == "pdf_stock_register":
             from app.erp_parser.documents.row_quarters import quarter_split

@@ -111,9 +111,9 @@ class ValidationMixin:
                     exc,
                 )
                 continue
-            if qty_val <= 0:
+            if qty_val < 0:
                 logger.warning(
-                    "Quantity is zero; row not inserted | customer={} | product={} | raw={!r}",
+                    "Quantity is negative; row not inserted | customer={} | product={} | raw={!r}",
                     raw.get("customer_name") or raw.get("customer"),
                     raw.get("product"),
                     qty,

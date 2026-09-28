@@ -12,6 +12,7 @@ PARSER_VERSION = {
     "monthly_product_sheets": "v1.4",
     "header": "v1.3",
     "pdf_stock_register": "v1.0",
+    "email_body_matrix": "v1.0",
 }
 
 

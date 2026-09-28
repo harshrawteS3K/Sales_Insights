@@ -236,7 +236,9 @@ class ERPParserService:
                 known_profiles=known_profiles,
             )
         breakdown = dict(result.confidence_breakdown or {})
-        breakdown["document_type"] = opened.document_type
+        breakdown["document_type"] = (
+            "Email Body" if breakdown.get("parser_name") == "email_body_matrix" else opened.document_type
+        )
         breakdown["document_engine"] = opened.engine
         breakdown["signature_override"] = opened.signature_override
         result.confidence_breakdown = breakdown

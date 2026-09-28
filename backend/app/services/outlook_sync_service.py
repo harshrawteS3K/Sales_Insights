@@ -1,5 +1,6 @@
 """Outlook / Microsoft Graph synchronization service."""
 
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -423,11 +424,11 @@ class OutlookSyncService:
             "triggered_by": triggered_by_label,
         }
         try:
-            messages = self.graph.list_unread_messages(
+            messages = self._list_sync_messages(
                 mailbox=mailbox,
                 top=sync_req.max_messages,
-                has_attachments=True,
                 sender_email=user_email,
+                unread_only=True,
             )
             job.emails_found = len(messages)
             details["emails_found"] = len(messages)
@@ -690,6 +691,8 @@ class OutlookSyncService:
             return True
         if existing.process_status == EmailProcessStatus.INVALID_SUBJECT.value:
             return True
+        if existing.process_status == EmailProcessStatus.SKIPPED.value and not self._email_has_excel(existing):
+            return True
         if existing.process_status in {
             EmailProcessStatus.UNREAD.value,
             EmailProcessStatus.DOWNLOADED.value,
@@ -718,10 +721,9 @@ class OutlookSyncService:
         (or that exist in DB as invalid_subject) after a prior worker rollback.
         """
         try:
-            recent = self.graph.list_messages(
+            recent = self._list_sync_messages(
                 mailbox=mailbox,
                 top=max_messages,
-                has_attachments=True,
                 sender_email=user_email,
                 unread_only=None,
             )
@@ -880,6 +882,67 @@ class OutlookSyncService:
                     self.db.flush()
         return existing
 
+    def _list_sync_messages(
+        self,
+        *,
+        mailbox: str,
+        top: int,
+        sender_email: Optional[str],
+        unread_only: Optional[bool],
+    ) -> List[Dict[str, Any]]:
+        """Unread or recent mail, with and without attachments."""
+        attached = self.graph.list_messages(
+            mailbox=mailbox,
+            top=top,
+            has_attachments=True,
+            sender_email=sender_email,
+            unread_only=unread_only,
+        )
+        plain = self.graph.list_messages(
+            mailbox=mailbox,
+            top=top,
+            has_attachments=False,
+            sender_email=sender_email,
+            unread_only=unread_only,
+        )
+        seen = set()
+        merged: List[Dict[str, Any]] = []
+        for message in list(attached) + list(plain):
+            message_id = message.get("id")
+            if not message_id or message_id in seen:
+                continue
+            seen.add(message_id)
+            merged.append(message)
+        return merged
+
+    def _email_body_attachment(self, graph_id: str, mailbox: str) -> Optional[Dict[str, Any]]:
+        """Build an xlsx attachment when the message body contains a sales table."""
+        try:
+            body = self.graph.get_message_body(graph_id, mailbox=mailbox)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Email body fetch failed | message_id={} | err={}", graph_id, exc)
+            return None
+        content_type = (body.get("content_type") or "").lower()
+        content = body.get("content") or ""
+        html = content if "html" in content_type else ""
+        text = "" if html else (content or body.get("preview") or "")
+        from app.erp_parser.documents.email_body import email_body_workbook_bytes
+
+        data = email_body_workbook_bytes(html, text)
+        if not data:
+            return None
+        digest = hashlib.sha256(graph_id.encode("utf-8")).hexdigest()[:40]
+        logger.info(
+            "Email Body Adapter\n\nDocument Type : Email Body\n\nSheet : Email Body"
+        )
+        return {
+            "id": f"email-body:{digest}",
+            "name": "Email Body.xlsx",
+            "contentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "size": len(data),
+            "_bytes": data,
+        }
+
     def _process_message(
         self,
         message: Dict[str, Any],
@@ -927,31 +990,12 @@ class OutlookSyncService:
                 "mark_as_read_ok": mark_ok,
             }
 
-        # Previously skipped (no Excel) — still unread in Graph; mark read & stop
         if existing and existing.process_status == EmailProcessStatus.SKIPPED.value:
             logger.info(
-                "Email previously skipped (no Excel) | message_id={} | email_id={}",
+                "Retrying previously skipped email for an email body table | message_id={} | email_id={}",
                 graph_id,
                 existing.id,
             )
-            mark_ok = None
-            if mark_as_read:
-                mark_ok = self._ensure_marked_read(
-                    existing,
-                    graph_id=graph_id,
-                    mailbox=mailbox,
-                    reason="skipped_retry_mark_read",
-                )
-            return {
-                "message_id": graph_id,
-                "email_id": existing.id,
-                "status": "skipped_no_excel",
-                "attachments_downloaded": 0,
-                "reports_created": 0,
-                "records_inserted": 0,
-                "duplicates_skipped": 0,
-                "mark_as_read_ok": mark_ok,
-            }
 
         sender_name, sender_email = GraphClient.extract_sender(message)
         web_link = (message.get("webLink") or "").strip() or None
@@ -1051,6 +1095,10 @@ class OutlookSyncService:
             len(excel_attachments),
         )
         if not excel_attachments:
+            body_attachment = self._email_body_attachment(graph_id, mailbox)
+            if body_attachment is not None:
+                excel_attachments = [body_attachment]
+        if not excel_attachments:
             email.process_status = EmailProcessStatus.SKIPPED.value
             email.error_message = "No Excel attachments found"
             self.db.flush()
@@ -1084,7 +1132,9 @@ class OutlookSyncService:
             att_id = attachment["id"]
             file_name = attachment.get("name") or "attachment.xlsx"
             try:
-                content = self.graph.download_attachment(graph_id, att_id, mailbox=mailbox)
+                content = attachment.get("_bytes")
+                if content is None:
+                    content = self.graph.download_attachment(graph_id, att_id, mailbox=mailbox)
                 content_hash = sha256_bytes(content)
                 path = save_bytes(content, get_upload_subdir("attachments"), file_name)
                 from app.erp_parser.documents.detector import detect_document
@@ -1107,11 +1157,12 @@ class OutlookSyncService:
                 continue
 
             attachments_downloaded += 1
+            body_table = attachment.get("_bytes") is not None
             logger.info(
                 "Attachment Downloaded\n\nFile : {}\n\nDocument Type : {}\n\nAdapter : {}",
                 file_name,
-                detection.document_type,
-                adapter_for(detection.document_type),
+                "Email Body" if body_table else detection.document_type,
+                "Email Body Adapter" if body_table else adapter_for(detection.document_type),
             )
 
             att_entity = self.attachments.get_by_graph_id(att_id)
@@ -1123,7 +1174,7 @@ class OutlookSyncService:
                     size_bytes=attachment.get("size") or len(content),
                     file_path=str(path),
                     content_hash=content_hash,
-                    is_excel=GraphClient.is_excel_attachment(attachment),
+                    is_excel=True if attachment.get("_bytes") is not None else GraphClient.is_excel_attachment(attachment),
                     email_message_id=email.id,
                 )
                 self.attachments.create(att_entity)
