@@ -15,6 +15,7 @@ from app.utils.period_calendar import (
     parse_quarter_label,
     period_spec_for_quarter,
 )
+from app.utils.quantity import kg_to_mt_display
 from tests.workbook_helpers import build_official_workbook
 
 
@@ -71,7 +72,7 @@ def test_quarterly_totals_equal_sum_of_months(db: Session, tmp_path: Path):
     assert summary["totalCompanies"] == 1
     row = summary["data"][0]
     assert row["company"] == company
-    assert row["totalQuantity"] == 60.0
+    assert row["totalQuantity"] == kg_to_mt_display(60)
     assert set(row["monthsSubmitted"]) == {
         "April 2098",
         "May 2098",
@@ -80,12 +81,12 @@ def test_quarterly_totals_equal_sum_of_months(db: Session, tmp_path: Path):
     assert row["reportsIncluded"] == 3
 
     report = engine.quarterly_report(company=company, quarter_label="Q1 2098")
-    assert report["totalQuantity"] == 60.0
+    assert report["totalQuantity"] == kg_to_mt_display(60)
     assert report["unit"] == "MT"
     assert report["totalRecords"] == 1
     assert report["items"][0]["product"] == "ProdA"
     assert report["items"][0]["customer"] == "Cust"
-    assert report["items"][0]["quantity"] == 60.0
+    assert report["items"][0]["quantity"] == kg_to_mt_display(60)
     assert report["items"][0]["contributionPct"] == 100.0
 
 
@@ -117,7 +118,7 @@ def test_quarterly_customer_detail_pagination_search_sort(db: Session, tmp_path:
         sort_by="quantity",
         sort_order="desc",
     )
-    assert page1["totalQuantity"] == 10 * 11 + 20  # 130
+    assert page1["totalQuantity"] == kg_to_mt_display(10 * 11 + 20)  # 130 KG
     assert page1["totalRecords"] == 11
     assert page1["totalPages"] == 2
     assert page1["currentPage"] == 1
@@ -126,7 +127,7 @@ def test_quarterly_customer_detail_pagination_search_sort(db: Session, tmp_path:
     top = page1["items"][0]
     assert top["customer"] == "Reliance Alpha"
     assert top["product"] == "Prod1"
-    assert top["quantity"] == 30.0
+    assert top["quantity"] == kg_to_mt_display(30)
     assert top["contributionPct"] == round(30 / 130 * 100, 2)
     assert top["srNo"] == 1
 
@@ -154,7 +155,7 @@ def test_quarterly_customer_detail_pagination_search_sort(db: Session, tmp_path:
     # Contribution still vs full quarter total (130), not filtered total
     assert searched["items"][0]["contributionPct"] == round(30 / 130 * 100, 2)
     # Header KPIs unchanged by search
-    assert searched["totalQuantity"] == 130.0
+    assert searched["totalQuantity"] == kg_to_mt_display(130)
 
     by_customer = engine.quarterly_report(
         company=company,
@@ -194,7 +195,7 @@ def test_replaced_month_excluded_from_quarter(db: Session, tmp_path: Path):
     summary = BusinessAggregationService(db).quarterly_summary(
         quarter_label="Q1 2097", company=company
     )
-    assert summary["data"][0]["totalQuantity"] == 55.0  # 5 + 50, not 100+50
+    assert summary["data"][0]["totalQuantity"] == kg_to_mt_display(55)  # 5 + 50 KG, not 100+50
     assert summary["data"][0]["reportsIncluded"] == 2
 
 
@@ -223,7 +224,7 @@ def test_aggregator_uses_company_not_representative(db: Session, tmp_path: Path)
     # Should not chart by representative as primary key when company present
     row = next(t for t in totals if t.name == company)
     # Q2 months April+May → may appear in different periods; without period filter sum both
-    assert row.qty >= 25.0
+    assert row.qty >= kg_to_mt_display(25)
 
 
 def test_dashboard_kpi_unit_label_mt(db: Session):

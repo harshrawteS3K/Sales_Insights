@@ -139,7 +139,17 @@ class ConsolidatedDataService:
         total = self.sales.count_filtered(**filter_kwargs)
         total_reports = self.sales.count_matching_reports(**filter_kwargs)
         summaries_raw = self.sales.period_summaries(**filter_kwargs)
-        period_summaries = [PeriodSummaryItem(**row) for row in summaries_raw]
+        period_summaries = []
+        for row in summaries_raw:
+            quantity = kg_to_mt_display(row["totalQuantity"])
+            period_summaries.append(
+                PeriodSummaryItem(
+                    label=row["label"],
+                    distributorCount=row["distributorCount"],
+                    reportCount=row["reportCount"],
+                    totalQuantity=quantity,
+                )
+            )
 
         mode = (page_by or "reports").strip().lower()
         if mode not in {"reports", "rows"}:

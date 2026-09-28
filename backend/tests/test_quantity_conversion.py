@@ -5,6 +5,21 @@ from decimal import Decimal
 from app.utils.quantity import kg_to_mt, mt_to_kg, parse_quantity_as_mt, to_mt
 
 
+def test_analytics_kg_to_mt_keeps_two_decimals():
+    from app.utils.quantity import kg_to_mt_display
+
+    assert kg_to_mt_display(None) == 0.0
+    assert kg_to_mt_display(0) == 0.0
+    assert kg_to_mt_display(3000) == 3.00
+    assert kg_to_mt_display(2000) == 2.00
+    assert kg_to_mt_display(1000) == 1.00
+    assert kg_to_mt_display(600) == 0.60
+    assert kg_to_mt_display(500) == 0.50
+    assert kg_to_mt_display(225) == 0.23
+    assert kg_to_mt_display(150) == 0.15
+    assert kg_to_mt_display(25) == 0.03
+
+
 def test_kg_to_mt_and_back():
     assert kg_to_mt(1000) == Decimal("1")
     assert kg_to_mt(1250.5) == Decimal("1.250500")

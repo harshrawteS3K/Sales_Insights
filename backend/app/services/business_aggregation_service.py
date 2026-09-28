@@ -17,7 +17,7 @@ from app.utils.period_calendar import (
     available_quarter_labels,
     resolve_period,
 )
-from app.utils.quantity import format_quantity
+from app.utils.quantity import format_mt, kg_to_mt_display
 
 logger = get_logger(__name__)
 
@@ -68,22 +68,27 @@ class BusinessAggregationService:
             spec.month_list,
             company=company,
         )
-        data = [
-            {
-                "company": r["company"],
-                "quarter": spec.label,
-                "totalQuantity": r["qty"],
-                "totalQuantityDisplay": format_quantity(r["qty"]),
-                "unit": QUANTITY_UNIT,
-                "productsSold": r["products"],
-                "customerCount": r["customers"],
-                "reportsIncluded": r["reports"],
-                "monthsSubmitted": r["months"],
-                "monthsExpected": spec.month_list,
-                "isPartial": len(r["months"]) < len(spec.month_list),
-            }
-            for r in rows
-        ]
+        data = []
+        kg_total = 0
+        for row in rows:
+            kg_total += float(row["qty"] or 0)
+            quantity = kg_to_mt_display(row["qty"])
+            data.append(
+                {
+                    "company": row["company"],
+                    "quarter": spec.label,
+                    "totalQuantity": quantity,
+                    "quantity": quantity,
+                    "totalQuantityDisplay": format_mt(quantity),
+                    "unit": QUANTITY_UNIT,
+                    "productsSold": row["products"],
+                    "customerCount": row["customers"],
+                    "reportsIncluded": row["reports"],
+                    "monthsSubmitted": row["months"],
+                    "monthsExpected": spec.month_list,
+                    "isPartial": len(row["months"]) < len(spec.month_list),
+                }
+            )
         logger.debug(
             "Quarterly summary | period={} | companies={} | company_filter={!r}",
             spec.label,
@@ -99,7 +104,7 @@ class BusinessAggregationService:
             },
             "unit": QUANTITY_UNIT,
             "totalCompanies": len(data),
-            "grandTotalQuantity": sum(d["totalQuantity"] for d in data),
+            "grandTotalQuantity": kg_to_mt_display(kg_total),
             "data": data,
         }
 
@@ -159,7 +164,7 @@ class BusinessAggregationService:
                 "company": company_name,
                 "unit": QUANTITY_UNIT,
                 "totalQuantity": 0.0,
-                "totalQuantityDisplay": "0",
+                "totalQuantityDisplay": "0.00",
                 "productsSold": 0,
                 "customerCount": 0,
                 "reportsIncluded": 0,
@@ -180,25 +185,29 @@ class BusinessAggregationService:
             page=page,
             page_size=page_size,
         )
-        items = [
-            {
-                "srNo": row["srNo"],
-                "customer": row["customer"],
-                "segment": row["segment"],
-                "product": row["product"],
-                "quantity": row["quantity"],
-                "quantityDisplay": format_quantity(row["quantity"]),
-                "unit": QUANTITY_UNIT,
-                "contributionPct": row["contributionPct"],
-            }
-            for row in detail["items"]
-        ]
+        items = []
+        for row in detail["items"]:
+            quantity = kg_to_mt_display(row["quantity"])
+            items.append(
+                {
+                    "srNo": row["srNo"],
+                    "customer": row["customer"],
+                    "segment": row["segment"],
+                    "product": row["product"],
+                    "quantity": quantity,
+                    "quantityDisplay": format_mt(quantity),
+                    "unit": QUANTITY_UNIT,
+                    "contributionPct": row["contributionPct"],
+                }
+            )
+        header_qty = kg_to_mt_display(header["qty"])
         return {
             "period": period_block,
             "company": header["company"],
             "unit": QUANTITY_UNIT,
-            "totalQuantity": header["qty"],
-            "totalQuantityDisplay": format_quantity(header["qty"]),
+            "totalQuantity": header_qty,
+            "quantity": header_qty,
+            "totalQuantityDisplay": format_mt(header_qty),
             "productsSold": header["products"],
             "customerCount": header["customers"],
             "reportsIncluded": header["reports"],

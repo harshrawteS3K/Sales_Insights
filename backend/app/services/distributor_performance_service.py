@@ -13,7 +13,6 @@ from app.models.sales_record import SalesRecord
 from app.repositories.sales_record_repository import (
     SalesRecordRepository,
     company_expr,
-    mt_quantity_expr,
 )
 from app.services.sales_insights_service import (
     PERIOD_CUSTOM,
@@ -30,7 +29,7 @@ from app.services.sales_insights_service import (
 )
 from app.services.distributor_service import DistributorService
 from app.utils.distributor_location import country_group, country_label, normalize_location
-from app.utils.quantity import format_mt, round_mt
+from app.utils.quantity import format_mt, kg_to_mt_display
 
 
 class DistributorPerformanceService:
@@ -155,7 +154,7 @@ class DistributorPerformanceService:
         agg_q = (
             select(
                 SalesRecord.distributor_id.label("distributor_id"),
-                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
+                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
                 func.count(func.distinct(SalesRecord.customer_name)).label("customers"),
                 func.count(func.distinct(SalesRecord.product)).label("products"),
             )
@@ -186,7 +185,7 @@ class DistributorPerformanceService:
             select(
                 SalesRecord.distributor_id.label("distributor_id"),
                 SalesRecord.location.label("location"),
-                func.sum(mt_quantity_expr()).label("qty"),
+                func.sum(SalesRecord.quantity).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -220,7 +219,7 @@ class DistributorPerformanceService:
                 SalesRecord.distributor_id.label("distributor_id"),
                 SalesRecord.customer_name.label("customer"),
                 func.count(func.distinct(SalesRecord.product)).label("product_count"),
-                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
+                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -236,7 +235,7 @@ class DistributorPerformanceService:
             .group_by(SalesRecord.distributor_id, SalesRecord.customer_name)
             .order_by(
                 SalesRecord.distributor_id.asc(),
-                func.sum(mt_quantity_expr()).desc(),
+                func.sum(SalesRecord.quantity).desc(),
             )
         )
         cust_q = self.sales._apply_filters(cust_q, **filter_kw)
@@ -244,12 +243,14 @@ class DistributorPerformanceService:
         customers_by_id: Dict[int, List[Dict[str, Any]]] = {}
         for row in self.db.execute(cust_q).all():
             did = int(row.distributor_id)
-            qty = round_mt(row.qty)
+            qty = kg_to_mt_display(row.qty)
             customers_by_id.setdefault(did, []).append(
                 {
                     "customer": str(row.customer or ""),
                     "product_count": int(row.product_count or 0),
                     "sales_mt": qty,
+                    "quantity": qty,
+                    "unit": "MT",
                     "sales_mt_display": format_mt(qty),
                 }
             )
@@ -261,7 +262,7 @@ class DistributorPerformanceService:
                 "customers": 0,
                 "products": 0,
             }
-            qty = round_mt(stats["qty"])
+            qty = kg_to_mt_display(stats["qty"])
             if (seg or cust or prod) and d.id not in stats_by_id:
                 continue
             stored = normalize_location(d.region)
@@ -282,6 +283,8 @@ class DistributorPerformanceService:
                     "customers": int(stats["customers"]),
                     "products": int(stats["products"]),
                     "sales_mt": qty,
+                    "quantity": qty,
+                    "unit": "MT",
                     "sales_mt_display": format_mt(qty),
                     "has_sales": qty > 0,
                     "customer_contribution": customers_by_id.get(d.id, []),

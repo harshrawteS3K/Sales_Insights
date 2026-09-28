@@ -13,17 +13,21 @@ class KpiItem(BaseModel):
 
 
 class ProductQty(BaseModel):
-    """Product quantity aggregation."""
+    """Product quantity aggregation. ``qty`` and ``quantity`` are both MT."""
 
     product: str
     qty: float
+    quantity: float = 0
+    unit: str = "MT"
 
 
 class DistributorTotal(BaseModel):
-    """Distributor totals aggregation."""
+    """Distributor totals aggregation. ``qty`` and ``quantity`` are both MT."""
 
     name: str
     qty: float
+    quantity: float = 0
+    unit: str = "MT"
     customers: int
     products: int
     avgOrder: float

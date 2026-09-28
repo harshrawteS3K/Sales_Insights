@@ -65,14 +65,16 @@ export function SalesHeatmap({ data, height = 320 }: Props) {
               return (
                 <div
                   key={`${dist}-${m}`}
-                  title={`${dist} Â· ${m}: ${qty.toLocaleString()} MT`}
+                  title={`${dist} · ${m}: ${qty.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MT`}
                   style={{
                     ...cellBase,
                     background: colorFor(qty),
                     color: qty / (max || 1) > 0.55 ? '#fff' : '#374151',
                   }}
                 >
-                  {qty ? Math.round(qty).toLocaleString() : 'â€”'}
+                  {qty
+                    ? qty.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                    : '—'}
                 </div>
               );
             })}

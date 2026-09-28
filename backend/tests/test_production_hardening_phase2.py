@@ -13,6 +13,7 @@ from app.repositories.sales_record_repository import SalesRecordRepository
 from app.services.business_aggregation_service import BusinessAggregationService
 from app.services.dashboard_service import DashboardService
 from app.services.report_service import ReportService
+from app.utils.quantity import kg_to_mt_display
 from tests.workbook_helpers import build_official_workbook
 
 
@@ -49,9 +50,9 @@ def test_dashboard_qty_matches_distributor_totals_sum(db: Session, tmp_path: Pat
     prod_sum = sum(
         r.qty for r in dash.product_quantities(distributor=company)
     )
-    assert dist_sum == prod_sum == 35.0
+    assert dist_sum == prod_sum == kg_to_mt_display(35)
     jan = dash.monthly_sales_trend(distributor=company)
-    assert sum(r["qty"] for r in jan) == 35.0
+    assert sum(r["qty"] for r in jan) == kg_to_mt_display(10) + kg_to_mt_display(25)
 
 
 def test_top_distributors_includes_others(db: Session, tmp_path: Path):
@@ -70,7 +71,7 @@ def test_top_distributors_includes_others(db: Session, tmp_path: Path):
     rows = DashboardService(db).top_distributors(product="PX", limit=2)
     names = [r["name"] for r in rows]
     assert "Others" in names
-    assert sum(r["qty"] for r in rows) == 150.0  # 10+20+30+40+50
+    assert sum(r["qty"] for r in rows) == kg_to_mt_display(150)
 
 
 def test_dist_product_mix_uses_top_products_not_hardcoded(db: Session, tmp_path: Path):

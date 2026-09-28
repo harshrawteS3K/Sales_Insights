@@ -224,7 +224,11 @@ export function Visualizations() {
                 <LineChart data={data.monthly_trend} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
                   <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#6B7280' }} />
-                  <YAxis tick={{ fontSize: 11, fill: '#6B7280' }} />
+                  <YAxis
+                    tick={{ fontSize: 11, fill: '#6B7280' }}
+                    allowDecimals
+                    tickFormatter={(value: number) => Number(value).toFixed(2)}
+                  />
                   <Tooltip
                     formatter={(value: number) => [formatMt(value), 'Sales']}
                     labelFormatter={(_label, payload) =>
@@ -264,7 +268,12 @@ export function Visualizations() {
                     margin={{ top: 8, right: 16, left: 8, bottom: 0 }}
                   >
                     <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                    <XAxis type="number" tick={{ fontSize: 11, fill: '#6B7280' }} />
+                    <XAxis
+                      type="number"
+                      tick={{ fontSize: 11, fill: '#6B7280' }}
+                      allowDecimals
+                      tickFormatter={(value: number) => Number(value).toFixed(2)}
+                    />
                     <YAxis
                       type="category"
                       dataKey="name"

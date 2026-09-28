@@ -322,8 +322,10 @@ export function overviewFromPeriodSummaries(
 }
 
 export function formatMt(qty: number): string {
-  return qty.toLocaleString(undefined, {
-    minimumFractionDigits: 0,
+  const amount = Number(qty);
+  if (!Number.isFinite(amount)) return '0.00';
+  return amount.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
 }

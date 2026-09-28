@@ -37,8 +37,21 @@ def kg_to_mt(value: Union[Decimal, float, int, str]) -> Decimal:
 
 
 def kg_to_mt_display(value: Union[Decimal, float, int, str, None]) -> float:
-    """Stored kilograms to MT for analytics responses. Half-up, two decimal places."""
-    return round_mt(kg_to_mt(value or 0))
+    """
+    Analytics conversion. Stored kilograms become MT.
+
+    Divide the full value, then half-up to two decimal places.
+    ``None`` and zero stay ``0.0``. This is the only converter visualization
+    responses may use.
+    """
+    if value is None or value == "":
+        return 0.0
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return 0.0
+    converted = (amount / Decimal("1000")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(converted)
 
 
 def mt_to_kg(value: Union[Decimal, float, int, str]) -> Decimal:

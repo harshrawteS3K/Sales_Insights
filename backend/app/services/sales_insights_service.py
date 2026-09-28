@@ -17,7 +17,6 @@ from app.models.sales_record import SalesRecord
 from app.repositories.sales_record_repository import (
     SalesRecordRepository,
     company_expr,
-    mt_quantity_expr,
     reporting_month_expr,
 )
 from app.utils.period_calendar import (
@@ -495,11 +494,14 @@ def _month_trend_points(
     points: List[Dict[str, Any]] = []
     for year, month in sorted(totals):
         short = _SHORT_MONTHS[month - 1]
+        quantity = kg_to_mt_display(totals[(year, month)])
         points.append(
             {
                 "month": short,
                 "tooltip": f"{short} {year}",
-                "qty": round_mt(totals[(year, month)]),
+                "qty": quantity,
+                "quantity": quantity,
+                "unit": "MT",
             }
         )
     return points
@@ -748,7 +750,7 @@ class SalesInsightsService:
                 Report.name,
                 SalesRecord.period,
                 Report.reporting_month,
-                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
+                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -946,7 +948,7 @@ class SalesInsightsService:
                 SalesRecord.product,
                 SalesRecord.location,
                 reporting_month_expr().label("month"),
-                mt_quantity_expr().label("qty"),
+                SalesRecord.quantity.label("qty"),
                 company_expr().label("distributor"),
             )
             .select_from(SalesRecord)
@@ -962,7 +964,7 @@ class SalesInsightsService:
                 "Product": str(p or ""),
                 "Location": str(loc or ""),
                 "Quarter": format_period_display(str(m or "")),
-                "Sales Quantity (MT)": round_mt(q),
+                "Sales Quantity (MT)": kg_to_mt_display(q),
                 "Distributor": str(d or ""),
             }
             for c, p, loc, m, q, d in self.db.execute(rows_q).all()

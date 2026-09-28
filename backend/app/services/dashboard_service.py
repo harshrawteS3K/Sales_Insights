@@ -20,7 +20,7 @@ from app.schemas.dashboard import (
     ProductQty,
 )
 from app.utils.datetime_utils import format_audit_timestamp
-from app.utils.quantity import format_quantity
+from app.utils.quantity import format_mt, kg_to_mt_display
 
 logger = get_logger(__name__)
 
@@ -29,6 +29,17 @@ def _norm_filter(value: Optional[str]) -> Optional[str]:
     if not value or str(value).strip().lower() in ("", "all"):
         return None
     return str(value).strip()
+
+
+def _mix_row_mt(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert every product quantity in a distributor mix row. Rank order stays in KG."""
+    converted: Dict[str, Any] = {}
+    for key, value in row.items():
+        if key == "distributor":
+            converted[key] = value
+        else:
+            converted[key] = kg_to_mt_display(value)
+    return converted
 
 
 class DashboardService:
@@ -49,7 +60,7 @@ class DashboardService:
         allowed_companies: Optional[List[str]] = None,
     ) -> DashboardSummary:
         """Build high-level dashboard summary."""
-        total_qty = float(
+        total_qty = kg_to_mt_display(
             self.sales.total_quantity(
                 allowed_segments=allowed_segments,
                 allowed_companies=allowed_companies,
@@ -81,7 +92,7 @@ class DashboardService:
 
         kpis = [
             KpiItem(label="TOTAL DISTRIBUTOR COMPANIES", value=str(total_distributors)),
-            KpiItem(label="TOTAL QTY (MT)", value=format_quantity(total_qty)),
+            KpiItem(label="TOTAL QTY (MT)", value=format_mt(total_qty)),
             KpiItem(label="TOTAL REPORTS", value=str(total_reports)),
             KpiItem(label="TOP PRODUCT", value=str(top_product)),
         ]
@@ -115,7 +126,11 @@ class DashboardService:
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
-        return [ProductQty(**row) for row in rows]
+        items = []
+        for row in rows:
+            quantity = kg_to_mt_display(row["qty"])
+            items.append(ProductQty(product=row["product"], qty=quantity, quantity=quantity, unit="MT"))
+        return items
 
     def distributor_totals(
         self,
@@ -134,7 +149,21 @@ class DashboardService:
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
-        return [DistributorTotal(**row) for row in rows]
+        items = []
+        for row in rows:
+            quantity = kg_to_mt_display(row["qty"])
+            items.append(
+                DistributorTotal(
+                    name=row["name"],
+                    qty=quantity,
+                    quantity=quantity,
+                    unit="MT",
+                    customers=row["customers"],
+                    products=row["products"],
+                    avgOrder=kg_to_mt_display(row["avgOrder"]),
+                )
+            )
+        return items
 
     def product_mix(
         self,
@@ -174,17 +203,22 @@ class DashboardService:
             {
                 "name": str(row["product"]),
                 "value": round((float(row["qty"]) / total_qty) * 100, 2),
-                "qty": float(row["qty"]),
+                "qty": kg_to_mt_display(row["qty"]),
+                "quantity": kg_to_mt_display(row["qty"]),
+                "unit": "MT",
                 "color": PRODUCT_MIX_COLORS[i % len(PRODUCT_MIX_COLORS)],
             }
             for i, row in enumerate(top)
         ]
         if others_qty > 0 or len(sorted_rows) > n:
+            others_mt = kg_to_mt_display(others_qty)
             result.append(
                 {
                     "name": "Others",
                     "value": round((others_qty / total_qty) * 100, 2),
-                    "qty": others_qty,
+                    "qty": others_mt,
+                    "quantity": others_mt,
+                    "unit": "MT",
                     "color": PRODUCT_MIX_OTHERS_COLOR,
                 }
             )
@@ -213,9 +247,13 @@ class DashboardService:
         n = max(1, min(int(top_n or 10), 50))
         top = rows[:n]
         others_qty = sum(float(r["qty"]) for r in rows[n:])
-        result = [{"product": r["product"], "qty": float(r["qty"])} for r in top]
+        result = []
+        for row in top:
+            quantity = kg_to_mt_display(row["qty"])
+            result.append({"product": row["product"], "qty": quantity, "quantity": quantity, "unit": "MT"})
         if others_qty > 0:
-            result.append({"product": "Others", "qty": others_qty})
+            others_mt = kg_to_mt_display(others_qty)
+            result.append({"product": "Others", "qty": others_mt, "quantity": others_mt, "unit": "MT"})
         return result
 
     def dist_product_mix(
@@ -242,13 +280,14 @@ class DashboardService:
             focus = [r["product"] for r in ranked[:n]]
         if not focus:
             return []
-        return self.sales.distributor_product_mix(
+        rows = self.sales.distributor_product_mix(
             focus,
             period=p,
             product=prod,
             distributor=dist,
             distributor_limit=max(1, min(int(distributor_limit or 15), 50)),
         )
+        return [_mix_row_mt(row) for row in rows]
 
     def top_distributors(
         self,
@@ -271,9 +310,13 @@ class DashboardService:
         n = max(1, min(int(limit or 10), 50))
         top = rows[:n]
         others_qty = sum(float(r["qty"]) for r in rows[n:])
-        result = [{"name": row["name"], "qty": row["qty"]} for row in top]
+        result = []
+        for row in top:
+            quantity = kg_to_mt_display(row["qty"])
+            result.append({"name": row["name"], "qty": quantity, "quantity": quantity, "unit": "MT"})
         if others_qty > 0:
-            result.append({"name": "Others", "qty": others_qty})
+            others_mt = kg_to_mt_display(others_qty)
+            result.append({"name": "Others", "qty": others_mt, "quantity": others_mt, "unit": "MT"})
         return result
 
     def distributor_contribution(
@@ -302,21 +345,28 @@ class DashboardService:
         n = max(1, min(int(top_n or 8), 30))
         top = rows[:n]
         others = sum(float(r["qty"]) for r in rows[n:])
-        result = [
-            {
-                "name": r["name"],
-                "value": round((float(r["qty"]) / total) * 100, 2),
-                "qty": float(r["qty"]),
-                "color": PRODUCT_MIX_COLORS[i % len(PRODUCT_MIX_COLORS)],
-            }
-            for i, r in enumerate(top)
-        ]
+        result = []
+        for index, row in enumerate(top):
+            quantity = kg_to_mt_display(row["qty"])
+            result.append(
+                {
+                    "name": row["name"],
+                    "value": round((float(row["qty"]) / total) * 100, 2),
+                    "qty": quantity,
+                    "quantity": quantity,
+                    "unit": "MT",
+                    "color": PRODUCT_MIX_COLORS[index % len(PRODUCT_MIX_COLORS)],
+                }
+            )
         if others > 0:
+            others_mt = kg_to_mt_display(others)
             result.append(
                 {
                     "name": "Others",
                     "value": round((others / total) * 100, 2),
-                    "qty": others,
+                    "qty": others_mt,
+                    "quantity": others_mt,
+                    "unit": "MT",
                     "color": PRODUCT_MIX_OTHERS_COLOR,
                 }
             )
@@ -331,12 +381,18 @@ class DashboardService:
         allowed_companies: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Line chart: month → total quantity."""
-        return self.sales.monthly_sales_trend(
+        rows = self.sales.monthly_sales_trend(
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
+        for row in rows:
+            quantity = kg_to_mt_display(row["qty"])
+            row["qty"] = quantity
+            row["quantity"] = quantity
+            row["unit"] = "MT"
+        return rows
 
     def distributor_month_heatmap(
         self,
@@ -348,13 +404,19 @@ class DashboardService:
         allowed_companies: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Heatmap: distributor × month → quantity."""
-        return self.sales.distributor_month_matrix(
+        payload = self.sales.distributor_month_matrix(
             product=_norm_filter(product),
             distributor=_norm_filter(distributor),
             distributor_limit=distributor_limit,
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
+        cells = []
+        for cell in payload.get("cells") or []:
+            quantity = kg_to_mt_display(cell.get("qty"))
+            cells.append({**cell, "qty": quantity, "quantity": quantity, "unit": "MT"})
+        payload["cells"] = cells
+        return payload
 
     def products_kpi(
         self,
@@ -373,7 +435,7 @@ class DashboardService:
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
-        total_qty = sum(float(r["qty"]) for r in product_qtys)
+        total_kg = sum(float(r["qty"]) for r in product_qtys)
         top_product = product_qtys[0]["product"] if product_qtys else "-"
         dist_count = len(
             self.sales.distributor_totals(
@@ -386,7 +448,7 @@ class DashboardService:
         )
         return [
             KpiItem(label="TOTAL PRODUCTS", value=str(len(product_qtys))),
-            KpiItem(label="TOTAL QTY (MT)", value=format_quantity(total_qty)),
+            KpiItem(label="TOTAL QTY (MT)", value=format_mt(kg_to_mt_display(total_kg))),
             KpiItem(label="TOP PRODUCT", value=str(top_product)),
             KpiItem(label="DISTRIBUTORS", value=str(dist_count)),
         ]
@@ -408,14 +470,14 @@ class DashboardService:
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
-        total_qty = sum(float(item["qty"]) for item in totals)
+        total_kg = sum(float(item["qty"]) for item in totals)
         count = len(totals)
         top = totals[0]["name"] if totals else "-"
-        avg_qty = total_qty / count if count else 0.0
+        avg_mt = kg_to_mt_display(total_kg) / count if count else 0.0
         return [
             KpiItem(label="TOTAL DISTRIBUTOR COMPANIES", value=str(count)),
-            KpiItem(label="TOTAL QTY (MT)", value=format_quantity(total_qty)),
-            KpiItem(label="AVG QTY / COMPANY", value=format_quantity(avg_qty)),
+            KpiItem(label="TOTAL QTY (MT)", value=format_mt(kg_to_mt_display(total_kg))),
+            KpiItem(label="AVG QTY / COMPANY", value=format_mt(avg_mt)),
             KpiItem(label="TOP DISTRIBUTOR COMPANY", value=str(top)),
             KpiItem(
                 label="PRODUCTS",
