@@ -20,6 +20,7 @@ from app.erp_parser.metadata_parser import extract_metadata_rows
 from app.erp_parser.monthly_product_sheets import extract_monthly_product_sheets
 from app.erp_parser.orchestrator.types import ParserResult
 from app.erp_parser.row_extractor import extract_rows
+from app.erp_parser.pdf_stock_register import extract_pdf_stock_register_rows
 from app.erp_parser.stock_item_parser import extract_stock_item_rows
 
 PARSER_LABEL = {
@@ -31,6 +32,7 @@ PARSER_LABEL = {
     "header": "Header Parser",
     "product_month_matrix": "Cross Tab Parser",
     "monthly_product_sheets": "Monthly Product Sheets",
+    "pdf_stock_register": "PDF Stock Register",
 }
 
 # Tie-break only. The weighted score still decides the winner.
@@ -43,6 +45,7 @@ PRIORITY = {
     "product_month_matrix": 2,
     "monthly_product_sheets": 1,
     "header": 0,
+    "pdf_stock_register": 7,
 }
 
 
@@ -220,6 +223,41 @@ def run_matrix(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: Any) 
     return _guard("matrix_month", sheet_name, _run)
 
 
+def run_pdf_stock_register(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: Any) -> ParserResult:
+    def _run() -> ParserResult:
+        extracted = extract_pdf_stock_register_rows(
+            matrix,
+            fiscal_year_start=kwargs.get("fiscal_year_start"),
+            reporting_quarter=kwargs.get("reporting_quarter"),
+            distributor_label=kwargs.get("distributor_label") or "",
+        )
+        field_conf = {"customer": 98.0, "product": 98.0, "quantity": 98.0}
+        result = _result(
+            "pdf_stock_register",
+            extracted,
+            _mapped(
+                customer=0,
+                product=None,
+                quantity=None,
+                originals={
+                    "customer": "Customer header",
+                    "product": "Apcotex line",
+                    "quantity": "Kgs.",
+                },
+                method="pdf_stock_register",
+                field_conf=field_conf,
+            ),
+            sheet_name=sheet_name,
+            reason="Customer total, dated Apcotex lines, and Kgs.",
+        )
+        if result.rows:
+            result.confidence = 98.0
+            result.layout = "pdf_stock_register"
+        return result
+
+    return _guard("pdf_stock_register", sheet_name, _run)
+
+
 def run_header(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: Any) -> ParserResult:
     def _run() -> ParserResult:
         from app.erp_parser.parser_service import _mapping_complete
@@ -385,6 +423,7 @@ _SHEET_RUNNERS = {
     "cross_product_matrix": run_cross_product,
     "header": run_header,
     "product_month_matrix": run_cross_tab,
+    "pdf_stock_register": run_pdf_stock_register,
 }
 
 

@@ -7,6 +7,7 @@ from typing import Any
 
 from app.core.logging import get_logger
 from app.erp_parser.documents.grid import GridSheet, NormalizedGrid
+from app.erp_parser.pdf_stock_register import looks_like_pdf_stock_register
 from app.exceptions import ExcelProcessingError
 
 logger = get_logger(__name__)
@@ -21,6 +22,10 @@ def pdf_to_grid(path: Path) -> NormalizedGrid:
     sheets: list[GridSheet] = []
     with pdfplumber.open(str(path)) as document:
         for number, page in enumerate(document.pages, start=1):
+            plain = [line.strip() for line in (page.extract_text() or "").splitlines() if line.strip()]
+            if looks_like_pdf_stock_register(plain):
+                sheets.append(GridSheet(name=f"Page {number}", rows=[[line] for line in plain]))
+                continue
             tables = _page_tables(page)
             if not tables and _needs_ocr(page):
                 tables = [_ocr_table(page)]

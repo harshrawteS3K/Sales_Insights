@@ -698,13 +698,11 @@ export function EmailsModule() {
           </div>
           <div>
             <div style={{ fontWeight: 700, color: '#111827' }}>Outlook Sync</div>
-            <div style={{ fontSize: '0.8125rem', color: '#6B7280' }}>
+            <div style={{ fontSize: '0.8125rem', color: '#6B7280', lineHeight: 1.55, maxWidth: 760 }}>
               {getSession()?.outlook_sync_permission === 'all' ? (
-                <>
-                  Syncs the complete shared Sales Insights mailbox (all unread Excel emails).
-                </>
+                <div>Syncs the complete shared Sales Insights mailbox (all unread business documents).</div>
               ) : (
-                <>
+                <div>
                   Syncs the shared Sales Insights mailbox for <strong>your sender email</strong> only
                   {getSession()?.email ? (
                     <>
@@ -713,14 +711,32 @@ export function EmailsModule() {
                     </>
                   ) : null}
                   .
-                </>
-              )}{' '}
-              Subject must be{' '}
+                </div>
+              )}
+              <div style={{ marginTop: 10, fontWeight: 700, color: '#111827' }}>Required Subject Format</div>
               <code style={{ fontSize: '0.75rem', background: '#F3F4F6', padding: '1px 6px', borderRadius: 4 }}>
-                DISTRIBUTOR | LOCATION | SEGMENT | PERIOD
+                DISTRIBUTOR | LOCATION | SEGMENT | PERIOD | UNIT
               </code>
-              . Extracts up to {BATCH_LIMIT} unread Excel emails per manual sync. Auto-sync runs every 30
-              minutes into the Email Queue (NEW) — Proceed to Consolidation remains required.
+              <div style={{ marginTop: 8 }}>Supported Period examples:</div>
+              <div>APRIL 2026</div>
+              <div>Q1 FY 2026-27</div>
+              <div>Q1+Q2 FY 2026-27</div>
+              <div>FY 2026-27</div>
+              <div style={{ marginTop: 8 }}>
+                Supported Units: <strong style={{ color: '#374151' }}>KG</strong>,{' '}
+                <strong style={{ color: '#374151' }}>MT</strong>
+              </div>
+              <div style={{ marginTop: 8 }}>
+                Example:{' '}
+                <span style={{ color: '#374151' }}>
+                  Purandar Investment Pvt. Ltd. | INDIA WEST | RUBBER | Q1+Q2 FY 2026-27 | KG
+                </span>
+              </div>
+              <div style={{ marginTop: 8 }}>
+                Supports Excel, PDF and DOCX documents. Extracts up to {BATCH_LIMIT} unread business documents
+                per manual sync. Auto-sync runs every 30 minutes into the Email Queue (NEW) — Proceed to
+                Consolidation remains required.
+              </div>
             </div>
           </div>
         </div>
@@ -841,7 +857,7 @@ export function EmailsModule() {
                             </span>
                             <span style={{ fontSize: '0.75rem', color: '#92400E', lineHeight: 1.4 }}>
                               {email.errorMessage ||
-                                'Expected: DISTRIBUTOR | LOCATION | SEGMENT | PERIOD'}
+                                'Expected: DISTRIBUTOR | LOCATION | SEGMENT | PERIOD | UNIT'}
                             </span>
                             <span style={{ fontSize: '0.6875rem', color: '#6B7280' }}>
                               Subject: {email.subject || '—'}

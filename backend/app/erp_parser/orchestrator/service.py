@@ -352,13 +352,18 @@ class UniversalParserOrchestrator:
         duration = time.perf_counter() - started
         breakdown = dict(result.confidence_breakdown or {})
         state = _terminal_state(winner)
+        layout_name = (
+            str(winner.extracted.get("layout") or winner.layout)
+            if winner.parser_name == "pdf_stock_register"
+            else classification.layout_name
+        )
         breakdown.update(
             {
                 "parser_name": winner.parser_name,
                 "parser_label": PARSER_LABEL.get(winner.parser_name, winner.parser_name),
                 "parser_version": winner.parser_version,
                 "layout": winner.extracted.get("layout") or winner.layout,
-                "layout_name": classification.layout_name,
+                "layout_name": layout_name,
                 "layout_reason": classification.reason,
                 "fingerprint": fingerprint.digest,
                 "fingerprint_payload": fingerprint.as_dict(),
@@ -381,7 +386,7 @@ class UniversalParserOrchestrator:
             winner=winner,
             duration=duration,
             fingerprint=fingerprint.digest,
-            layout_name=classification.layout_name,
+            layout_name=layout_name,
         )
         return result
 
@@ -626,6 +631,24 @@ class UniversalParserOrchestrator:
                 ", ".join(str(item) for item in months),
                 extracted.get("quarter") or "",
                 "True" if winner.llm_used else "False",
+            )
+        elif winner.parser_name == "pdf_stock_register":
+            from app.erp_parser.documents.row_quarters import quarter_split
+
+            customers = {
+                str(row.get("customer_name") or "").strip()
+                for row in winner.rows
+                if str(row.get("customer_name") or "").strip()
+            }
+            split = quarter_split(winner.rows)
+            split_lines = "\n".join(f"{name} : {count}" for name, count in sorted(split.items())) or "—"
+            logger.info(
+                "Parser : PDF Stock Register\n\nCustomers : {}\n\nRows Parsed : {}\n\nQuarter Split\n{}\n\nConfidence : {}\n\nLLM Used : {}",
+                int(winner.extracted.get("customers_detected") or len(customers)),
+                len(winner.rows),
+                split_lines,
+                int(round(winner.confidence)),
+                "Yes" if winner.llm_used else "No",
             )
         else:
             logger.info(

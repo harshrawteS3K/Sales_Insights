@@ -11,6 +11,7 @@ PARSER_VERSION = {
     "product_month_matrix": "v2.1",
     "monthly_product_sheets": "v1.4",
     "header": "v1.3",
+    "pdf_stock_register": "v1.0",
 }
 
 

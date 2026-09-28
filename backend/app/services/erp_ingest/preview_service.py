@@ -47,7 +47,7 @@ class PreviewMixin:
         split = quarter_split(merged_rows)
         split_lines = "\n".join(f"{name} : {count}" for name, count in sorted(split.items())) or "—"
         parser_name = dominant.get("parser_used") or ""
-        if str(document_type).upper() == "PDF":
+        if str(document_type).upper() == "PDF" and "stock register" not in str(parser_name).lower():
             parser_name = "PDF Adapter"
         logger.info(
             "AI Job\n\nDistributor : {}\n\nDocument : {}\n\nType : {}\n\nLayout : {}\n\nParser : {}\n\nRows Parsed : {}\n\nQuarter Split :\n{}\n\nConfidence : {}\n\nLLM Used : {}\n\nDuration : {:.2f} sec",
