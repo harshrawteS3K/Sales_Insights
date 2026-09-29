@@ -163,6 +163,7 @@ class ERPImportRequest(BaseModel):
     rows: Optional[List[ERPPreviewRow]] = None
     replace_existing: bool = False
     row_decisions: Optional[List[IncrementalDecision]] = None
+    confirm_add: bool = False
 
 
 class DuplicateReview(BaseModel):

@@ -29,7 +29,7 @@ def fingerprint_sheet(matrix: Sequence[Sequence[Any]]) -> List[Dict[str, Any]]:
                 "parser_name": "stock_item_register",
                 "layout": "Stock Register",
                 "fingerprint_confidence": 90.0,
-                "reason": "Stock Item Register, Particulars, and Outwards",
+                "reason": "Particulars with Outwards or Qty. Out sales quantity",
             }
         )
     if detect_block_product_layout(matrix):

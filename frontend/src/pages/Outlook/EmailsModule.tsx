@@ -169,6 +169,7 @@ export function EmailsModule() {
   const [distributorId, setDistributorId] = useState<number | ''>('');
   const [fiscalYearStart, setFiscalYearStart] = useState(2025);
   const [importDone, setImportDone] = useState<string | null>(null);
+  const [confirmAddPending, setConfirmAddPending] = useState(false);
   const [selectedEmailId, setSelectedEmailId] = useState<number | null>(null);
   const [consolidateOpen, setConsolidateOpen] = useState(false);
   const [consolidateBusy, setConsolidateBusy] = useState(false);
@@ -214,6 +215,7 @@ export function EmailsModule() {
 
   useEffect(() => {
     setRowActions({});
+    setConfirmAddPending(false);
   }, [previewEmail?.id, preview?.incremental_analysis?.analysed]);
 
   const handleExtract = async () => {
@@ -261,6 +263,7 @@ export function EmailsModule() {
     setPreview(null);
     setPreviewError(null);
     setImportDone(null);
+    setConfirmAddPending(false);
     setPreviewBusy(true);
     try {
       const data = await EmailsService.previewEmail(email.id);
@@ -337,10 +340,24 @@ export function EmailsModule() {
     (preview?.monthly_pivot ? Boolean(fiscalYearStart) : Boolean(detectedQuarter)) &&
     !previewBusy;
 
-  const approveImport = async (replaceExisting = false) => {
+  const approveImport = async (replaceExisting = false, confirmAdd = false) => {
     if (!previewEmail || !preview || !distributorId) return;
-    const modified = preview.incremental_analysis?.modified_rows || [];
-    if (!replaceExisting && modified.length) {
+    const analysis = preview.incremental_analysis;
+    const needsConfirmAdd =
+      !confirmAdd &&
+      !replaceExisting &&
+      (analysis?.status === 'confirm_add' ||
+        analysis?.status === 'human_review' ||
+        (analysis != null &&
+          ((analysis.exact_count || 0) > 0 || (analysis.modified_count || 0) > 0) &&
+          (analysis.new_count || 0) > 0));
+    if (needsConfirmAdd) {
+      setConfirmAddPending(true);
+      setPreviewError(null);
+      return;
+    }
+    const modified = analysis?.modified_rows || [];
+    if (!replaceExisting && !confirmAdd && modified.length) {
       const missing = modified.some(row => !rowActions[row.row_index]);
       if (missing) {
         setPreviewError('Choose Replace, Keep Existing, or Add Anyway for every modified row.');
@@ -355,6 +372,7 @@ export function EmailsModule() {
     }
     setImportBusy(true);
     setPreviewError(null);
+    setConfirmAddPending(false);
     try {
       const result = await EmailsService.importErp({
         email_id: previewEmail.id,
@@ -366,20 +384,30 @@ export function EmailsModule() {
         mapping: mappings,
         rows: preview.rows,
         replace_existing: replaceExisting,
-        row_decisions: modified.map(row => ({
-          row_index: row.row_index,
-          action: rowActions[row.row_index],
-        })),
+        confirm_add: confirmAdd,
+        row_decisions: confirmAdd
+          ? []
+          : modified.map(row => ({
+              row_index: row.row_index,
+              action: rowActions[row.row_index],
+            })),
       });
       if (result.duplicate_upload) {
         setImportDone('Duplicate Upload. No records inserted.');
         await refreshEmails();
         return;
       }
-      if (result.requires_review && result.duplicate_review?.detected) {
+      if (result.requires_review && result.duplicate_review?.detected && !confirmAdd) {
         setPreview(current =>
-          current ? { ...current, duplicate_review: result.duplicate_review } : current,
+          current
+            ? {
+                ...current,
+                duplicate_review: result.duplicate_review,
+                incremental_analysis: result.incremental_analysis || current.incremental_analysis,
+              }
+            : current,
         );
+        setConfirmAddPending(true);
         return;
       }
       const qLabel =
@@ -518,12 +546,17 @@ export function EmailsModule() {
             setBatchResults([...results]);
             continue;
           }
-          if ((data.incremental_analysis?.modified_count || 0) > 0) {
+          if (
+            data.incremental_analysis?.status === 'confirm_add' ||
+            data.incremental_analysis?.status === 'human_review' ||
+            (data.incremental_analysis?.modified_count || 0) > 0
+          ) {
             results.push({
               emailId: email.id,
               subject: email.subject,
               status: 'skipped',
-              detail: 'Human Review Required — open Preview and review the modified rows.',
+              detail:
+                'Confirmation required — open Preview to add new records for this distributor/period.',
             });
             setBatchResults([...results]);
             continue;
@@ -1390,8 +1423,9 @@ export function EmailsModule() {
                     <div>Exact Duplicates: {preview.incremental_analysis.exact_count}</div>
                     <div>Modified Transactions: {preview.incremental_analysis.modified_count}</div>
                     <div style={{ marginTop: 8, fontWeight: 600 }}>
-                      {preview.incremental_analysis.status === 'human_review'
-                        ? 'Human Review Required'
+                      {preview.incremental_analysis.status === 'confirm_add' ||
+                      preview.incremental_analysis.status === 'human_review'
+                        ? 'Confirmation Required'
                         : preview.incremental_analysis.status === 'duplicate_upload'
                           ? 'Duplicate Upload'
                           : 'Ready to import'}
@@ -1474,6 +1508,49 @@ export function EmailsModule() {
                   </div>
                 )}
 
+                {confirmAddPending && !importDone && (
+                  <div
+                    style={{
+                      marginTop: 14,
+                      padding: '12px 14px',
+                      borderRadius: 8,
+                      background: '#FFFBEB',
+                      border: '1px solid #FCD34D',
+                      color: '#92400E',
+                      fontSize: '0.8125rem',
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, marginBottom: 10 }}>
+                      {preview.duplicate_review?.message ||
+                        preview.incremental_analysis?.recommendation ||
+                        'Some records for this distributor/period already exist. Do you want to add the new records?'}
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                      <button
+                        type="button"
+                        style={btnSecondary}
+                        disabled={importBusy}
+                        onClick={() => setConfirmAddPending(false)}
+                      >
+                        No, Cancel
+                      </button>
+                      <button
+                        type="button"
+                        style={{
+                          ...btnPrimary,
+                          background: canImport ? TEAL : '#9CA3AF',
+                          cursor: canImport && !importBusy ? 'pointer' : 'not-allowed',
+                        }}
+                        disabled={!canImport || importBusy}
+                        onClick={() => void approveImport(false, true)}
+                      >
+                        {importBusy ? 'Adding…' : 'Yes, Add'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
                   <button
                     type="button"
@@ -1481,11 +1558,12 @@ export function EmailsModule() {
                     onClick={() => {
                       setPreviewEmail(null);
                       setPreview(null);
+                      setConfirmAddPending(false);
                     }}
                   >
                     {preview.duplicate_review?.detected && !importDone ? 'Cancel Import' : 'Close'}
                   </button>
-                  {!importDone && preview.incremental_analysis && (
+                  {!importDone && !confirmAddPending && preview.incremental_analysis && (
                     <button
                       type="button"
                       style={{
@@ -1499,7 +1577,10 @@ export function EmailsModule() {
                       {importBusy ? 'Importing…' : 'Proceed to Consolidation'}
                     </button>
                   )}
-                  {!importDone && !preview.incremental_analysis && preview.duplicate_review?.detected && (
+                  {!importDone &&
+                    !confirmAddPending &&
+                    !preview.incremental_analysis &&
+                    preview.duplicate_review?.detected && (
                     <button
                       type="button"
                       style={{
@@ -1513,7 +1594,10 @@ export function EmailsModule() {
                       {importBusy ? 'Replacing…' : 'Replace Existing Records'}
                     </button>
                   )}
-                  {!importDone && !preview.incremental_analysis && !preview.duplicate_review?.detected && (
+                  {!importDone &&
+                    !confirmAddPending &&
+                    !preview.incremental_analysis &&
+                    !preview.duplicate_review?.detected && (
                     <button
                       type="button"
                       style={{

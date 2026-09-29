@@ -13,7 +13,7 @@ from app.models.distributor import Distributor
 from app.models.report import Report
 from app.models.sales_record import SalesRecord
 from app.repositories.sales_record_repository import company_expr
-from app.utils.quantity import kg_to_mt_display
+from app.utils.quantity import round_mt
 
 logger = get_logger(__name__)
 
@@ -82,9 +82,9 @@ class AnalyticsFilter:
 
 
 def align_quantities(amounts_kg: Sequence[float], *, total_kg: float) -> List[float]:
-    """Convert each kilogram bucket to MT so the parts sum to the converted total."""
-    target = kg_to_mt_display(total_kg)
-    converted = [kg_to_mt_display(amount) for amount in amounts_kg]
+    """Align already-MT buckets so parts sum to the MT total (param names are legacy)."""
+    target = round_mt(total_kg)
+    converted = [round_mt(amount) for amount in amounts_kg]
     if not converted:
         return []
     drift = round(target - sum(converted), 3)

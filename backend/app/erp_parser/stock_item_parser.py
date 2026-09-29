@@ -27,6 +27,11 @@ from app.utils.quantity import format_quantity, parse_quantity
 logger = get_logger(__name__)
 
 _REGISTER_RE = re.compile(r"stock\s*item\s*register", re.IGNORECASE)
+_TITLE_SKIP_RE = re.compile(
+    r"party\s*wise|sale\s*details|as\s*per|purchase\s*quantity|"
+    r"from\s+.+\s+to\b|stock\s*item\s*register",
+    re.IGNORECASE,
+)
 _SKIP_ROW_RE = re.compile(
     r"^(grand\s+|sub\s+)?totals?\b$"
     r"|^(opening|closing)(\s+balance|\s+stock)?$"
@@ -93,6 +98,121 @@ def _is_qty_header(raw: Any) -> bool:
     return text in {"quantity", "qty", "nett sale qty", "net sale qty", "sales qty"} or (
         "outward" in text and ("qty" in text or "quantity" in text)
     )
+
+
+def _is_qty_out_label(raw: Any) -> bool:
+    """True for Qty. Out / Quantity Out / Outwards Qty — never Qty. In."""
+    text = _norm(raw)
+    if not text:
+        return False
+    if re.search(r"(?:qty|quantity)\s*\.?\s*in\b", text) and "out" not in text:
+        return False
+    if "inward" in text and "outward" not in text:
+        return False
+    if re.search(r"(?:qty|quantity)\s*\.?\s*out\b", text):
+        return True
+    if "outward" in text and ("qty" in text or "quantity" in text or text in {"outward", "outwards"}):
+        return True
+    return False
+
+
+def _header_has_kg(row: Sequence[Any]) -> bool:
+    return any("kg" in _norm(raw) for raw in row if _norm(raw))
+
+
+def _type_col(row: Sequence[Any]) -> int:
+    for idx, raw in enumerate(row):
+        if _norm(raw) == "type":
+            return idx
+    return -1
+
+
+def _date_col(row: Sequence[Any]) -> int:
+    for idx, raw in enumerate(row):
+        if _norm(raw) == "date":
+            return idx
+    return -1
+
+
+def _find_qty_out_header(
+    matrix: Sequence[Sequence[Any]],
+) -> Optional[Dict[str, int]]:
+    """Locate Date | Particulars | Qty. Out headers (optional Type / Qty. In)."""
+    limit = min(len(matrix), 40)
+    for idx in range(limit):
+        row = matrix[idx]
+        particulars = _particulars_col(row)
+        if particulars < 0:
+            continue
+        date_col = _date_col(row)
+        if date_col < 0:
+            continue
+        qty_cols = [i for i, raw in enumerate(row) if _is_qty_out_label(raw)]
+        if not qty_cols:
+            continue
+        # Prefer an explicit Qty. Out over a bare Outwards parent cell
+        qty_col = qty_cols[-1]
+        return {
+            "header_idx": idx,
+            "particulars": particulars,
+            "qty_col": qty_col,
+            "date_col": date_col,
+            "type_col": _type_col(row),
+            "unit_kg": 1 if _header_has_kg(row) else 0,
+        }
+    return None
+
+
+def _product_above_qty_out_header(matrix: Sequence[Sequence[Any]], header_idx: int) -> str:
+    """Product/title row above a transaction table (skip report titles and blanks)."""
+    for prev in range(header_idx - 1, max(-1, header_idx - 8), -1):
+        if prev < 0:
+            break
+        if _is_blank(matrix[prev]):
+            continue
+        texts: List[str] = []
+        for raw in matrix[prev]:
+            if isinstance(raw, (datetime, date)):
+                return ""
+            text = _cell(raw)
+            if not text:
+                continue
+            if text not in texts:
+                texts.append(text)
+        if len(texts) != 1:
+            continue
+        title = texts[0]
+        if _TITLE_SKIP_RE.search(title) or _SKIP_ROW_RE.match(title):
+            continue
+        if _particulars_col(matrix[prev]) >= 0:
+            continue
+        return title
+    return ""
+
+
+def _distributor_from_sheet(matrix: Sequence[Sequence[Any]], product: str) -> str:
+    """First non-blank title row that is not the product or a report heading."""
+    for row in matrix[:12]:
+        if _is_blank(row):
+            continue
+        texts = [_cell(raw) for raw in row if _cell(raw) and not isinstance(raw, (datetime, date))]
+        texts = [t for t in texts if t]
+        if len(texts) != 1:
+            continue
+        title = texts[0]
+        if title.casefold() == (product or "").casefold():
+            continue
+        if _TITLE_SKIP_RE.search(title) or _SKIP_ROW_RE.match(title):
+            continue
+        if _particulars_col(row) >= 0 or _date_col(row) >= 0:
+            continue
+        return title
+    return ""
+
+
+def _is_sale_type(raw: Any) -> bool:
+    text = _norm(raw)
+    return text in {"sale", "sales"}
 
 
 def _is_subheader(row: Sequence[Any]) -> bool:
@@ -249,8 +369,8 @@ def _sheet_range_period(matrix: Sequence[Sequence[Any]]) -> Optional[str]:
     return None
 
 
-def detect_stock_item_register(sheet: Sequence[Sequence[Any]]) -> bool:
-    """True when a product title sits above Stock Item Register and Outwards Quantity."""
+def _detect_classic_stock_register(sheet: Sequence[Sequence[Any]]) -> bool:
+    """Tally Stock Item Register with product title and Outwards Quantity."""
     if not sheet:
         return False
     for idx, row in enumerate(sheet):
@@ -267,6 +387,140 @@ def detect_stock_item_register(sheet: Sequence[Sequence[Any]]) -> bool:
     return False
 
 
+def _detect_qty_out_sale_register(sheet: Sequence[Sequence[Any]]) -> bool:
+    """Date | Particulars | Qty. Out transaction table with a product title above."""
+    header = _find_qty_out_header(sheet)
+    if not header:
+        return False
+    return bool(_product_above_qty_out_header(sheet, int(header["header_idx"])))
+
+
+def detect_stock_item_register(sheet: Sequence[Sequence[Any]]) -> bool:
+    """True for Stock Item Register or Date/Particulars/Qty. Out sale registers."""
+    return _detect_classic_stock_register(sheet) or _detect_qty_out_sale_register(sheet)
+
+
+def _extract_qty_out_sale_rows(
+    matrix: Sequence[Sequence[Any]],
+    *,
+    fiscal_year_start: Optional[int] = None,
+    reporting_quarter: Optional[str] = None,
+    distributor_label: str = "",
+) -> Optional[Dict[str, Any]]:
+    header = _find_qty_out_header(matrix)
+    if not header:
+        return None
+    header_idx = int(header["header_idx"])
+    product = _product_above_qty_out_header(matrix, header_idx)
+    if not product:
+        return None
+
+    particulars = int(header["particulars"])
+    qty_col = int(header["qty_col"])
+    date_col = int(header["date_col"])
+    type_col = int(header["type_col"])
+    unit_kg = bool(header.get("unit_kg"))
+    distributor = (distributor_label or "").strip() or _distributor_from_sheet(matrix, product)
+
+    fallback_period = (reporting_quarter or "").strip() or _sheet_range_period(matrix) or ""
+    fallback_fy = resolve_fy_start_year(
+        fiscal_year_start=fiscal_year_start,
+        reporting_quarter=fallback_period or reporting_quarter,
+    )
+
+    rows: List[Dict[str, Any]] = []
+    skipped_total = 0
+    skipped_blank = 0
+    skipped_invalid = 0
+    skipped_non_sale = 0
+    qty_ok = 0
+    qty_fail = 0
+
+    for row in matrix[header_idx + 1 :]:
+        if _is_blank(row):
+            skipped_blank += 1
+            continue
+        if _particulars_col(row) >= 0 and _date_col(row) >= 0:
+            # Nested header repeat
+            continue
+        if type_col >= 0:
+            raw_type = row[type_col] if type_col < len(row) else None
+            if not _is_sale_type(raw_type):
+                skipped_non_sale += 1
+                continue
+        customer = _cell(row[particulars]) if particulars < len(row) else ""
+        if not customer:
+            skipped_blank += 1
+            continue
+        if _SKIP_ROW_RE.match(customer) or _norm(customer) in {"particulars", "particular"}:
+            skipped_total += 1
+            continue
+        raw_qty = row[qty_col] if qty_col < len(row) else None
+        if raw_qty is None or (_cell(raw_qty) == "" and not isinstance(raw_qty, (int, float, Decimal))):
+            skipped_blank += 1
+            continue
+        try:
+            qty, _disp = parse_quantity(raw_qty)
+        except (ValueError, ArithmeticError):
+            qty_fail += 1
+            continue
+        if qty == 0:
+            continue
+        if qty < 0:
+            skipped_invalid += 1
+            continue
+        tx_date = None
+        if date_col >= 0 and date_col < len(row):
+            tx_date = _as_date(row[date_col])
+        if tx_date is None:
+            tx_date = next((_as_date(raw) for raw in row if _as_date(raw)), None)
+        period = _period_for_date(tx_date) if tx_date else fallback_period
+        amount = Decimal(str(qty))
+        payload: Dict[str, Any] = {
+            "customer_name": customer,
+            "product": product,
+            "sales_quantity": amount,
+            "sales_quantity_display": format_quantity(amount),
+        }
+        if unit_kg:
+            payload["original_unit"] = "KG"
+        if period:
+            payload["period"] = period
+            payload["reporting_quarter"] = period
+        if tx_date:
+            payload["source_month"] = month_label(tx_date.month, tx_date.year)
+        rows.append(payload)
+        qty_ok += 1
+
+    quarter = ""
+    periods = [str(row.get("period") or "") for row in rows if row.get("period")]
+    if periods:
+        quarter = _quarter_phrase(max(set(periods), key=periods.count))
+    elif fallback_period:
+        quarter = _quarter_phrase(fallback_period)
+
+    return {
+        "rows": rows,
+        "products": [product],
+        "product": product,
+        "distributor": distributor,
+        "quarter": quarter,
+        "skipped_total": skipped_total,
+        "skipped_blank": skipped_blank,
+        "skipped_invalid": skipped_invalid,
+        "skipped_non_sale": skipped_non_sale,
+        "quantity_ok": qty_ok,
+        "quantity_fail": qty_fail,
+        "errors": [],
+        "fiscal_year_start": fallback_fy,
+        "header_row": header_idx + 1,
+        "monthly_pivot": False,
+        "layout": "transaction_qty_out",
+        "score": round(min(98.0, 78.0 + len(rows) * 0.3), 2),
+        "detected": True,
+    }
+
+
 def extract_stock_item_rows(
     matrix: Sequence[Sequence[Any]],
     *,
@@ -274,7 +528,31 @@ def extract_stock_item_rows(
     reporting_quarter: Optional[str] = None,
     distributor_label: str = "",
 ) -> Optional[Dict[str, Any]]:
-    if not detect_stock_item_register(matrix):
+    if _detect_classic_stock_register(matrix):
+        return _extract_classic_stock_rows(
+            matrix,
+            fiscal_year_start=fiscal_year_start,
+            reporting_quarter=reporting_quarter,
+            distributor_label=distributor_label,
+        )
+    if _detect_qty_out_sale_register(matrix):
+        return _extract_qty_out_sale_rows(
+            matrix,
+            fiscal_year_start=fiscal_year_start,
+            reporting_quarter=reporting_quarter,
+            distributor_label=distributor_label,
+        )
+    return None
+
+
+def _extract_classic_stock_rows(
+    matrix: Sequence[Sequence[Any]],
+    *,
+    fiscal_year_start: Optional[int] = None,
+    reporting_quarter: Optional[str] = None,
+    distributor_label: str = "",
+) -> Optional[Dict[str, Any]]:
+    if not _detect_classic_stock_register(matrix):
         return None
 
     fallback_period = (reporting_quarter or "").strip() or _sheet_range_period(matrix) or ""

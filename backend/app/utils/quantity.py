@@ -37,11 +37,12 @@ def kg_to_mt(value: Union[Decimal, float, int, str]) -> Decimal:
 
 
 def kg_to_mt_display(value: Union[Decimal, float, int, str, None]) -> float:
-    """Stored kilograms to MT for every display API.
+    """Convert a known-kilogram amount to MT for display.
 
     MT = KG / 1000, half-up to three decimal places.
-    ``None`` and blank values return ``0.0``. This is the only converter
-    display responses may use. Database values are never changed here.
+    ``None`` and blank values return ``0.0``.
+    Do not use for values already stored/aggregated as MT — use
+    ``quantity_as_mt`` / ``mt_quantity_expr`` instead.
     """
     if value is None or value == "":
         return 0.0

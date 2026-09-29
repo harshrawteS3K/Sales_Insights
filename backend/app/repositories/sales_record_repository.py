@@ -540,7 +540,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
                 period_col.label("period"),
                 func.count(distinct(SalesRecord.report_id)).label("report_count"),
                 func.count(distinct(func.lower(company_col))).label("distributor_count"),
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -770,7 +770,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
     ) -> Decimal:
         """Sum of quantities from ACTIVE reports + ACTIVE distributors only."""
         query = (
-            select(func.coalesce(func.sum(SalesRecord.quantity), 0))
+            select(func.coalesce(func.sum(mt_quantity_expr()), 0))
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
@@ -807,14 +807,14 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         query = (
             select(
                 SalesRecord.product.label("product"),
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .where(*self._active_distributor_sales_where())
             .group_by(SalesRecord.product)
-            .order_by(func.sum(SalesRecord.quantity).desc())
+            .order_by(func.sum(mt_quantity_expr()).desc())
         )
         query = self._apply_viz_filters(
             query,
@@ -841,7 +841,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         query = (
             select(
                 entity,
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
                 func.count(distinct(SalesRecord.customer_name)).label("customers"),
                 func.count(distinct(SalesRecord.product)).label("products"),
                 func.count(SalesRecord.id).label("orders"),
@@ -854,7 +854,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
                 Distributor.is_deleted.is_(False),
             )
             .group_by(entity)
-            .order_by(func.sum(SalesRecord.quantity).desc())
+            .order_by(func.sum(mt_quantity_expr()).desc())
         )
         query = self._apply_viz_filters(
             query,
@@ -909,7 +909,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         query = (
             select(
                 month_expr.label("month"),
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -971,7 +971,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             select(
                 entity.label("distributor"),
                 month_expr.label("month"),
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
@@ -1062,7 +1062,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             select(
                 entity.label("distributor"),
                 SalesRecord.product.label("product"),
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
@@ -1139,7 +1139,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         query = (
             select(
                 entity.label("company"),
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
                 func.count(distinct(SalesRecord.product)).label("products"),
                 func.count(distinct(SalesRecord.customer_name)).label("customers"),
                 func.count(distinct(Report.id)).label("reports"),
@@ -1154,7 +1154,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
                 month_expr.in_(list(months)),
             )
             .group_by(entity)
-            .order_by(func.sum(SalesRecord.quantity).desc())
+            .order_by(func.sum(mt_quantity_expr()).desc())
         )
         if company and company.lower() != "all":
             query = query.where(func.lower(company_expr()) == company.strip().lower())
@@ -1222,7 +1222,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
 
         # Full-quarter total for Contribution % (never filtered by search)
         total_q = (
-            select(func.coalesce(func.sum(SalesRecord.quantity), 0))
+            select(func.coalesce(func.sum(mt_quantity_expr()), 0))
             .select_from(SalesRecord)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -1230,7 +1230,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         )
         quarter_total = float(self.db.scalar(total_q) or 0)
 
-        qty_expr = func.coalesce(func.sum(SalesRecord.quantity), 0)
+        qty_expr = func.coalesce(func.sum(mt_quantity_expr()), 0)
         grouped = (
             select(
                 SalesRecord.customer_name.label("customer"),
@@ -1330,7 +1330,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         query = (
             select(
                 SalesRecord.product.label("product"),
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
                 func.count(distinct(SalesRecord.customer_name)).label("customers"),
             )
             .select_from(SalesRecord)
@@ -1338,7 +1338,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             .join(Report, Report.id == SalesRecord.report_id)
             .where(*self._quarter_company_where(months, company))
             .group_by(SalesRecord.product)
-            .order_by(func.sum(SalesRecord.quantity).desc())
+            .order_by(func.sum(mt_quantity_expr()).desc())
         )
         rows = self.db.execute(query).all()
         total = sum(float(r.qty or 0) for r in rows) or 0.0

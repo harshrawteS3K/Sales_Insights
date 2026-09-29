@@ -29,7 +29,7 @@ from app.services.sales_insights_service import (
 )
 from app.services.distributor_service import DistributorService
 from app.utils.distributor_location import country_group, country_label, normalize_location
-from app.utils.quantity import format_mt, kg_to_mt_display
+from app.utils.quantity import format_mt, round_mt
 
 
 class DistributorPerformanceService:
@@ -262,7 +262,7 @@ class DistributorPerformanceService:
         customers_by_id: Dict[int, List[Dict[str, Any]]] = {}
         for row in self.db.execute(cust_q).all():
             did = int(row.distributor_id)
-            qty = kg_to_mt_display(row.qty)
+            qty = round_mt(row.qty)
             customers_by_id.setdefault(did, []).append(
                 {
                     "customer": str(row.customer or ""),
@@ -281,7 +281,7 @@ class DistributorPerformanceService:
                 "customers": 0,
                 "products": 0,
             }
-            qty = kg_to_mt_display(stats["qty"])
+            qty = round_mt(stats["qty"])
             if (seg or cust or prod) and d.id not in stats_by_id:
                 continue
             stored = normalize_location(d.region)

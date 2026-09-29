@@ -173,6 +173,7 @@ def import_erp_rows(
         fiscal_year_start=payload.fiscal_year_start,
         replace_existing=bool(payload.replace_existing),
         row_decisions=[item.model_dump() for item in (payload.row_decisions or [])],
+        confirm_add=bool(payload.confirm_add),
     )
     return DataResponse(
         data=ERPImportResponse.model_validate(result),

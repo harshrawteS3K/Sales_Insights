@@ -17,11 +17,11 @@ from app.utils.period_calendar import (
     available_quarter_labels,
     resolve_period,
 )
-from app.utils.quantity import format_mt, kg_to_mt_display
+from app.utils.quantity import format_mt, round_mt
 
 logger = get_logger(__name__)
 
-# Display unit. Stored sales quantities remain kilograms.
+# Display unit. Aggregations return MT via mt_quantity_expr (KG÷1000, MT as-is).
 QUANTITY_UNIT = "MT"
 
 
@@ -72,7 +72,7 @@ class BusinessAggregationService:
         data = []
         for row in rows:
             kg_total += float(row["qty"] or 0)
-            quantity = kg_to_mt_display(row["qty"])
+            quantity = round_mt(row["qty"])
             data.append(
                 {
                     "company": row["company"],
@@ -104,7 +104,7 @@ class BusinessAggregationService:
             },
             "unit": QUANTITY_UNIT,
             "totalCompanies": len(data),
-            "grandTotalQuantity": kg_to_mt_display(kg_total),
+            "grandTotalQuantity": round_mt(kg_total),
             "data": data,
         }
 
@@ -187,7 +187,7 @@ class BusinessAggregationService:
         )
         items = []
         for row in detail["items"]:
-            quantity = kg_to_mt_display(row["quantity"])
+            quantity = round_mt(row["quantity"])
             items.append(
                 {
                     "srNo": row["srNo"],
@@ -200,7 +200,7 @@ class BusinessAggregationService:
                     "contributionPct": row["contributionPct"],
                 }
             )
-        header_qty = kg_to_mt_display(header["qty"])
+        header_qty = round_mt(header["qty"])
         return {
             "period": period_block,
             "company": header["company"],

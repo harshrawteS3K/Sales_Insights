@@ -119,7 +119,7 @@ class ValidationMixin:
                     qty,
                 )
                 continue
-            applied_unit = row_unit or source_unit or "KG"
+            applied_unit = row_unit or source_unit or "MT"
             qty_disp = format_quantity(qty_val)
             logger.info("DB Value:\n{}", qty_val)
             customer = str(raw.get("customer_name") or raw.get("customer") or "").strip()

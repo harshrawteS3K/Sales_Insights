@@ -152,14 +152,14 @@ def run_stock(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: Any) -
                 quantity=None,
                 originals={
                     "customer": "Particulars",
-                    "product": "Stock Item Register title",
-                    "quantity": "Outwards Quantity",
+                    "product": "Product title above register",
+                    "quantity": "Qty. Out / Outwards Quantity",
                 },
                 method="stock_item_register",
                 field_conf=field_conf,
             ),
             sheet_name=sheet_name,
-            reason="Stock Item Register, Particulars, and Outwards",
+            reason="Particulars with Outwards or Qty. Out sales quantity",
         )
 
     return _guard("stock_item_register", sheet_name, _run)

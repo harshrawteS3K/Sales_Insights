@@ -25,7 +25,7 @@ from app.services.erp_ingest.constants import (
 )
 from app.services.report_service import DUPLICATE_SUBMISSION_MESSAGE
 from app.utils.hashing import build_sales_row_hash
-from app.utils.quantity import format_quantity, kg_to_mt_display, parse_quantity
+from app.utils.quantity import format_quantity, parse_quantity, round_mt, to_mt
 
 class PreviewMixin:
     def _log_email_job(self, email: Any, attachment_summary: List[Dict[str, Any]], merged_rows: List[Dict[str, Any]]) -> None:
@@ -223,12 +223,22 @@ class PreviewMixin:
                 details={"attachment_summary": attachment_summary},
             )
 
+        source_unit = str(
+            getattr(email, "parsed_unit", None) or "MT"
+        ).strip() or "MT"
         for row in merged_rows:
             if not isinstance(row, dict):
                 continue
-            row["sales_quantity_mt"] = kg_to_mt_display(row.get("sales_quantity"))
+            row_unit = str(row.get("original_unit") or row.get("unit") or source_unit).strip() or source_unit
+            try:
+                mt_val = to_mt(row.get("sales_quantity") or 0, source_unit=row_unit)
+            except Exception:
+                mt_val = 0
+            row["sales_quantity_mt"] = round_mt(mt_val)
             row["unit"] = "MT"
+            row["original_unit"] = row_unit.upper()
         preview["rows"] = merged_rows
+        preview["source_unit"] = source_unit.upper()
         preview["row_count"] = len(merged_rows)
         if confidences and preview.get("confidence"):
             preview["confidence"]["overall"] = min(confidences)
@@ -318,7 +328,14 @@ class PreviewMixin:
             preview["incremental_analysis"] = public_plan(
                 analyse_rows(
                     merged_rows,
-                    load_existing(self.db, int(preview["distributor_id"])),
+                    load_existing(
+                        self.db,
+                        int(preview["distributor_id"]),
+                        location=str(email.parsed_location or ""),
+                        segment=str(email.parsed_segment or ""),
+                    ),
+                    location=str(email.parsed_location or ""),
+                    segment=str(email.parsed_segment or ""),
                 )
             )
             preview["duplicate_review"] = None
@@ -341,7 +358,10 @@ class PreviewMixin:
             elif scored < 70:
                 email.process_status = EmailProcessStatus.HUMAN_REVIEW.value
                 email.error_message = None
-            elif int((preview.get("incremental_analysis") or {}).get("modified_count") or 0) > 0:
+            elif str((preview.get("incremental_analysis") or {}).get("status") or "") in {
+                "confirm_add",
+                "human_review",
+            } or int((preview.get("incremental_analysis") or {}).get("modified_count") or 0) > 0:
                 email.process_status = EmailProcessStatus.INCREMENTAL_REVIEW.value
                 email.error_message = None
             else:

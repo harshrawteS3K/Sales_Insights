@@ -299,6 +299,7 @@ export const EmailsService = {
     }>;
     replace_existing?: boolean;
     row_decisions?: Array<{ row_index: number; action: 'replace' | 'keep' | 'add' }>;
+    confirm_add?: boolean;
   }): Promise<ERPImportResult> => {
     const res = await apiRequest<{ success: boolean; data: ERPImportResult }>('/erp/import', {
       method: 'POST',

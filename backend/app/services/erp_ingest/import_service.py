@@ -46,8 +46,9 @@ class ImportMixin:
         overall: float,
         replace_existing: bool = False,
         row_decisions: Optional[List[Dict[str, Any]]] = None,
+        confirm_add: bool = False,
     ) -> Dict[str, Any]:
-        """Persist rows. Modified rows wait for a reviewer decision and write nothing."""
+        """Persist rows. Duplicate scope returns a review payload and writes nothing."""
         path = Path(att.file_path)
         by_period = self._rows_by_period(
             use_rows,
@@ -86,6 +87,7 @@ class ImportMixin:
                 overall=overall,
                 row_decisions=row_decisions,
                 source_unit=source_unit,
+                confirm_add=confirm_add,
             )
         if review and replace_existing:
             for hit in hits:
@@ -190,7 +192,8 @@ class ImportMixin:
         fiscal_year_start: Optional[int],
         overall: float,
         row_decisions: Optional[List[Dict[str, Any]]],
-        source_unit: str = "KG",
+        source_unit: str = "MT",
+        confirm_add: bool = False,
     ) -> Dict[str, Any]:
         """Insert new rows, skip exact copies, and apply reviewer choices for changes."""
         from decimal import Decimal
@@ -198,6 +201,7 @@ class ImportMixin:
         from app.models.sales_record import SalesRecord
         from app.services.incremental_upload import (
             ADD,
+            CONFIRM_ADD_MESSAGE,
             KEEP,
             analyse_rows,
             decision_map,
@@ -209,13 +213,23 @@ class ImportMixin:
         )
         from app.utils.quantity import format_quantity
 
-        existing = load_existing(self.db, distributor_id)
-        plan = analyse_rows(use_rows, existing)
+        existing = load_existing(
+            self.db,
+            distributor_id,
+            location=location,
+            segment=segment,
+        )
+        plan = analyse_rows(
+            use_rows,
+            existing,
+            location=location,
+            segment=segment,
+        )
         shown = public_plan(plan)
-        if needs_review(plan, row_decisions):
+        if needs_review(plan, row_decisions, confirm_add=confirm_add):
             shown_review = {
                 "detected": True,
-                "message": shown["recommendation"],
+                "message": CONFIRM_ADD_MESSAGE,
                 "distributor": company,
                 "financial_year": "",
                 "quarter": "",
@@ -237,7 +251,7 @@ class ImportMixin:
             }
 
         chosen = decision_map(row_decisions)
-        replacements = rows_for_replace(plan, row_decisions)
+        replacements = rows_for_replace(plan, row_decisions, confirm_add=confirm_add)
         updated = 0
         for change in replacements:
             record = self.db.get(SalesRecord, int(change["existing_id"]))
@@ -292,7 +306,12 @@ class ImportMixin:
         if updated:
             self.db.flush()
 
-        insert_rows = rows_for_insert(use_rows, plan, row_decisions)
+        insert_rows = rows_for_insert(
+            use_rows,
+            plan,
+            row_decisions,
+            confirm_add=confirm_add,
+        )
         _ = by_period
         if not insert_rows and updated == 0:
             self.audit.log(
@@ -329,7 +348,7 @@ class ImportMixin:
             quarter="",
             segment=segment,
             location=location,
-            source_unit=source_unit or "KG",
+            source_unit=source_unit or "MT",
         ) if insert_rows else {}
         total_inserted = 0
         last_report = None
@@ -402,6 +421,7 @@ class ImportMixin:
         fiscal_year_start: Optional[int] = None,
         replace_existing: bool = False,
         row_decisions: Optional[List[Dict[str, Any]]] = None,
+        confirm_add: bool = False,
     ) -> Dict[str, Any]:
         """Persist approved ERP rows after accuracy + mapping review.
 
@@ -591,6 +611,7 @@ class ImportMixin:
                 overall=min(qualities) if qualities else 0.0,
                 replace_existing=replace_existing,
                 row_decisions=row_decisions,
+                confirm_add=confirm_add,
             )
             inserted = int(saved.get("inserted") or 0)
             was_dup = bool(saved.get("was_dup"))

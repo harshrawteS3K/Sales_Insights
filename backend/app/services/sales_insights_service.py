@@ -17,6 +17,7 @@ from app.models.sales_record import SalesRecord
 from app.repositories.sales_record_repository import (
     SalesRecordRepository,
     company_expr,
+    mt_quantity_expr,
     reporting_month_expr,
 )
 from app.utils.period_calendar import (
@@ -34,7 +35,7 @@ from app.utils.period_calendar import (
 )
 from app.core.logging import get_logger
 from app.services.analytics_aggregation import AnalyticsFilter, align_quantities, log_integrity
-from app.utils.quantity import format_mt, kg_to_mt_display, round_mt
+from app.utils.quantity import format_mt, round_mt
 
 logger = get_logger(__name__)
 
@@ -796,7 +797,7 @@ class SalesInsightsService:
 
         kpi_q = self._with_filter(
             select(
-                func.coalesce(func.sum(SalesRecord.quantity), 0),
+                func.coalesce(func.sum(mt_quantity_expr()), 0),
                 func.count(func.distinct(SalesRecord.customer_name)),
                 func.count(func.distinct(SalesRecord.product)),
             )
@@ -808,7 +809,7 @@ class SalesInsightsService:
         )
         total_kg, total_customers, total_products = self.db.execute(kpi_q).one()
         total_kg_f = _to_float(total_kg)
-        total_qty_f = kg_to_mt_display(total_kg_f)
+        total_qty_f = round_mt(total_kg_f)
         n_quarters = max(len(axis_months), 1)
         avg_monthly = total_qty_f / n_quarters
 
@@ -818,7 +819,7 @@ class SalesInsightsService:
                 Report.name,
                 SalesRecord.period,
                 Report.reporting_month,
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -859,13 +860,13 @@ class SalesInsightsService:
         top_q = self._with_filter(
             select(
                 SalesRecord.customer_name,
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .group_by(SalesRecord.customer_name)
-            .order_by(func.sum(SalesRecord.quantity).desc()),
+            .order_by(func.sum(mt_quantity_expr()).desc()),
             filt,
             **scope_kw,
         )
@@ -896,13 +897,13 @@ class SalesInsightsService:
         prod_q = self._with_filter(
             select(
                 SalesRecord.product,
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
             .join(Distributor, Distributor.id == SalesRecord.distributor_id)
             .group_by(SalesRecord.product)
-            .order_by(func.sum(SalesRecord.quantity).desc()),
+            .order_by(func.sum(mt_quantity_expr()).desc()),
             filt,
             **scope_kw,
         )
@@ -955,7 +956,7 @@ class SalesInsightsService:
                 SalesRecord.product,
                 SalesRecord.location,
                 reporting_month_expr().label("month"),
-                SalesRecord.quantity.label("qty"),
+                mt_quantity_expr().label("qty"),
                 company_expr().label("distributor"),
             )
             .select_from(SalesRecord)
@@ -969,7 +970,7 @@ class SalesInsightsService:
         )
         table_rows = []
         for customer_name, product_name, location, month, qty_kg, distributor in self.db.execute(rows_q).all():
-            quantity_mt = kg_to_mt_display(qty_kg)
+            quantity_mt = round_mt(qty_kg)
             table_rows.append(
                 {
                     "customer": str(customer_name or ""),
@@ -1050,7 +1051,7 @@ class SalesInsightsService:
                 SalesRecord.product,
                 SalesRecord.location,
                 reporting_month_expr().label("month"),
-                SalesRecord.quantity.label("qty"),
+                mt_quantity_expr().label("qty"),
                 company_expr().label("distributor"),
             )
             .select_from(SalesRecord)
@@ -1067,7 +1068,7 @@ class SalesInsightsService:
                 "Product": str(p or ""),
                 "Location": str(loc or ""),
                 "Quarter": format_period_display(str(m or "")),
-                "Sales Quantity (MT)": kg_to_mt_display(q),
+                "Sales Quantity (MT)": round_mt(q),
                 "Distributor": str(d or ""),
             }
             for c, p, loc, m, q, d in self.db.execute(rows_q).all()
