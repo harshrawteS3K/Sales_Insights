@@ -330,6 +330,7 @@ class ReportService:
                 row.product,
                 row.quantity,
                 reporting_month,
+                getattr(row, "source_month", None) or "",
             )
 
         return (

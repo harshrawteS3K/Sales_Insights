@@ -132,6 +132,14 @@ class ValidationMixin:
             if not period:
                 continue
             source_month = str(raw.get("source_month") or "").strip()
+            if not source_month:
+                # Derive calendar month from transaction date so PDF months never collapse.
+                from app.services.incremental_upload import transaction_date_of
+
+                derived = transaction_date_of(raw)
+                if derived:
+                    source_month = derived
+                    raw["source_month"] = derived
             existing = next(
                 (
                     r

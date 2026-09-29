@@ -16,7 +16,12 @@ from sqlalchemy.orm import Session
 from app.core.logging import get_logger
 from app.models.report import Report
 from app.models.sales_record import SalesRecord
-from app.utils.period_calendar import fy_short_display, parse_quarter_label
+from app.utils.period_calendar import (
+    fy_short_display,
+    month_label,
+    parse_month_label,
+    parse_quarter_label,
+)
 
 logger = get_logger(__name__)
 
@@ -40,12 +45,59 @@ def financial_year_of(period: str) -> str:
 
 
 def transaction_date_of(row: Mapping[str, Any]) -> str:
-    return str(
-        row.get("source_month")
-        or row.get("transaction_date")
-        or row.get("period")
-        or ""
-    ).strip()
+    """Calendar month/date key for monthly sales identity.
+
+    Never falls back to FY quarter/period labels — that wrongly collapses
+    June/July/August (same customer+product+qty) into one duplicate.
+    """
+    source = str(row.get("source_month") or "").strip()
+    if source:
+        parsed = parse_month_label(source)
+        if parsed:
+            return month_label(parsed[0], parsed[1])
+        return source
+
+    for key in ("transaction_date", "date", "invoice_date", "voucher_date"):
+        raw = row.get(key)
+        if raw is None or raw == "":
+            continue
+        text = str(raw).strip()
+        month_hit = parse_month_label(text)
+        if month_hit:
+            return month_label(month_hit[0], month_hit[1])
+        # ISO or day-month-year → calendar month label
+        try:
+            from datetime import date, datetime
+
+            if isinstance(raw, datetime):
+                return month_label(raw.month, raw.year)
+            if isinstance(raw, date):
+                return month_label(raw.month, raw.year)
+        except Exception:
+            pass
+        import re
+
+        iso = re.match(r"^(\d{4})-(\d{2})-(\d{2})", text)
+        if iso:
+            return month_label(int(iso.group(2)), int(iso.group(1)))
+        named = re.match(
+            r"^(\d{1,2})[-/\s.]([A-Za-z]{3,9})[-/\s.](\d{2,4})$",
+            text,
+        )
+        if named:
+            months = {
+                "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+                "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+                "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+                "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+            }
+            month = months.get(named.group(2).lower()[:3]) or months.get(named.group(2).lower())
+            year = int(named.group(3))
+            if year < 100:
+                year += 2000
+            if month:
+                return month_label(month, year)
+    return ""
 
 
 def _qty(value: Any) -> Decimal:
