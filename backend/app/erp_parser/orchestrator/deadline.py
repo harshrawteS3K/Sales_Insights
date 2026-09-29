@@ -12,11 +12,12 @@ T = TypeVar("T")
 # Ceilings sit above a normal multi-sheet ERP pass so a valid workbook is not
 # cut off, and well below an unbounded wait. The structure analyzer stays at 10s.
 STAGE_LIMIT_SECONDS = {
-    "loader": 15.0,
-    "fingerprint": 5.0,
-    "classifier": 5.0,
-    "scoring": 20.0,
-    "llm": 10.0,
+    "loader": 45.0,
+    "fingerprint": 10.0,
+    "classifier": 10.0,
+    "scoring": 90.0,
+    # Enough for 1–3 candidate sheets with Bedrock structure assist.
+    "llm": 45.0,
 }
 
 HUMAN_REVIEW_TIMEOUT = "Human Review Required\n\nReason : Parser Timeout"

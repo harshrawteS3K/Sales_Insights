@@ -13,6 +13,8 @@
     "consignee",
     "consignee name",
     "name of customer",
+    "name of the party",
+    "name of party",
     "particulars",
     "particular",
     "sold to",
@@ -26,6 +28,8 @@
     "item",
     "item code",
     "item name",
+    "name of the item",
+    "name of item",
     "item description",
     "material",
     "material description",
@@ -60,12 +64,18 @@
     "net qty",
     "net quantity",
     "net movement",
+    "actual quantity",
+    "actual qty",
+    "actual qty.",
     "billed qty",
     "billed quantity",
     "qty kg",
     "quantity kg",
     "bags moved",
     "movement",
-    "outwards"
+    "outwards",
+    "total qty",
+    "total quantity",
+    "total"
   ]
 }

@@ -22,7 +22,7 @@ from app.erp_parser.orchestrator.detector import fingerprint_sheet
 from app.erp_parser.orchestrator.confidence_engine import decision_band, score_extraction
 from app.erp_parser.orchestrator.deadline import HUMAN_REVIEW_TIMEOUT, StageTimeout, run_bounded
 from app.erp_parser.orchestrator.fingerprint import build_fingerprint
-from app.erp_parser.orchestrator.structure import STRUCTURE_PROMPT, extract_with_layout
+from app.erp_parser.orchestrator.structure import extract_with_layout
 from app.erp_parser.orchestrator.types import ParserResult
 from app.erp_parser.orchestrator.versions import parser_version
 from app.erp_parser.workbook_lifecycle import open_workbook_once
@@ -35,7 +35,163 @@ _COULD_NOT_MAP = (
     "Please verify the ERP export has recognizable headers."
 )
 
-SEMANTIC_PROMPT = STRUCTURE_PROMPT
+SEMANTIC_PROMPT = """You are an ERP document structure analyzer.
+
+You will receive sheet metadata, header cells, optional title/metadata rows above the table, and at most 5 sample data rows.
+Do not invent values. Do not invent column names that are absent from the headers.
+Do not extract customer/product/quantity cell values — only identify which columns (and optional title) map to them.
+
+Return JSON only:
+{
+  "layout_type": "standard_header",
+  "customer_column": "",
+  "product_column": "",
+  "quantity_column": "",
+  "product_header_row": null,
+  "month_header_row": null,
+  "ignore_columns": [],
+  "grouping": "",
+  "parser_hint": "header",
+  "confidence": 0,
+  "is_sales_table": true,
+  "product_from_title": ""
+}
+
+customer_column, product_column, and quantity_column must be exact header strings from the provided headers (or null).
+layout_type must be one of: standard_header, matrix_month, cross_product_matrix, stock_item_register, metadata, product_blocks, unknown.
+parser_hint must be one of: header, matrix_month, cross_product_matrix, stock_item_register, metadata, product_blocks.
+When both inbound and outbound quantity columns exist (e.g. Qty. In and Qty. Out), quantity_column must be the outbound/sales quantity — never Qty. In.
+If a title above the table names the product and there is no product column, set product_from_title to that exact title text.
+Confidence 0-100. Use null when uncertain.
+"""
+
+
+def _sheet_has_usable_data(sheet: Dict[str, Any]) -> bool:
+    """True when a worksheet has enough non-empty structure to try LLM assist."""
+    matrix = sheet.get("matrix") or []
+    if not matrix:
+        return False
+    non_empty = sum(1 for row in matrix if any(cell not in (None, "") for cell in row))
+    if non_empty < 2:
+        return False
+    from app.erp_parser.sheet_detector import score_sheet
+
+    return score_sheet(matrix) >= 10 or non_empty >= 3
+
+
+def _mapping_incomplete(result: Optional[ParserResult]) -> bool:
+    """True when Customer / Product / Quantity cannot be trusted from the deterministic result."""
+    if result is None:
+        return True
+    if result.rows:
+        from app.erp_parser.orchestrator.confidence_engine import _qty_ok
+
+        total = len(result.rows)
+        missing_c = sum(1 for row in result.rows if not str(row.get("customer_name") or "").strip())
+        missing_p = sum(1 for row in result.rows if not str(row.get("product") or "").strip())
+        missing_q = sum(1 for row in result.rows if not _qty_ok(row))
+        if missing_c > total * 0.25 or missing_p > total * 0.25 or missing_q > total * 0.25:
+            return True
+        return False
+    from app.erp_parser.parser_service import _mapping_complete
+
+    positions = (result.mapped or {}).get("positions") or {}
+    qty_cols = (result.mapped or {}).get("quantity_columns") or []
+    return not _mapping_complete(positions, qty_cols)
+
+
+def _needs_llm_fallback(
+    winner: Optional[ParserResult],
+    sheets: Sequence[Dict[str, Any]],
+    classification: Any,
+) -> tuple[bool, str]:
+    """
+    Decide whether Bedrock structure assist must run.
+
+    Accuracy 0 / missing mapping / low confidence with usable sheet data → True.
+    High-confidence complete deterministic results → False.
+    """
+    usable = [item for item in sheets if _sheet_has_usable_data(item)]
+    if not usable:
+        return False, ""
+
+    if winner is None:
+        return True, "no_valid_layout"
+    if not winner.rows:
+        return True, "zero_rows"
+
+    conf = float(winner.confidence or 0)
+    from app.erp_parser.parser_service import LLM_FALLBACK_THRESHOLD
+
+    # Existing threshold (85): complete deterministic results at/above it skip LLM.
+    # Accuracy 0 / low scores with usable sheet data always get a Bedrock chance.
+    if conf < LLM_FALLBACK_THRESHOLD:
+        if conf <= 0:
+            return True, "zero_accuracy"
+        if conf < 70:
+            return True, "low_accuracy"
+        return True, "low_confidence"
+
+    if _mapping_incomplete(winner):
+        return True, "incomplete_mapping"
+
+    positions = (winner.mapped or {}).get("positions") or {}
+    qty_cols = (winner.mapped or {}).get("quantity_columns") or []
+    field_conf = (winner.mapped or {}).get("confidences") or {}
+    if winner.parser_name == "header":
+        if positions.get("customer") is None:
+            return True, "missing_customer"
+        if positions.get("product") is None:
+            return True, "missing_product"
+        if positions.get("quantity") is None and not qty_cols:
+            return True, "missing_quantity"
+        for field, reason in (
+            ("customer", "missing_customer"),
+            ("product", "missing_product"),
+            ("quantity", "missing_quantity"),
+        ):
+            if float(field_conf.get(field) or 100) < 70:
+                return True, reason
+
+    # Multi-sheet: usable data elsewhere but no strong deterministic match overall.
+    if len(usable) > 1 and conf < 90 and not fingerprint_matched(classification):
+        return True, "multi_sheet_uncertain"
+
+    return False, ""
+
+
+def _llm_candidate_sheets(
+    sheets: Sequence[Dict[str, Any]],
+    winner: Optional[ParserResult],
+) -> List[Dict[str, Any]]:
+    """Rank candidate worksheets for LLM assist (best tabular signal first)."""
+    from app.erp_parser.sheet_detector import score_sheet
+
+    usable = [item for item in sheets if _sheet_has_usable_data(item)]
+    ranked = sorted(
+        usable,
+        key=lambda item: score_sheet(item.get("matrix") or []),
+        reverse=True,
+    )
+    if winner and winner.sheet_name:
+        preferred = [item for item in ranked if item.get("sheet_name") == winner.sheet_name]
+        others = [item for item in ranked if item.get("sheet_name") != winner.sheet_name]
+        ranked = preferred + others
+    return ranked[:3]
+
+
+def _should_accept_llm(
+    llm_result: Optional[ParserResult],
+    winner: Optional[ParserResult],
+) -> bool:
+    """Accept a validated LLM mapping when deterministic result is absent or weaker."""
+    if llm_result is None or not llm_result.rows:
+        return False
+    if winner is None or not winner.rows:
+        return True
+    if _mapping_incomplete(winner) and not _mapping_incomplete(llm_result):
+        return True
+    return float(llm_result.confidence or 0) >= float(winner.confidence or 0)
 
 
 def _matching_profile(digest: str, known_profiles: Optional[Sequence[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
@@ -261,65 +417,133 @@ class UniversalParserOrchestrator:
                 )
             return chosen
 
+        scoring_timed_out = False
         try:
             winner = run_bounded("scoring", _select)
         except StageTimeout:
-            logger.info(
-                "{}\nFingerprint : {}",
-                HUMAN_REVIEW_TIMEOUT,
+            # Do not abandon usable workbooks before LLM fallback has a chance.
+            scoring_timed_out = True
+            winner = None
+            logger.warning(
+                "Deterministic scoring timed out; attempting LLM fallback | fingerprint={}",
                 fingerprint.digest,
             )
-            raise ExcelProcessingError(HUMAN_REVIEW_TIMEOUT) from None
 
         llm_tokens = 0
         llm_reason = ""
         mapping_source = "python"
-        if (
-            winner is not None
-            and allow_llm_fallback
-            and decision_band(winner.confidence) == "llm"
-            and sheets
-        ):
-            weakest = min(sheets, key=lambda item: len(item["matrix"]))
-            llm_reason = "Unknown ERP Layout" if classification.parser_name == "unknown" else (
-                f"Low confidence {PARSER_LABEL.get(winner.parser_name, winner.parser_name)}"
+        need_llm, fallback_reason = _needs_llm_fallback(winner, sheets, classification)
+        if scoring_timed_out and any(_sheet_has_usable_data(item) for item in sheets):
+            need_llm = True
+            fallback_reason = fallback_reason or "scoring_timeout"
+
+        if allow_llm_fallback and need_llm and sheets:
+            det_conf = float(winner.confidence or 0) if winner is not None else 0.0
+            llm_reason = (
+                "Unknown ERP Layout"
+                if classification.parser_name == "unknown"
+                else (
+                    f"Low confidence {PARSER_LABEL.get(winner.parser_name, winner.parser_name)}"
+                    if winner is not None
+                    else "No valid deterministic layout"
+                )
             )
-            try:
-                llm_result, llm_tokens = run_bounded(
-                    "llm",
-                    lambda: self._semantic_resolve(
-                        weakest,
-                        reason=llm_reason,
-                        run_kwargs=run_kwargs,
-                        score_kwargs=score_kwargs,
-                        sheet_candidates=run_sheet_candidates(
-                            weakest["matrix"],
-                            weakest["sheet_name"],
-                            **run_kwargs,
+            llm_sheets = _llm_candidate_sheets(sheets, winner)
+            llm_result: Optional[ParserResult] = None
+            accepted = False
+            for llm_sheet in llm_sheets:
+                logger.info(
+                    "LLM Fallback Triggered | file={} | sheet={} | reason={} | "
+                    "accuracy={} | deterministic_confidence={}",
+                    file_path.name,
+                    llm_sheet.get("sheet_name"),
+                    fallback_reason,
+                    int(round(det_conf)),
+                    round(det_conf, 1),
+                )
+                try:
+                    llm_result, llm_tokens = run_bounded(
+                        "llm",
+                        lambda sheet=llm_sheet: self._semantic_resolve(
+                            sheet,
+                            reason=llm_reason,
+                            run_kwargs=run_kwargs,
+                            score_kwargs=score_kwargs,
+                            sheet_candidates=run_sheet_candidates(
+                                sheet["matrix"],
+                                sheet["sheet_name"],
+                                **run_kwargs,
+                            ),
+                            fingerprint=fingerprint,
                         ),
-                        fingerprint=fingerprint,
-                    ),
+                    )
+                except StageTimeout:
+                    logger.warning(
+                        "LLM Structure Assist unavailable | human review | fingerprint={} | sheet={}",
+                        fingerprint.digest,
+                        llm_sheet.get("sheet_name"),
+                    )
+                    llm_result = None
+                    continue
+
+                mapped = (llm_result.mapped or {}) if llm_result is not None else {}
+                llm_conf = float(
+                    (mapped.get("llm_confidence") if mapped else None)
+                    or (llm_result.confidence if llm_result is not None else 0)
+                    or 0
                 )
-            except StageTimeout:
-                logger.warning(
-                    "LLM Structure Assist unavailable | human review | fingerprint={}",
-                    fingerprint.digest,
+                model_name = (
+                    getattr(llm_result, "llm_model", None) if llm_result is not None else None
+                ) or ""
+                final_map = {
+                    "customer": (mapped.get("originals") or {}).get("customer"),
+                    "product": (mapped.get("originals") or {}).get("product"),
+                    "quantity": (mapped.get("originals") or {}).get("quantity"),
+                }
+                rows_n = len(llm_result.rows) if llm_result is not None else 0
+                if _should_accept_llm(llm_result, winner):
+                    assert llm_result is not None
+                    llm_result.llm_used = True
+                    llm_result.llm_tokens = llm_tokens
+                    llm_result.llm_reason = f"{llm_reason} ({fallback_reason})"
+                    winner = llm_result
+                    mapping_source = "llm"
+                    accepted = True
+                    logger.info(
+                        "LLM Fallback Triggered | result=accepted | file={} | sheet={} | "
+                        "reason={} | selected_model={} | llm_confidence={} | "
+                        "final_mapping={} | rows_extracted={}",
+                        file_path.name,
+                        llm_sheet.get("sheet_name"),
+                        fallback_reason,
+                        model_name,
+                        round(llm_conf, 1),
+                        final_map,
+                        rows_n,
+                    )
+                    break
+
+                logger.info(
+                    "LLM Fallback Triggered | result=rejected | file={} | sheet={} | "
+                    "reason={} | selected_model={} | llm_confidence={} | "
+                    "final_mapping={} | rows_extracted={}",
+                    file_path.name,
+                    llm_sheet.get("sheet_name"),
+                    fallback_reason,
+                    model_name,
+                    round(llm_conf, 1),
+                    final_map,
+                    rows_n,
                 )
-                if winner is not None:
-                    winner.llm_reason = llm_reason or "Bedrock unavailable"
+
+            if not accepted and winner is not None:
+                winner.llm_used = True
+                winner.llm_tokens = llm_tokens
+                winner.llm_reason = llm_reason or "Bedrock unavailable"
+                if scoring_timed_out or llm_result is None:
                     winner.warnings.append(
                         "Human review required. Structure assist was unavailable."
                     )
-            if llm_result is not None and llm_result.confidence > winner.confidence:
-                llm_result.llm_used = True
-                llm_result.llm_tokens = llm_tokens
-                llm_result.llm_reason = llm_reason
-                winner = llm_result
-                mapping_source = "llm"
-            else:
-                winner.llm_used = True
-                winner.llm_tokens = llm_tokens
-                winner.llm_reason = llm_reason
 
         if winner is None or not winner.rows:
             logger.info(
@@ -405,8 +629,17 @@ class UniversalParserOrchestrator:
         raw_matrices: Optional[Dict[str, Any]] = None,
         sheet_names: Optional[Sequence[str]] = None,
     ) -> Optional[ParserResult]:
+        from app.erp_parser.sheet_detector import score_sheet
+
+        # Inspect every worksheet. Higher-scoring sheets first so a valid
+        # "Data" tab is not starved when earlier cover sheets are empty/noisy.
+        ordered = sorted(
+            sheets,
+            key=lambda item: score_sheet(item.get("matrix") or []),
+            reverse=True,
+        )
         per_sheet: List[ParserResult] = []
-        for sheet in sheets:
+        for sheet in ordered:
             found = run_sheet_candidates(
                 sheet["matrix"],
                 sheet["sheet_name"],
@@ -421,8 +654,21 @@ class UniversalParserOrchestrator:
             if best is not None:
                 if hint:
                     best.reason = f"{hint}. {best.reason}"
+                best.sheet_score = max(
+                    float(best.sheet_score or 0),
+                    score_sheet(sheet.get("matrix") or []),
+                )
                 per_sheet.append(best)
-        merged = _merge_sheets(per_sheet, **score_kwargs)
+                logger.info(
+                    "Sheet candidate | sheet={} | parser={} | rows={} | confidence={}",
+                    best.sheet_name,
+                    best.parser_name,
+                    len(best.rows),
+                    round(float(best.confidence or 0), 1),
+                )
+
+        # One best worksheet for standard layouts (do not merge unrelated sheets).
+        best_sheet = _best(per_sheet)
         monthly: Optional[ParserResult] = None
         if only in (None, "monthly_product_sheets"):
             monthly = run_monthly_sheets(
@@ -434,7 +680,7 @@ class UniversalParserOrchestrator:
             _score(monthly, **score_kwargs)
             if not monthly.rows:
                 monthly = None
-        options = [item for item in (merged, monthly) if item is not None and item.rows]
+        options = [item for item in (best_sheet, monthly) if item is not None and item.rows]
         return _best(options)
 
     def _semantic_resolve(
@@ -458,20 +704,29 @@ class UniversalParserOrchestrator:
         header_row = list(matrix[header_idx]) if matrix else []
         headers = [str(cell).strip() for cell in header_row if _textish(cell)][:15]
         samples: List[List[str]] = []
-        width = len(header_row)
+        width = max(len(header_row), max((len(row) for row in matrix), default=0))
         for row in matrix[header_idx + 1 :]:
             if not any(cell not in (None, "") for cell in row):
                 continue
             samples.append(["" if cell is None else str(cell)[:80] for cell in list(row)[:width]])
             if len(samples) >= 5:
                 break
+        title_rows: List[List[str]] = []
+        for row in matrix[:header_idx]:
+            texts = [str(cell).strip()[:80] for cell in row if _textish(cell)]
+            if texts:
+                title_rows.append(texts[:8])
+            if len(title_rows) >= 5:
+                break
         stats = {
             "sheet_name": sheet["sheet_name"],
             "row_count": len(matrix),
             "column_count": max((len(row) for row in matrix), default=0),
             "non_empty_rows": sum(1 for row in matrix if any(cell not in (None, "") for cell in row)),
+            "detected_headers": headers,
+            "title_rows": title_rows,
         }
-        resolver = LLMHeaderResolver(timeout=10)
+        resolver = LLMHeaderResolver(timeout=30)
         started_llm = time.perf_counter()
         try:
             llm = resolver.resolve_headers(
@@ -486,6 +741,7 @@ class UniversalParserOrchestrator:
                     "sheet_names": [sheet["sheet_name"]],
                     "merged_cells": int(getattr(fingerprint, "merged_cells", 0) or 0),
                     "reason": reason,
+                    "title_rows": title_rows,
                 },
             )
         except LLMHeaderResolverError as exc:
@@ -499,22 +755,39 @@ class UniversalParserOrchestrator:
         prompt_tokens = int(getattr(resolver, "last_prompt_tokens", 0) or 0)
         completion_tokens = int(getattr(resolver, "last_completion_tokens", 0) or 0)
         from app.llm.model_registry import display_name_for
-
-        logger.info(
-            "LLM Structure Assist\n\nReason : {}\n\nModel : {}\nInput Tokens : {}\nOutput Tokens : {}\nReturned Layout : {}\nDuration : {:.2f} sec",
-            reason,
-            display_name_for(getattr(resolver, "last_model_id", None)),
-            prompt_tokens,
-            completion_tokens,
-            llm.get("layout_type") or llm.get("parser_hint") or "",
-            time.perf_counter() - started_llm,
-        )
         from app.erp_parser.parser_service import (
+            LLM_MIN_TRUST,
             _apply_llm_column_map,
             _find_header_row_for_llm_labels,
             _mapping_complete,
         )
         from app.erp_parser.row_extractor import extract_rows
+
+        model_label = display_name_for(getattr(resolver, "last_model_id", None))
+        llm_conf = float(llm.get("confidence") or 0)
+        logger.info(
+            "LLM Structure Assist\n\nReason : {}\n\nModel : {}\nInput Tokens : {}\nOutput Tokens : {}\nReturned Layout : {}\nLLM Confidence : {}\nDuration : {:.2f} sec",
+            reason,
+            model_label,
+            prompt_tokens,
+            completion_tokens,
+            llm.get("layout_type") or llm.get("parser_hint") or "",
+            int(round(llm_conf)),
+            time.perf_counter() - started_llm,
+        )
+        if llm.get("is_sales_table") is False:
+            logger.info(
+                "LLM Semantic Resolver rejected sheet as non-sales | sheet={}",
+                sheet["sheet_name"],
+            )
+            return None, tokens
+        if llm_conf < LLM_MIN_TRUST:
+            logger.info(
+                "LLM Semantic Resolver confidence below trust floor | llm={} | sheet={}",
+                llm_conf,
+                sheet["sheet_name"],
+            )
+            return None, tokens
 
         hinted = extract_with_layout(
             sheet,
@@ -530,13 +803,64 @@ class UniversalParserOrchestrator:
             use_idx = header_idx
         use_header = list(matrix[use_idx]) if matrix else header_row
         remapped = _apply_llm_column_map(use_header, llm, python_mapped={})
+
+        # Reject hallucinated column labels that do not exist on the worksheet.
+        for field, key in (
+            ("customer", "customer_column"),
+            ("product", "product_column"),
+            ("quantity", "quantity_column"),
+        ):
+            label = llm.get(key)
+            if label and remapped["positions"].get(field) is None:
+                logger.warning(
+                    "LLM Semantic Resolver rejected hallucinated column | field={} | label={} | sheet={}",
+                    field,
+                    label,
+                    sheet["sheet_name"],
+                )
+                return None, tokens
+
+        title_product = str(llm.get("product_from_title") or "").strip()
         extracted_result: Optional[ParserResult] = None
-        if _mapping_complete(remapped["positions"], remapped.get("quantity_columns") or []):
+        positions = dict(remapped["positions"])
+        work_matrix: Sequence[Sequence[Any]] = matrix
+        if title_product and positions.get("product") is None and positions.get("customer") is not None:
+            # extract_rows requires a product column index — inject title as a constant column.
+            expanded = [list(row) for row in matrix]
+            prod_col = max((len(row) for row in expanded), default=0)
+            for idx, row in enumerate(expanded):
+                while len(row) <= prod_col:
+                    row.append(None)
+                if idx == use_idx:
+                    row[prod_col] = "Product"
+                elif idx > use_idx:
+                    row[prod_col] = title_product
+            work_matrix = expanded
+            positions["product"] = prod_col
+            remapped = {
+                **remapped,
+                "positions": positions,
+                "originals": {
+                    **(remapped.get("originals") or {}),
+                    "product": title_product,
+                },
+                "confidences": {
+                    **(remapped.get("confidences") or {}),
+                    "product": llm_conf,
+                },
+                "methods": {
+                    **(remapped.get("methods") or {}),
+                    "product": "llm_title",
+                },
+            }
+
+        mapping_ok = _mapping_complete(positions, remapped.get("quantity_columns") or [])
+        if mapping_ok:
             try:
                 extracted = extract_rows(
-                    matrix,
+                    work_matrix,
                     header_row_index=use_idx,
-                    positions=remapped["positions"],
+                    positions=positions,
                     quantity_columns=remapped.get("quantity_columns") or None,
                     month_column_meta=remapped.get("month_column_meta") or None,
                     fiscal_year_start=run_kwargs.get("fiscal_year_start"),
@@ -567,7 +891,7 @@ class UniversalParserOrchestrator:
             chosen.llm_used = True
             chosen.llm_tokens = tokens
             chosen.llm_reason = reason
-            chosen.llm_model = display_name_for(getattr(resolver, "last_model_id", None))
+            chosen.llm_model = model_label
         return chosen, tokens
 
     def _publish_confidence(self, winner: ParserResult) -> Dict[str, Any]:

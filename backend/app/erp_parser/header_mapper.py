@@ -103,7 +103,8 @@ NOISE_HEADERS = {
     "cust code",
     "party code",
     "account code",
-    "total",
+    # "total" is intentionally NOT noise — Party/Item/Unit/Total sales tables
+    # use it as Sales Quantity. "grand total" remains suppressed.
     "grand total",
     "opening",
     "closing",
@@ -247,12 +248,32 @@ def map_headers(headers: List[Any]) -> Dict[str, Any]:
         for idx, label, key in month_cols
     ]
 
+    # Monthly pivot: prefer month columns over a bare "Total" summary column.
+    if mapping["quantity"] is not None and quantity_columns:
+        qty_norm = normalize_header_text(originals.get("quantity") or "")
+        if qty_norm in {"total", "total qty", "total quantity"}:
+            mapping["quantity"] = quantity_columns[0]
+            originals["quantity"] = "Monthly columns → quarterly totals"
+            confidences["quantity"] = 95.0
+            methods["quantity"] = "monthly_sum"
+
     # Monthly pivot: map quantity via month columns (split to FY quarters on extract)
     if mapping["quantity"] is None and quantity_columns:
         mapping["quantity"] = quantity_columns[0]
         originals["quantity"] = "Monthly columns → quarterly totals"
         confidences["quantity"] = 95.0
         methods["quantity"] = "monthly_sum"
+
+    # Party / Item / Unit / Total sales tables (no month columns).
+    if mapping["quantity"] is None and mapping["customer"] is not None and mapping["product"] is not None:
+        for col_idx, norm in enumerate(normalized):
+            if norm in {"total", "total qty", "total quantity"} and col_idx not in used_cols:
+                raw = headers[col_idx]
+                mapping["quantity"] = col_idx
+                originals["quantity"] = str(raw).strip() if raw is not None else "Total"
+                confidences["quantity"] = 96.0
+                methods["quantity"] = "exact"
+                break
 
     return {
         "positions": mapping,  # 0-based

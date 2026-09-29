@@ -148,6 +148,8 @@ def parse_llm_mapping_json(raw: str) -> Dict[str, Any]:
         "ignore_columns": [str(item) for item in ignore if str(item).strip()],
         "grouping": str(data.get("grouping") or "").strip(),
         "confidence": int(round(confidence)),
+        "is_sales_table": data.get("is_sales_table", True),
+        "product_from_title": _col("product_from_title") or "",
     }
 
 
