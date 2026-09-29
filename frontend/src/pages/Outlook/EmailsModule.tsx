@@ -161,6 +161,7 @@ export function EmailsModule() {
 
   const [previewEmail, setPreviewEmail] = useState<EmailRecord | null>(null);
   const [preview, setPreview] = useState<ERPPreviewResponse | null>(null);
+  const [rowActions, setRowActions] = useState<Record<number, 'replace' | 'keep' | 'add'>>({});
   const [previewBusy, setPreviewBusy] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -210,6 +211,10 @@ export function EmailsModule() {
     }, 4000);
     return () => window.clearInterval(id);
   }, [emails]);
+
+  useEffect(() => {
+    setRowActions({});
+  }, [previewEmail?.id, preview?.incremental_analysis?.analysed]);
 
   const handleExtract = async () => {
     setExtracting(true);
@@ -334,6 +339,20 @@ export function EmailsModule() {
 
   const approveImport = async (replaceExisting = false) => {
     if (!previewEmail || !preview || !distributorId) return;
+    const modified = preview.incremental_analysis?.modified_rows || [];
+    if (!replaceExisting && modified.length) {
+      const missing = modified.some(row => !rowActions[row.row_index]);
+      if (missing) {
+        setPreviewError('Choose Replace, Keep Existing, or Add Anyway for every modified row.');
+        return;
+      }
+      if (modified.some(row => rowActions[row.row_index] === 'add')) {
+        const confirmed = window.confirm(
+          'Add Anyway inserts the incoming row as an additional record. Continue?',
+        );
+        if (!confirmed) return;
+      }
+    }
     setImportBusy(true);
     setPreviewError(null);
     try {
@@ -347,7 +366,16 @@ export function EmailsModule() {
         mapping: mappings,
         rows: preview.rows,
         replace_existing: replaceExisting,
+        row_decisions: modified.map(row => ({
+          row_index: row.row_index,
+          action: rowActions[row.row_index],
+        })),
       });
+      if (result.duplicate_upload) {
+        setImportDone('Duplicate Upload. No records inserted.');
+        await refreshEmails();
+        return;
+      }
       if (result.requires_review && result.duplicate_review?.detected) {
         setPreview(current =>
           current ? { ...current, duplicate_review: result.duplicate_review } : current,
@@ -360,6 +388,8 @@ export function EmailsModule() {
           : formatPeriodDisplay(result.reporting_quarter || '');
       setImportDone(
         `Imported ${result.records_inserted} rows` +
+          (result.records_updated ? `, updated ${result.records_updated}` : '') +
+          (result.duplicates_skipped ? `, skipped ${result.duplicates_skipped} duplicates` : '') +
           (result.workbooks_imported && result.workbooks_imported.length > 1
             ? ` from ${result.workbooks_imported.length} workbooks`
             : '') +
@@ -382,6 +412,8 @@ export function EmailsModule() {
           (e.statusLabel || '').toLowerCase() !== 'imported' &&
           (e.statusLabel || '').toLowerCase() !== 'failed' &&
           (e.statusLabel || '').toLowerCase() !== 'invalid subject' &&
+          (e.statusLabel || '').toLowerCase() !== 'human review required' &&
+          (e.statusLabel || '').toLowerCase() !== 'duplicate upload' &&
           (e.confidenceScore || 0) >= MIN_IMPORT_ACCURACY &&
           Boolean(e.distributor || e.distributorName) &&
           Boolean(e.quarter),
@@ -486,6 +518,16 @@ export function EmailsModule() {
             setBatchResults([...results]);
             continue;
           }
+          if ((data.incremental_analysis?.modified_count || 0) > 0) {
+            results.push({
+              emailId: email.id,
+              subject: email.subject,
+              status: 'skipped',
+              detail: 'Human Review Required — open Preview and review the modified rows.',
+            });
+            setBatchResults([...results]);
+            continue;
+          }
           if (data.fiscal_year_start) setFiscalYearStart(Number(data.fiscal_year_start));
           const periodArgs = resolveReportingQuarter(data, email);
           if (!periodArgs.reporting_quarter && !data.monthly_pivot) {
@@ -505,6 +547,17 @@ export function EmailsModule() {
             fiscal_year_start: periodArgs.fiscal_year_start,
             rows: data.rows,
           });
+          if (result.duplicate_upload) {
+            results.push({
+              emailId: email.id,
+              subject: email.subject,
+              status: 'ok',
+              detail: 'Duplicate Upload. No records inserted.',
+              rows: 0,
+            });
+            setBatchResults([...results]);
+            continue;
+          }
           if (result.requires_review) {
             results.push({
               emailId: email.id,
@@ -880,6 +933,34 @@ export function EmailsModule() {
                               Subject: {email.subject || '—'}
                             </span>
                           </div>
+                        ) : (email.statusLabel || '').toLowerCase() === 'human review required' ? (
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              padding: '3px 8px',
+                              borderRadius: 6,
+                              fontSize: '0.6875rem',
+                              fontWeight: 700,
+                              color: '#92400E',
+                              background: 'rgba(245,158,11,0.16)',
+                            }}
+                          >
+                            Human Review Required
+                          </span>
+                        ) : (email.statusLabel || '').toLowerCase() === 'duplicate upload' ? (
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              padding: '3px 8px',
+                              borderRadius: 6,
+                              fontSize: '0.6875rem',
+                              fontWeight: 700,
+                              color: '#374151',
+                              background: 'rgba(107,114,128,0.16)',
+                            }}
+                          >
+                            Duplicate Upload
+                          </span>
                         ) : (email.statusLabel || '').toLowerCase() === 'failed' ? (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 280 }}>
                             <span>Failed</span>
@@ -1290,7 +1371,80 @@ export function EmailsModule() {
                   </table>
                 </div>
 
-                {preview.duplicate_review?.detected && !importDone && (
+                {preview.incremental_analysis && !importDone && (
+                  <div
+                    style={{
+                      marginTop: 14,
+                      padding: '12px 14px',
+                      borderRadius: 8,
+                      background: preview.incremental_analysis.modified_count > 0 ? '#FFFBEB' : '#F8FAFC',
+                      border: `1px solid ${preview.incremental_analysis.modified_count > 0 ? '#FCD34D' : BORDER}`,
+                      color: '#0F172A',
+                      fontSize: '0.8125rem',
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, marginBottom: 8 }}>Duplicate Analysis</div>
+                    <div>{preview.incremental_analysis.analysed} Records Analysed</div>
+                    <div>New Records: {preview.incremental_analysis.new_count}</div>
+                    <div>Exact Duplicates: {preview.incremental_analysis.exact_count}</div>
+                    <div>Modified Transactions: {preview.incremental_analysis.modified_count}</div>
+                    <div style={{ marginTop: 8, fontWeight: 600 }}>
+                      {preview.incremental_analysis.status === 'human_review'
+                        ? 'Human Review Required'
+                        : preview.incremental_analysis.status === 'duplicate_upload'
+                          ? 'Duplicate Upload'
+                          : 'Ready to import'}
+                    </div>
+                    <div style={{ marginTop: 4 }}>{preview.incremental_analysis.recommendation}</div>
+                    {preview.incremental_analysis.modified_rows.length > 0 && (
+                      <div style={{ marginTop: 12, overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                          <thead>
+                            <tr style={{ background: '#F3F4F6' }}>
+                              {['Customer', 'Product', 'Date', 'Existing Qty', 'Incoming Qty', 'Difference', 'Action'].map(heading => (
+                                <th key={heading} style={{ ...th, textAlign: heading.includes('Qty') || heading === 'Difference' ? 'right' : 'left' }}>
+                                  {heading}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {preview.incremental_analysis.modified_rows.map(row => (
+                              <tr key={row.row_index} style={{ borderBottom: `1px solid ${BORDER}` }}>
+                                <td style={td}>{row.customer}</td>
+                                <td style={td}>{row.product}</td>
+                                <td style={td}>{row.date}</td>
+                                <td style={{ ...td, textAlign: 'right' }}>{row.existing_qty}</td>
+                                <td style={{ ...td, textAlign: 'right' }}>{row.incoming_qty}</td>
+                                <td style={{ ...td, textAlign: 'right' }}>{row.difference}</td>
+                                <td style={td}>
+                                  <select
+                                    value={rowActions[row.row_index] || ''}
+                                    onChange={event =>
+                                      setRowActions(current => ({
+                                        ...current,
+                                        [row.row_index]: event.target.value as 'replace' | 'keep' | 'add',
+                                      }))
+                                    }
+                                    style={{ fontSize: '0.75rem', padding: '4px 6px' }}
+                                  >
+                                    <option value="">Choose</option>
+                                    <option value="replace">Replace</option>
+                                    <option value="keep">Keep Existing</option>
+                                    <option value="add">Add Anyway</option>
+                                  </select>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {preview.duplicate_review?.detected && !preview.incremental_analysis && !importDone && (
                   <div
                     style={{
                       marginTop: 14,
@@ -1331,7 +1485,21 @@ export function EmailsModule() {
                   >
                     {preview.duplicate_review?.detected && !importDone ? 'Cancel Import' : 'Close'}
                   </button>
-                  {!importDone && preview.duplicate_review?.detected && (
+                  {!importDone && preview.incremental_analysis && (
+                    <button
+                      type="button"
+                      style={{
+                        ...btnPrimary,
+                        background: canImport ? TEAL : '#9CA3AF',
+                        cursor: canImport && !importBusy ? 'pointer' : 'not-allowed',
+                      }}
+                      disabled={!canImport || importBusy}
+                      onClick={() => void approveImport(false)}
+                    >
+                      {importBusy ? 'Importing…' : 'Proceed to Consolidation'}
+                    </button>
+                  )}
+                  {!importDone && !preview.incremental_analysis && preview.duplicate_review?.detected && (
                     <button
                       type="button"
                       style={{
@@ -1345,7 +1513,7 @@ export function EmailsModule() {
                       {importBusy ? 'Replacing…' : 'Replace Existing Records'}
                     </button>
                   )}
-                  {!importDone && !preview.duplicate_review?.detected && (
+                  {!importDone && !preview.incremental_analysis && !preview.duplicate_review?.detected && (
                     <button
                       type="button"
                       style={{

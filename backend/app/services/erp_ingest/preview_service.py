@@ -313,34 +313,18 @@ class PreviewMixin:
             [a for a in (email.attachments or []) if self._is_excel_att(a)]
         ) > MAX_EXCEL_ATTACHMENTS_PER_EMAIL
         if preview.get("distributor_id"):
-            from collections import Counter
+            from app.services.incremental_upload import analyse_rows, load_existing, public_plan
 
-            period_counts: Counter[str] = Counter()
-            for row in merged_rows:
-                period = str(
-                    (row or {}).get("period")
-                    or (row or {}).get("reporting_quarter")
-                    or preview.get("detected_quarter")
-                    or ""
-                ).strip()
-                if period:
-                    period_counts[period] += 1
-            company_name = str(email.parsed_distributor or "").strip()
-            match = matches[0] if len(matches) == 1 else None
-            if match:
-                company_name = str(match.get("company") or company_name).strip()
-            hits = self._duplicate_hits_for_periods(
-                distributor_id=int(preview["distributor_id"]),
-                company=company_name,
-                segment=str(email.parsed_segment or ""),
-                location=str(email.parsed_location or ""),
-                counts_by_period=dict(period_counts),
+            preview["incremental_analysis"] = public_plan(
+                analyse_rows(
+                    merged_rows,
+                    load_existing(self.db, int(preview["distributor_id"])),
+                )
             )
-            preview["duplicate_review"] = self._combine_duplicate_review(
-                company_name, hits
-            )
+            preview["duplicate_review"] = None
         else:
             preview["duplicate_review"] = None
+            preview["incremental_analysis"] = None
 
         if email.process_status not in {
             EmailProcessStatus.INSERTED.value,
@@ -356,6 +340,9 @@ class PreviewMixin:
                 email.error_message = "Could not detect structured sales table"
             elif scored < 70:
                 email.process_status = EmailProcessStatus.HUMAN_REVIEW.value
+                email.error_message = None
+            elif int((preview.get("incremental_analysis") or {}).get("modified_count") or 0) > 0:
+                email.process_status = EmailProcessStatus.INCREMENTAL_REVIEW.value
                 email.error_message = None
             else:
                 email.process_status = EmailProcessStatus.PARSED.value

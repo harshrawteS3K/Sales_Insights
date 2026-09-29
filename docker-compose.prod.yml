@@ -1,0 +1,52 @@
+# Pull-only production stack. Set BACKEND_IMAGE and FRONTEND_IMAGE before up.
+# Runtime secrets stay in backend/.env.backend and are not baked into either image.
+
+services:
+  backend:
+    image: ${BACKEND_IMAGE}
+    env_file:
+      - backend/.env.backend
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - sales-insights-uploads:/app/uploads
+      - sales-insights-logs:/app/logs
+    networks:
+      sales-insights-network:
+        aliases:
+          - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  frontend:
+    image: ${FRONTEND_IMAGE}
+    ports:
+      - "127.0.0.1:8081:80"
+    networks:
+      sales-insights-network:
+        aliases:
+          - frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  sales-insights-network:
+    name: sales-insights-network
+    driver: bridge
+
+volumes:
+  sales-insights-uploads:
+  sales-insights-logs:

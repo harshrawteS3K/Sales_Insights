@@ -148,6 +148,7 @@ class Settings(BaseSettings):
 
     # Amazon Bedrock — IAM role on the host. No access keys.
     aws_region: str = Field(default="ap-south-1", alias="AWS_REGION")
+    bedrock_region: str = Field(default="", alias="BEDROCK_REGION")
     default_model: str = Field(default_factory=default_model_id, alias="DEFAULT_MODEL")
     bedrock_timeout: float = Field(default=30.0, alias="BEDROCK_TIMEOUT", gt=0)
 

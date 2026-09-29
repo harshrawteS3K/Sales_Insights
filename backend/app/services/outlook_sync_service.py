@@ -49,6 +49,8 @@ def _score_view(status: str, updated_at: Any) -> tuple:
         EmailProcessStatus.PARSED.value,
         EmailProcessStatus.INSERTED.value,
         EmailProcessStatus.MARKED_READ.value,
+        EmailProcessStatus.INCREMENTAL_REVIEW.value,
+        EmailProcessStatus.DUPLICATE_UPLOAD.value,
     }:
         return "COMPLETED", "Completed", _completed_stamp(updated_at)
     return "NEW", None, None
@@ -185,6 +187,8 @@ class OutlookSyncService:
             EmailProcessStatus.SCORING.value: "Scoring",
             EmailProcessStatus.PARSED.value: "Success",
             EmailProcessStatus.HUMAN_REVIEW.value: "Human Review",
+            EmailProcessStatus.INCREMENTAL_REVIEW.value: "Human Review Required",
+            EmailProcessStatus.DUPLICATE_UPLOAD.value: "Duplicate Upload",
             EmailProcessStatus.INSERTED.value: "Imported",
             EmailProcessStatus.MARKED_READ.value: "Imported",
             EmailProcessStatus.FAILED.value: "Failed",
@@ -725,11 +729,15 @@ class OutlookSyncService:
             return True
         if existing.process_status == EmailProcessStatus.SKIPPED.value and not self._email_has_excel(existing):
             return True
+        if existing.process_status == EmailProcessStatus.FAILED.value and not self._email_has_excel(existing):
+            reason = (existing.error_message or "").strip()
+            if reason.startswith("Ignored as non-sales"):
+                return False
+            return True
         if existing.process_status in {
             EmailProcessStatus.UNREAD.value,
             EmailProcessStatus.DOWNLOADED.value,
             EmailProcessStatus.PARSED.value,
-            EmailProcessStatus.FAILED.value,
         } and not self._email_has_excel(existing):
             return True
         return False
@@ -930,7 +938,7 @@ class OutlookSyncService:
             unread_only=unread_only,
             include_body=True,
         )
-        logger.info("Graph Retrieved: {} email", len(messages))
+        logger.info("Graph Retrieved = {}", len(messages))
         return messages
 
     def _capture_message_body(
@@ -941,34 +949,47 @@ class OutlookSyncService:
         mailbox: str,
         email: EmailMessage,
     ) -> None:
-        """Store the HTML body before the attachment decision."""
+        """Store body.content before the attachment decision. bodyPreview is never the analysis text."""
         payload = message.get("body") if isinstance(message.get("body"), dict) else {}
         content = str((payload or {}).get("content") or "")
         content_type = str((payload or {}).get("contentType") or "")
         preview = str(message.get("bodyPreview") or "")
-        if not content:
+        truncated = bool(preview.strip()) and content.strip() == preview.strip() and len(content.strip()) >= 255
+        if not content.strip() or truncated:
             try:
                 fetched = self.graph.get_message_body(graph_id, mailbox=mailbox)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Email body fetch failed | message_id={} | err={}", graph_id, exc)
                 fetched = {}
-            content = str(fetched.get("content") or "")
-            content_type = str(fetched.get("content_type") or content_type)
+            fetched_content = str(fetched.get("content") or "")
+            if fetched_content.strip():
+                content = fetched_content
+                content_type = str(fetched.get("content_type") or content_type)
+            elif truncated:
+                content = ""
+                content_type = ""
             preview = preview or str(fetched.get("preview") or "")
         is_html = "html" in content_type.lower() or bool(
             re.search(r"<(?:html|table|div|p|br)\b", content, flags=re.IGNORECASE)
         )
         message["_body_html"] = content if is_html else ""
-        message["_body_text"] = "" if is_html else (content or preview)
+        message["_body_text"] = "" if is_html else content
+        message["_body_content_type"] = content_type
         if preview and not email.body_preview:
             email.body_preview = preview[:4000]
+        logger.info(
+            "Email Body Downloaded\nCharacters: {}\nContent Type: {}\nHas Attachments: {}",
+            len(content),
+            content_type or "—",
+            "True" if message.get("hasAttachments") else "False",
+        )
         logger.info(
             "Email Downloaded\nSubject: {}\nHTML Length: {}\nAttachments: {}",
             email.subject or message.get("subject") or "",
             len(content),
             "True" if message.get("hasAttachments") else "False",
         )
-        logger.info("Body Downloaded: Yes")
+        logger.info("HTML Downloaded = {}", "Yes" if content.strip() else "No")
 
     def _email_body_attachment(
         self,
@@ -978,26 +999,12 @@ class OutlookSyncService:
         subject: str,
         html: str = "",
         text: str = "",
-    ) -> Optional[Dict[str, Any]]:
+    ) -> tuple:
         """Detect a sales matrix in an already downloaded body and build the queue workbook.
 
         GPT-5.4 is asked for layout only when the deterministic score is below 80.
-        Supported attachments never reach this method.
+        Supported attachments never reach this method. Returns (attachment, failure_reason).
         """
-        if not html and not text:
-            try:
-                body = self.graph.get_message_body(graph_id, mailbox=mailbox)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Email body fetch failed | message_id={} | err={}", graph_id, exc)
-                return None
-            content_type = (body.get("content_type") or "").lower()
-            content = body.get("content") or ""
-            preview = body.get("preview") or ""
-            is_html = "html" in content_type or bool(
-                re.search(r"<(?:html|table|div|p|br)\b", content, flags=re.IGNORECASE)
-            )
-            html = content if is_html else ""
-            text = "" if html else (content or preview)
         from app.erp_parser.documents.email_body import ingest_email_body
 
         result = ingest_email_body(subject, html, text)
@@ -1016,8 +1023,10 @@ class OutlookSyncService:
             result.confidence,
         )
         logger.info(
-            "Business Matrix: {}\nGPT Invoked: {}",
-            "Detected" if result.business_matrix else "No",
+            "Business Matrix = {}\nMonths = {}\nCustomers = {}\nGPT Invoked = {}",
+            "Yes" if result.business_matrix else "No",
+            ", ".join(result.months) or "—",
+            result.customers,
             "Yes" if result.llm_invoked else "No",
         )
         if result.llm_invoked:
@@ -1025,18 +1034,19 @@ class OutlookSyncService:
                 "GPT Layout Analyzer Invoked\n\nReason : Low deterministic confidence"
             )
         if not result.workbook or result.confidence <= 0:
-            return None
+            return None, result.failure_reason or "Ignored as non-sales email"
         digest = hashlib.sha256(graph_id.encode("utf-8")).hexdigest()[:40]
         logger.info(
             "Email Body Adapter\n\nDocument Type : Email Body\n\nSheet : Email Body"
         )
+        logger.info("Synthetic Workbook = Created")
         return {
             "id": f"email-body:{digest}",
             "name": "Email Body.xlsx",
             "contentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "size": len(result.workbook),
             "_bytes": result.workbook,
-        }
+        }, ""
 
     def _process_message(
         self,
@@ -1085,7 +1095,10 @@ class OutlookSyncService:
                 "mark_as_read_ok": mark_ok,
             }
 
-        if existing and existing.process_status == EmailProcessStatus.SKIPPED.value:
+        if existing and existing.process_status in {
+            EmailProcessStatus.SKIPPED.value,
+            EmailProcessStatus.FAILED.value,
+        }:
             logger.info(
                 "Retrying previously skipped email for an email body table | message_id={} | email_id={}",
                 graph_id,
@@ -1184,6 +1197,7 @@ class OutlookSyncService:
                 MAX_EXCEL_ATTACHMENTS_PER_EMAIL,
             )
             excel_attachments = excel_attachments[:MAX_EXCEL_ATTACHMENTS_PER_EMAIL]
+        body_reason = ""
         if excel_attachments:
             logger.info(
                 "Supported attachment | message_id={} | total_attachments={} | ingest={}",
@@ -1192,7 +1206,7 @@ class OutlookSyncService:
                 len(excel_attachments),
             )
         else:
-            body_attachment = self._email_body_attachment(
+            body_attachment, body_reason = self._email_body_attachment(
                 graph_id,
                 mailbox,
                 subject=email.subject or "",
@@ -1206,27 +1220,26 @@ class OutlookSyncService:
                     "Email body sales table | message_id={} | adapter=Email Body Adapter",
                     graph_id,
                 )
+            else:
+                body_reason = body_reason or "Ignored as non-sales email"
         if not excel_attachments:
-            email.process_status = EmailProcessStatus.SKIPPED.value
-            email.error_message = "No supported attachment or sales table in the email body"
+            email.process_status = EmailProcessStatus.FAILED.value
+            email.confidence_score = 0
+            email.error_message = body_reason or "Ignored as non-sales email"
             self.db.flush()
-            mark_ok = None
-            if mark_as_read:
-                mark_ok = self._ensure_marked_read(
-                    email,
-                    graph_id=graph_id,
-                    mailbox=mailbox,
-                    reason="skipped_no_excel",
-                )
+            logger.info(
+                "Queue Status = Failed\nImport Status = Failed\nReason = {}",
+                email.error_message,
+            )
             return {
                 "message_id": graph_id,
                 "email_id": email.id,
-                "status": "skipped_no_excel",
+                "status": EmailProcessStatus.FAILED.value,
                 "attachments_downloaded": 0,
                 "reports_created": 0,
                 "records_inserted": 0,
                 "duplicates_skipped": 0,
-                "mark_as_read_ok": mark_ok,
+                "mark_as_read_ok": None,
             }
 
         attachments_downloaded = 0

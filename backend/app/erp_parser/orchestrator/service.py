@@ -664,7 +664,7 @@ class UniversalParserOrchestrator:
                 duration,
             )
             logger.info(
-                "Body Downloaded: Yes\nBusiness Matrix: Detected\nGPT Invoked: {}\nRows Parsed: {}\nImport Status: Success",
+                "Business Matrix = Yes\nGPT Invoked = {}\nRows Parsed = {}\nQueue Status = Success\nImport Status = Completed",
                 "Yes" if winner.llm_used else "No",
                 len(winner.rows),
             )

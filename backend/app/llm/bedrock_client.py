@@ -153,6 +153,101 @@ def _message_text(response: Any) -> str:
     return "\n".join(parts).strip()
 
 
+def probe(model: str, message: str, *, timeout: float = 20.0) -> dict:
+    """One health-check call. Credentials stay on the IAM role chain. Never raises."""
+    from datetime import datetime, timezone
+
+    from botocore.exceptions import ConnectTimeoutError, EndpointConnectionError, NoCredentialsError
+
+    from app.llm.model_registry import display_name_for, is_known_model
+
+    settings = get_settings()
+    region = (settings.bedrock_region or settings.aws_region or "ap-south-1").strip()
+    started = time.perf_counter()
+    stamp = datetime.now(timezone.utc).isoformat()
+    if not is_known_model(model):
+        return {
+            "status": "Failed",
+            "reply": "Unknown model. Choose a model from the registry.",
+            "latency_ms": 0,
+            "model": model or "",
+            "model_id": "",
+            "region": region,
+            "timestamp": stamp,
+        }
+    resolved = resolve_model_id(model)
+    text = (message or "Hello").strip() or "Hello"
+    try:
+        client = boto3.client(
+            "bedrock-runtime",
+            region_name=region,
+            config=Config(connect_timeout=10.0, read_timeout=float(timeout), retries={"max_attempts": 1}),
+        )
+        response = client.converse(
+            modelId=resolved,
+            messages=[{"role": "user", "content": [{"text": text}]}],
+            inferenceConfig={"temperature": 0.0, "maxTokens": 200},
+        )
+        reply = _message_text(response) or "Bedrock connection successful."
+        latency = int(round((time.perf_counter() - started) * 1000))
+        logger.info(
+            "Bedrock health check | status=Connected | model={} | region={} | latency_ms={}",
+            display_name_for(resolved),
+            region,
+            latency,
+        )
+        return {
+            "status": "Connected",
+            "reply": reply,
+            "latency_ms": latency,
+            "model": display_name_for(resolved),
+            "model_id": resolved,
+            "region": region,
+            "timestamp": stamp,
+        }
+    except Exception as exc:  # noqa: BLE001
+        latency = int(round((time.perf_counter() - started) * 1000))
+        status, reply = _probe_failure(exc)
+        logger.warning(
+            "Bedrock health check | status={} | model={} | region={} | err={}",
+            status,
+            display_name_for(resolved),
+            region,
+            exc,
+        )
+        return {
+            "status": status,
+            "reply": reply,
+            "latency_ms": latency,
+            "model": display_name_for(resolved),
+            "model_id": resolved,
+            "region": region,
+            "timestamp": stamp,
+        }
+
+
+def _probe_failure(exc: Exception) -> tuple[str, str]:
+    from botocore.exceptions import ConnectTimeoutError, EndpointConnectionError, NoCredentialsError, ReadTimeoutError
+
+    if isinstance(exc, (ReadTimeoutError, ConnectTimeoutError, TimeoutError)):
+        return "Connection Timeout", "The Bedrock request timed out."
+    if isinstance(exc, EndpointConnectionError):
+        return "Connection Timeout", "Could not reach the Bedrock endpoint."
+    if isinstance(exc, NoCredentialsError):
+        return "Authentication Failed", "No IAM credentials were found for this host."
+    code = ""
+    if isinstance(exc, ClientError):
+        code = str(exc.response.get("Error", {}).get("Code") or "")
+    folded = f"{code} {exc}".lower()
+    if any(token in folded for token in ("accessdenied", "unauthorized", "not authorized")):
+        return "Access Denied", "Bedrock denied this model for the current IAM role."
+    if any(token in folded for token in ("expiredtoken", "unrecognizedclient", "invalidclient", "signature", "nocredentials", "security token")):
+        return "Authentication Failed", "IAM authentication for Bedrock failed."
+    if "timeout" in folded or "timed out" in folded:
+        return "Connection Timeout", "The Bedrock request timed out."
+    return "Failed", "Bedrock did not complete the health check."
+
+
 def _retryable(exc: Exception) -> bool:
     if isinstance(exc, (ReadTimeoutError, BedrockError)):
         return not isinstance(exc, BedrockError) or "empty response" in str(exc).lower()

@@ -14,6 +14,11 @@ from app.services.llm_settings_service import LlmSettingsService
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
 
+class BedrockTestRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=100)
+    message: str = Field(default="Hello", max_length=2000)
+
+
 class LlmSettingsUpdate(BaseModel):
     provider: Optional[str] = None
     enabled: Optional[bool] = None
@@ -43,6 +48,19 @@ def update_llm_settings(
         actor=current.name,
     )
     return DataResponse(data=data, message="LLM settings updated")
+
+
+@router.post("/bedrock/test", summary="Test a Bedrock model connection (Admin)")
+def test_bedrock_connection(
+    payload: BedrockTestRequest,
+    current: RequireAdmin,
+) -> DataResponse[dict]:
+    """Invoke the selected registry model. AWS keys are never read or stored."""
+    _ = current
+    from app.llm.bedrock_client import probe
+
+    data = probe(payload.model, payload.message or "Hello")
+    return DataResponse(data=data, message=str(data.get("status") or "Failed"))
 
 
 @router.get("/llm/usage", summary="LLM token usage & cost (Admin)")

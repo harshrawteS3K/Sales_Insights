@@ -62,6 +62,18 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [healthModel, setHealthModel] = useState('GPT-5.4');
+  const [healthMessage, setHealthMessage] = useState('Hello');
+  const [healthBusy, setHealthBusy] = useState(false);
+  const [healthResult, setHealthResult] = useState<{
+    status: string;
+    reply: string;
+    latency_ms: number;
+    model: string;
+    model_id: string;
+    region: string;
+    timestamp: string;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -74,6 +86,7 @@ export function SettingsPage() {
       setSettings(sRes.data);
       setProvider(sRes.data.provider || 'bedrock');
       setModel(sRes.data.model || sRes.data.available_models?.[0] || '');
+      setHealthModel(sRes.data.model || sRes.data.available_models?.[0] || 'GPT-5.4');
       setEnabled(Boolean(sRes.data.enabled));
       setUsage(uRes.data);
     } catch (err) {
@@ -334,6 +347,90 @@ export function SettingsPage() {
             </tbody>
           </table>
         </div>
+      </div>
+
+      <div
+        style={{
+          background: 'white',
+          border: `1px solid ${BORDER}`,
+          borderRadius: 12,
+          padding: 20,
+        }}
+      >
+        <h2 style={{ margin: '0 0 14px', fontSize: '1rem', fontWeight: 700, color: '#0F172A' }}>
+          Bedrock Health Check
+        </h2>
+        <form
+          onSubmit={async event => {
+            event.preventDefault();
+            setHealthBusy(true);
+            setHealthResult(null);
+            try {
+              const res = await apiRequest<{ success: boolean; data: NonNullable<typeof healthResult> }>(
+                '/settings/bedrock/test',
+                { method: 'POST', body: { model: healthModel, message: healthMessage || 'Hello' } },
+              );
+              setHealthResult(res.data);
+            } catch (err) {
+              setHealthResult({
+                status: 'Failed',
+                reply: err instanceof ApiError ? err.message : 'Health check failed',
+                latency_ms: 0,
+                model: healthModel,
+                model_id: '',
+                region: '',
+                timestamp: new Date().toISOString(),
+              });
+            } finally {
+              setHealthBusy(false);
+            }
+          }}
+          style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
+        >
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#374151' }}>Active Model</span>
+            <select value={healthModel} onChange={event => setHealthModel(event.target.value)} style={inputStyle}>
+              {(settings?.available_models || ['GPT-5.4', 'GLM 4.5', 'GLM 4.5 Flash', 'MiniMax M2']).map(name => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#374151' }}>Message</span>
+            <input
+              value={healthMessage}
+              onChange={event => setHealthMessage(event.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={healthBusy}
+            style={{
+              alignSelf: 'flex-start',
+              background: TEAL,
+              color: 'white',
+              border: 'none',
+              borderRadius: 8,
+              padding: '8px 14px',
+              fontWeight: 700,
+              cursor: healthBusy ? 'wait' : 'pointer',
+            }}
+          >
+            {healthBusy ? 'Testing…' : 'Test Connection'}
+          </button>
+          {healthResult && (
+            <div style={{ fontSize: '0.875rem', lineHeight: 1.6, color: '#0F172A' }}>
+              <div>Status: {healthResult.status}</div>
+              <div>Reply: {healthResult.reply}</div>
+              <div>Latency: {healthResult.latency_ms} ms</div>
+              <div>Model: {healthResult.model}</div>
+              <div>Region: {healthResult.region || '—'}</div>
+            </div>
+          )}
+        </form>
       </div>
     </div>
   );

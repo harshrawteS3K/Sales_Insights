@@ -45,8 +45,9 @@ class ImportMixin:
         fiscal_year_start: Optional[int],
         overall: float,
         replace_existing: bool = False,
-    ) -> Tuple[int, bool, Any, List[str], int, Optional[Dict[str, Any]]]:
-        """Persist rows. Duplicate scope returns a review payload and writes nothing."""
+        row_decisions: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Persist rows. Modified rows wait for a reviewer decision and write nothing."""
         path = Path(att.file_path)
         by_period = self._rows_by_period(
             use_rows,
@@ -69,8 +70,23 @@ class ImportMixin:
             counts_by_period=counts,
         )
         review = self._combine_duplicate_review(company, hits)
-        if review and not replace_existing:
-            return 0, True, None, [], 0, review
+        if not replace_existing:
+            return self._persist_incremental(
+                email=email,
+                att=att,
+                preview=preview,
+                use_rows=use_rows,
+                by_period=by_period,
+                distributor_id=distributor_id,
+                company=company,
+                segment=segment,
+                location=location,
+                actor=actor,
+                fiscal_year_start=fiscal_year_start,
+                overall=overall,
+                row_decisions=row_decisions,
+                source_unit=source_unit,
+            )
         if review and replace_existing:
             for hit in hits:
                 self._replace_period_scope(
@@ -83,32 +99,6 @@ class ImportMixin:
                     new_rows=int(hit["new_rows"]),
                     actor=actor,
                 )
-        elif not replace_existing:
-            incoming = sum(counts.values())
-            kept: Dict[str, List[ParsedSalesRow]] = {}
-            for period, parsed in by_period.items():
-                fresh = self._drop_existing_business_rows(
-                    distributor_id,
-                    period,
-                    parsed,
-                )
-                if fresh:
-                    kept[period] = fresh
-            if incoming and not kept:
-                only = next(iter(by_period))
-                review = self._combine_duplicate_review(
-                    company,
-                    [
-                        self._review_hit(
-                            company=company,
-                            period=only,
-                            existing_rows=incoming,
-                            new_rows=incoming,
-                        )
-                    ],
-                )
-                return 0, True, None, [], 0, review
-            by_period = kept
 
         total_inserted = 0
         any_dup = False
@@ -153,14 +143,252 @@ class ImportMixin:
                         )
                     ],
                 )
-                return 0, True, None, [], 0, blocked
+                return {
+                    "inserted": 0,
+                    "updated": 0,
+                    "exact": 0,
+                    "was_dup": True,
+                    "report": None,
+                    "quarters": [],
+                    "reports_created": 0,
+                    "review": blocked,
+                    "plan": None,
+                    "outcome": "review",
+                }
             if replace_existing:
                 self._recount_report_rows(report)
             total_inserted += inserted
             any_dup = any_dup or was_dup
             last_report = report
             quarters_imported.append(period)
-        return total_inserted, any_dup, last_report, quarters_imported, len(quarters_imported), None
+        return {
+            "inserted": total_inserted,
+            "updated": 0,
+            "exact": 0,
+            "was_dup": any_dup,
+            "report": last_report,
+            "quarters": quarters_imported,
+            "reports_created": len(quarters_imported),
+            "review": None,
+            "plan": None,
+            "outcome": "imported",
+        }
+
+    def _persist_incremental(
+        self,
+        *,
+        email: Any,
+        att: Any,
+        preview: Dict[str, Any],
+        use_rows: List[Dict[str, Any]],
+        by_period: Dict[str, List[ParsedSalesRow]],
+        distributor_id: int,
+        company: str,
+        segment: str,
+        location: str,
+        actor: str,
+        fiscal_year_start: Optional[int],
+        overall: float,
+        row_decisions: Optional[List[Dict[str, Any]]],
+        source_unit: str = "KG",
+    ) -> Dict[str, Any]:
+        """Insert new rows, skip exact copies, and apply reviewer choices for changes."""
+        from decimal import Decimal
+
+        from app.models.sales_record import SalesRecord
+        from app.services.incremental_upload import (
+            ADD,
+            KEEP,
+            analyse_rows,
+            decision_map,
+            load_existing,
+            needs_review,
+            public_plan,
+            rows_for_insert,
+            rows_for_replace,
+        )
+        from app.utils.quantity import format_quantity
+
+        existing = load_existing(self.db, distributor_id)
+        plan = analyse_rows(use_rows, existing)
+        shown = public_plan(plan)
+        if needs_review(plan, row_decisions):
+            shown_review = {
+                "detected": True,
+                "message": shown["recommendation"],
+                "distributor": company,
+                "financial_year": "",
+                "quarter": "",
+                "existing_rows": shown["exact_count"] + shown["modified_count"],
+                "new_rows": shown["new_count"],
+                "periods": [],
+            }
+            return {
+                "inserted": 0,
+                "updated": 0,
+                "exact": shown["exact_count"],
+                "was_dup": shown["exact_count"] > 0,
+                "report": None,
+                "quarters": [],
+                "reports_created": 0,
+                "review": shown_review,
+                "plan": shown,
+                "outcome": "review",
+            }
+
+        chosen = decision_map(row_decisions)
+        replacements = rows_for_replace(plan, row_decisions)
+        updated = 0
+        for change in replacements:
+            record = self.db.get(SalesRecord, int(change["existing_id"]))
+            if record is None or record.is_deleted:
+                continue
+            record.quantity = Decimal(str(change["incoming_qty"]))
+            record.quantity_display = format_quantity(record.quantity)
+            record.row_hash = build_sales_row_hash(
+                company,
+                record.customer_name,
+                record.segment or segment,
+                record.product,
+                record.quantity,
+                record.period or change.get("date") or "",
+                record.source_month or "",
+            )
+            updated += 1
+            self.audit.log(
+                AuditTrailCreate(
+                    user_name=actor,
+                    action="Replace",
+                    details=(
+                        f"Modified row replaced | distributor={company} | "
+                        f"customer={change['customer']} | product={change['product']} | "
+                        f"date={change['date']} | existing={change['existing_qty']} | "
+                        f"incoming={change['incoming_qty']}"
+                    ),
+                    entity_type="sales_record",
+                    entity_id=str(change["existing_id"]),
+                    module="Email Extraction",
+                    status="Success",
+                )
+            )
+        for item in plan.get("rows") or []:
+            action = chosen.get(int(item["row_index"]))
+            if item["kind"] == "modified" and action == KEEP:
+                self.audit.log(
+                    AuditTrailCreate(
+                        user_name=actor,
+                        action="Keep Existing",
+                        details=(
+                            f"distributor={company} | customer={item['customer']} | "
+                            f"product={item['product']} | date={item['date']} | "
+                            f"qty={item['incoming_qty']}"
+                        ),
+                        entity_type="sales_record",
+                        entity_id=str(item.get("existing_id") or ""),
+                        module="Email Extraction",
+                        status="Info",
+                    )
+                )
+        if updated:
+            self.db.flush()
+
+        insert_rows = rows_for_insert(use_rows, plan, row_decisions)
+        _ = by_period
+        if not insert_rows and updated == 0:
+            self.audit.log(
+                AuditTrailCreate(
+                    user_name=actor,
+                    action="Duplicate Upload",
+                    details=(
+                        f"Distributor: {company} | Rows Analysed: {shown['analysed']} | "
+                        f"Inserted: 0 | Duplicates: {shown['exact_count']} | "
+                        f"Modified: {shown['modified_count']} | Reviewer: {actor}"
+                    ),
+                    entity_type="email",
+                    entity_id=str(email.id),
+                    module="Email Extraction",
+                    status="Info",
+                )
+            )
+            return {
+                "inserted": 0,
+                "updated": 0,
+                "exact": shown["exact_count"],
+                "was_dup": True,
+                "report": None,
+                "quarters": [],
+                "reports_created": 0,
+                "review": None,
+                "plan": shown,
+                "outcome": "duplicate_upload",
+            }
+
+        fresh_periods = self._rows_by_period(
+            insert_rows,
+            company=company,
+            quarter="",
+            segment=segment,
+            location=location,
+            source_unit=source_unit or "KG",
+        ) if insert_rows else {}
+        total_inserted = 0
+        last_report = None
+        quarters_imported: List[str] = []
+        path = Path(att.file_path)
+        for period, parsed in sorted(fresh_periods.items()):
+            report, inserted, _was_dup, _quality = self.reports.persist_approved_rows(
+                path,
+                parsed,
+                quality_score=int(round(overall)),
+                source=ReportSource.OUTLOOK,
+                report_name=email.subject or att.file_name,
+                email_message_id=email.id,
+                actor=actor,
+                reporting_quarter=period,
+                distributor_id=distributor_id,
+                mark_duplicate_as_error=False,
+                confidence_breakdown=(preview.get("confidence") or {}).get("breakdown"),
+                workbook_meta={
+                    "sheet_name": preview.get("sheet_name"),
+                    "workbook_name": att.file_name,
+                    "monthly_pivot": preview.get("monthly_pivot"),
+                    "fiscal_year_start": preview.get("fiscal_year_start") or fiscal_year_start,
+                },
+                allow_existing_file=True,
+            )
+            total_inserted += inserted
+            last_report = report
+            quarters_imported.append(period)
+        kept = sum(1 for item in plan.get("rows") or [] if chosen.get(int(item["row_index"])) == KEEP)
+        added = sum(1 for item in plan.get("rows") or [] if chosen.get(int(item["row_index"])) == ADD)
+        self.audit.log(
+            AuditTrailCreate(
+                user_name=actor,
+                action="Incremental Import",
+                details=(
+                    f"Distributor: {company} | Rows Analysed: {shown['analysed']} | "
+                    f"Inserted: {total_inserted} | Duplicates: {shown['exact_count']} | "
+                    f"Modified: {shown['modified_count']} | Reviewer: {actor} | "
+                    f"Replace ({updated}) | Keep ({kept}) | Add ({added})"
+                ),
+                entity_type="email",
+                entity_id=str(email.id),
+                module="Email Extraction",
+                status="Success",
+            )
+        )
+        return {
+            "inserted": total_inserted,
+            "updated": updated,
+            "exact": shown["exact_count"],
+            "was_dup": shown["exact_count"] > 0,
+            "report": last_report,
+            "quarters": quarters_imported,
+            "reports_created": len(quarters_imported),
+            "review": None,
+            "plan": shown,
+            "outcome": "imported",
+        }
 
     def import_approved(
         self,
@@ -173,6 +401,7 @@ class ImportMixin:
         rows: Optional[List[Dict[str, Any]]] = None,
         fiscal_year_start: Optional[int] = None,
         replace_existing: bool = False,
+        row_decisions: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Persist approved ERP rows after accuracy + mapping review.
 
@@ -346,24 +575,31 @@ class ImportMixin:
             )
 
         try:
-            inserted, was_dup, last_report, quarters_imported, reports_created, review = (
-                self._persist_preview_rows(
-                    email=email,
-                    att=primary_att,
-                    preview=primary_preview,
-                    use_rows=merged_rows,
-                    distributor_id=resolved_id,
-                    company=company,
-                    quarter=subject_period or quarter,
-                    segment=segment,
-                    location=location,
-                    source_unit=source_unit,
-                    actor=actor,
-                    fiscal_year_start=fiscal_year_start,
-                    overall=min(qualities) if qualities else 0.0,
-                    replace_existing=replace_existing,
-                )
+            saved = self._persist_preview_rows(
+                email=email,
+                att=primary_att,
+                preview=primary_preview,
+                use_rows=merged_rows,
+                distributor_id=resolved_id,
+                company=company,
+                quarter=subject_period or quarter,
+                segment=segment,
+                location=location,
+                source_unit=source_unit,
+                actor=actor,
+                fiscal_year_start=fiscal_year_start,
+                overall=min(qualities) if qualities else 0.0,
+                replace_existing=replace_existing,
+                row_decisions=row_decisions,
             )
+            inserted = int(saved.get("inserted") or 0)
+            was_dup = bool(saved.get("was_dup"))
+            last_report = saved.get("report")
+            quarters_imported = list(saved.get("quarters") or [])
+            reports_created = int(saved.get("reports_created") or 0)
+            review = saved.get("review")
+            outcome = str(saved.get("outcome") or "imported")
+            plan = saved.get("plan")
         except ValidationAppError as exc:
             if exc.message == DUPLICATE_SUBMISSION_MESSAGE:
                 raise
@@ -372,18 +608,55 @@ class ImportMixin:
                 details={"reason": str(exc.message), "skips": workbook_skips},
             ) from exc
 
-        if review:
-            period_label = (
-                review["periods"][0]
-                if review.get("periods")
-                else (subject_period or quarter)
-            )
+        if outcome == "duplicate_upload":
+            email.process_status = EmailProcessStatus.DUPLICATE_UPLOAD.value
+            email.error_message = "Duplicate Upload. No records inserted."
+            self.db.flush()
             return {
                 "report_id": 0,
                 "records_inserted": 0,
+                "records_updated": 0,
+                "duplicates_skipped": int((plan or {}).get("exact_count") or 0),
                 "duplicate": True,
+                "duplicate_upload": True,
+                "requires_review": False,
+                "duplicate_review": None,
+                "incremental_analysis": plan,
+                "quality_score": int(round(min(qualities) if qualities else 0.0)),
+                "distributor_id": resolved_id,
+                "reporting_quarter": subject_period or quarter,
+                "workbook_name": (
+                    workbooks_imported[0]
+                    if len(workbooks_imported) == 1
+                    else f"{len(workbooks_imported)} workbooks"
+                ),
+                "workbooks_imported": [],
+                "workbook_skips": workbook_skips,
+                "reports_created": 0,
+                "quarters_imported": [],
+            }
+
+        if review or outcome == "review":
+            if email.process_status not in {
+                EmailProcessStatus.INSERTED.value,
+                EmailProcessStatus.MARKED_READ.value,
+            }:
+                email.process_status = EmailProcessStatus.INCREMENTAL_REVIEW.value
+                email.error_message = None
+                self.db.flush()
+            period_label = (
+                (review or {}).get("periods") or [None]
+            )[0] or (subject_period or quarter)
+            return {
+                "report_id": 0,
+                "records_inserted": 0,
+                "records_updated": 0,
+                "duplicates_skipped": int((plan or {}).get("exact_count") or 0),
+                "duplicate": True,
+                "duplicate_upload": False,
                 "requires_review": True,
                 "duplicate_review": review,
+                "incremental_analysis": plan,
                 "quality_score": int(round(min(qualities) if qualities else 0.0)),
                 "distributor_id": resolved_id,
                 "reporting_quarter": period_label,
@@ -450,7 +723,11 @@ class ImportMixin:
         return {
             "report_id": last_report.id if last_report else 0,
             "records_inserted": total_inserted,
+            "records_updated": int(saved.get("updated") or 0),
+            "duplicates_skipped": int(saved.get("exact") or 0),
             "duplicate": any_dup,
+            "duplicate_upload": False,
+            "incremental_analysis": plan,
             "quality_score": int(round(overall_quality)),
             "distributor_id": resolved_id,
             "reporting_quarter": (

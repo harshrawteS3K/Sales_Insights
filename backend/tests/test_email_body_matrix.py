@@ -163,6 +163,46 @@ def test_plain_text_keeps_zero_and_switches_product():
     assert all(row["original_unit"] == "KG" for row in rows)
 
 
+def test_empty_body_does_not_call_layout_model():
+    from app.erp_parser.documents.email_body import ingest_email_body
+
+    result = ingest_email_body("Badamikar & Co.|WEST|RUBBER|Q1 FY 2026-27|KG", "", "")
+    assert result.workbook is None
+    assert result.confidence == 0
+    assert result.llm_invoked is False
+    assert result.failure_reason == "Email body content was empty"
+
+
+def test_ordinary_email_is_ignored_as_non_sales():
+    from app.erp_parser.documents.email_body import ingest_email_body
+
+    result = ingest_email_body(
+        "Badamikar & Co.|WEST|RUBBER|Q1 FY 2026-27|KG",
+        "",
+        "Please find the meeting notes from yesterday. No quantities in this note.",
+    )
+    assert result.workbook is None
+    assert result.confidence == 0
+    assert result.llm_invoked is False
+    assert result.failure_reason == "Ignored as non-sales email"
+
+
+def test_badamikar_html_builds_queue_workbook():
+    from app.erp_parser.documents.email_body import ingest_email_body
+
+    result = ingest_email_body(
+        "Badamikar & Co.|WEST|RUBBER|Q1 FY 2026-27|KG",
+        _OUTLOOK_DIVS,
+        "",
+    )
+    assert result.business_matrix is True
+    assert result.confidence == 98
+    assert result.llm_invoked is False
+    assert result.customers == 5
+    assert result.workbook
+    assert result.failure_reason == ""
+
+
 def test_html_table_and_orchestrator_confidence():
     grid = extract_email_body_grid(html=_HTML)
     assert grid is not None

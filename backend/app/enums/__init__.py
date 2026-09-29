@@ -95,6 +95,8 @@ class EmailProcessStatus(str, Enum):
     SCORING = "scoring"
     PARSED = "parsed"
     HUMAN_REVIEW = "human_review"
+    INCREMENTAL_REVIEW = "incremental_review"
+    DUPLICATE_UPLOAD = "duplicate_upload"
     INSERTED = "inserted"
     MARKED_READ = "marked_read"
     FAILED = "failed"

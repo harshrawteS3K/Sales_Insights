@@ -61,6 +61,7 @@ class EmailBodyIngest:
     llm_invoked: bool
     llm_used: bool
     workbook: Optional[bytes]
+    failure_reason: str = ""
 
 
 def ingest_email_body(subject: str, html: str = "", text: str = "") -> EmailBodyIngest:
@@ -87,6 +88,7 @@ def ingest_email_body(subject: str, html: str = "", text: str = "") -> EmailBody
             llm_invoked=llm_invoked,
             llm_used=False,
             workbook=None,
+            failure_reason=_failure_reason(cleaned, llm_invoked),
         )
     grid_rows = _mark_llm(rows or []) if llm_used else list(rows or [])
     confidence = min(97, max(85, score)) if llm_used else (98 if score >= 80 else score)
@@ -113,11 +115,14 @@ def _select_matrix(
 ) -> tuple:
     body_html = html or ""
     cleaned = _normalize_text(text or _visible_text(body_html))
+    if not cleaned.strip() and body_html.strip():
+        cleaned = _normalize_text(_strip_tags(body_html))
     table_count = len(re.findall(r"<table\b", body_html, flags=re.IGNORECASE))
     best_rows, best_score = _best_rows(body_html, cleaned)
     llm_invoked = False
     llm_used = False
-    if best_score < 80 and cleaned.strip():
+    sales_signals = bool(_PRODUCT_RE.search(cleaned) or _month_count_in_text(cleaned) or best_score > 0)
+    if best_score < 80 and cleaned.strip() and sales_signals:
         llm_invoked = True
         assisted = _llm_layout_rows(subject, cleaned, best_rows)
         if assisted:
@@ -141,6 +146,25 @@ def _best_rows(html: str, text: str) -> tuple:
             best_score = score
             best_placed = placed
     return best_rows, best_score
+
+
+def _failure_reason(cleaned: str, llm_invoked: bool) -> str:
+    """Exact reason stored when the body never becomes a workbook."""
+    if not (cleaned or "").strip():
+        return "Email body content was empty"
+    if llm_invoked:
+        return "GPT layout analysis did not produce a sales matrix"
+    if not _PRODUCT_RE.search(cleaned) and not _month_count_in_text(cleaned):
+        return "Ignored as non-sales email"
+    return "Business matrix was not detected in the email body"
+
+
+def _strip_tags(html: str) -> str:
+    """Plain text when the HTML parser cannot see the message."""
+    text = re.sub(r"(?i)<br\s*/?>", "\n", html or "")
+    text = re.sub(r"(?i)</(?:p|div|tr|li|h[1-6]|table|section)>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return text
 
 
 def _normalize_text(value: str) -> str:
@@ -455,6 +479,10 @@ def _llm_layout_rows(
     cleaned = _normalize_text(text)
     lines = [line for line in cleaned.splitlines() if line.strip()]
     preview_rows = rows or _rows_from_text(cleaned) or []
+    if preview_rows and not _has_month_row(preview_rows):
+        rebuilt = _rows_from_text(cleaned)
+        if rebuilt:
+            preview_rows = rebuilt
     payload = {
         "subject": subject or "",
         "cleaned_email_text": cleaned[:4000],
@@ -464,8 +492,8 @@ def _llm_layout_rows(
     system = (
         "Classify an email sales matrix. Return JSON only. "
         "Do not list customers, quantities, or transaction rows. "
-        '{"layout_type":"cross_product_matrix","product":"APCOTEX TX 400",'
-        '"customer_column":0,"month_columns":["Apr","May","June"]}'
+        '{"layout_type":"cross_product_matrix","customer_column":0,'
+        '"product_row":1,"months":["Apr","May","Jun"]}'
     )
     try:
         from app.llm.bedrock_client import complete
@@ -483,30 +511,48 @@ def _llm_layout_rows(
         return None
     if not isinstance(meta, dict):
         return None
-    month_columns = [str(item).strip() for item in (meta.get("month_columns") or []) if str(item).strip()]
+    raw_months = meta.get("month_columns") or meta.get("months") or []
+    month_columns = [str(item).strip() for item in raw_months if str(item).strip()]
     if len(month_columns) < 2 or not preview_rows:
         return None
-    customer_column = int(meta.get("customer_column") or 0)
-    return _apply_layout(preview_rows, customer_column, month_columns)
+    try:
+        customer_column = int(meta.get("customer_column") or 0)
+    except (TypeError, ValueError):
+        customer_column = 0
+    product_row = meta.get("product_row")
+    try:
+        product_row = int(product_row) if product_row is not None else None
+    except (TypeError, ValueError):
+        product_row = None
+    return _apply_layout(preview_rows, customer_column, month_columns, product_row)
 
 
 def _apply_layout(
     rows: Sequence[Sequence[str]],
     customer_column: int,
     month_columns: Sequence[str],
+    product_row: Optional[int] = None,
 ) -> List[List[str]]:
     """Rebuild a grid from layout metadata. Values stay in the original cells."""
     aligned: List[List[str]] = []
-    for row in rows:
+    saw_months = False
+    for index, row in enumerate(rows):
         cells = [_clean_cell(cell) for cell in row]
         if not any(cells):
             continue
         month_hits = [cell for cell in cells if _is_month(cell)]
         if len(month_hits) >= 2:
+            saw_months = True
             label = cells[customer_column] if customer_column < len(cells) else ""
             aligned.append([label, *month_columns])
             continue
+        if product_row is not None and index == product_row:
+            label = cells[customer_column] if customer_column < len(cells) else _row_label(cells)
+            aligned.append([label] if label else cells)
+            continue
         aligned.append(cells)
+    if not saw_months and len(month_columns) >= 2:
+        aligned.insert(0, ["", *list(month_columns)])
     return aligned
 
 

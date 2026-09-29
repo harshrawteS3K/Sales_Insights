@@ -112,6 +112,7 @@ class ERPParsePreviewResponse(BaseModel):
     parsed_segment: Optional[str] = None
     attachment_summary: List[ERPAttachmentSummary] = Field(default_factory=list)
     duplicate_review: Optional["DuplicateReview"] = None
+    incremental_analysis: Optional["IncrementalAnalysis"] = None
 
 
 class ERPEmailPreviewRequest(BaseModel):
@@ -119,6 +120,36 @@ class ERPEmailPreviewRequest(BaseModel):
 
     mapping: Optional[Union[List[ERPMappingItem], Dict[str, Any]]] = None
     fiscal_year_start: Optional[int] = Field(default=None, ge=1990, le=2100)
+
+
+class IncrementalDecision(BaseModel):
+    """Reviewer action for one modified consolidated row."""
+
+    row_index: int
+    action: str
+
+
+class ModifiedTransaction(BaseModel):
+    row_index: int
+    customer: str
+    product: str
+    date: str
+    existing_qty: float
+    incoming_qty: float
+    difference: float
+    existing_id: int
+
+
+class IncrementalAnalysis(BaseModel):
+    """Row comparison summary. Modified rows are the only line items included."""
+
+    analysed: int = 0
+    new_count: int = 0
+    exact_count: int = 0
+    modified_count: int = 0
+    status: str = "ready"
+    recommendation: str = ""
+    modified_rows: List[ModifiedTransaction] = Field(default_factory=list)
 
 
 class ERPImportRequest(BaseModel):
@@ -131,6 +162,7 @@ class ERPImportRequest(BaseModel):
     mapping: Optional[Union[List[ERPMappingItem], Dict[str, Any]]] = None
     rows: Optional[List[ERPPreviewRow]] = None
     replace_existing: bool = False
+    row_decisions: Optional[List[IncrementalDecision]] = None
 
 
 class DuplicateReview(BaseModel):
@@ -151,7 +183,11 @@ class ERPImportResponse(BaseModel):
     records_inserted: int
     duplicate: bool = False
     requires_review: bool = False
+    duplicate_upload: bool = False
+    records_updated: int = 0
+    duplicates_skipped: int = 0
     duplicate_review: Optional[DuplicateReview] = None
+    incremental_analysis: Optional["IncrementalAnalysis"] = None
     quality_score: int = 0
     distributor_id: int
     reporting_quarter: str
@@ -163,3 +199,4 @@ class ERPImportResponse(BaseModel):
 
 
 ERPParsePreviewResponse.model_rebuild()
+ERPImportResponse.model_rebuild()

@@ -39,6 +39,8 @@ _TERMINAL_SKIP = {
     EmailProcessStatus.INVALID_SUBJECT.value,
     EmailProcessStatus.FAILED.value,
     EmailProcessStatus.HUMAN_REVIEW.value,
+    EmailProcessStatus.INCREMENTAL_REVIEW.value,
+    EmailProcessStatus.DUPLICATE_UPLOAD.value,
 }
 
 

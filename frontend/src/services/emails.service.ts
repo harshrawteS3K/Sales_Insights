@@ -33,6 +33,7 @@ export type ERPPreviewResponse = {
     unit?: string | null;
     period?: string | null;
     reporting_quarter?: string | null;
+    source_month?: string | null;
   }>;
   row_count: number;
   candidate_sheets?: string[];
@@ -87,6 +88,24 @@ export type ERPPreviewResponse = {
     new_rows: number;
     periods?: string[];
   } | null;
+  incremental_analysis?: {
+    analysed: number;
+    new_count: number;
+    exact_count: number;
+    modified_count: number;
+    status: string;
+    recommendation: string;
+    modified_rows: Array<{
+      row_index: number;
+      customer: string;
+      product: string;
+      date: string;
+      existing_qty: number;
+      incoming_qty: number;
+      difference: number;
+      existing_id: number;
+    }>;
+  } | null;
 };
 
 export type ERPImportResult = {
@@ -94,7 +113,11 @@ export type ERPImportResult = {
   records_inserted: number;
   duplicate: boolean;
   requires_review?: boolean;
+  duplicate_upload?: boolean;
+  records_updated?: number;
+  duplicates_skipped?: number;
   duplicate_review?: ERPPreviewResponse['duplicate_review'];
+  incremental_analysis?: ERPPreviewResponse['incremental_analysis'];
   quality_score: number;
   distributor_id: number;
   reporting_quarter: string;
@@ -275,6 +298,7 @@ export const EmailsService = {
       reporting_quarter?: string | null;
     }>;
     replace_existing?: boolean;
+    row_decisions?: Array<{ row_index: number; action: 'replace' | 'keep' | 'add' }>;
   }): Promise<ERPImportResult> => {
     const res = await apiRequest<{ success: boolean; data: ERPImportResult }>('/erp/import', {
       method: 'POST',
