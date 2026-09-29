@@ -15,13 +15,14 @@ class BedrockModel:
     model_id: str
     input_usd_per_1m: float
     output_usd_per_1m: float
+    provider: str = "converse"
 
 
 _MODELS: tuple[BedrockModel, ...] = (
-    BedrockModel("GPT-5.4", "openai.gpt-5.4", 0.25, 2.00),
-    BedrockModel("GLM 4.5", "zhipu.glm-4.5", 0.50, 1.50),
-    BedrockModel("GLM 4.5 Flash", "zhipu.glm-4.5-flash", 0.20, 0.80),
-    BedrockModel("MiniMax M2", "minimax.m2", 0.50, 1.50),
+    BedrockModel("GPT-5.4", "openai.gpt-5.4", 0.25, 2.00, provider="mantle"),
+    BedrockModel("GLM 4.5", "zhipu.glm-4.5", 0.50, 1.50, provider="converse"),
+    BedrockModel("GLM 4.5 Flash", "zhipu.glm-4.5-flash", 0.20, 0.80, provider="converse"),
+    BedrockModel("MiniMax M2", "minimax.m2", 0.50, 1.50, provider="converse"),
 )
 
 
@@ -67,3 +68,9 @@ def display_name_for(value: str | None) -> str:
 def rates_for(value: str | None) -> tuple[float, float]:
     found = _match(value or "") or default_model()
     return found.input_usd_per_1m, found.output_usd_per_1m
+
+
+def provider_for(value: str | None) -> str:
+    """Return the invocation provider for a display name or model id."""
+    found = _match(value or "") or default_model()
+    return found.provider
