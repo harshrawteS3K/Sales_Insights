@@ -59,6 +59,8 @@ type Props = {
   actionLabel?: string;
   loading?: boolean;
   showCountry?: boolean;
+  /** When false, Customer filter is hidden (Visualization). Default true. */
+  showCustomer?: boolean;
   value: EnterpriseFilterState;
   options: EnterpriseFilterOptions;
   onChange: (patch: Partial<EnterpriseFilterState>) => void;
@@ -74,6 +76,7 @@ export function EnterpriseAnalyticsFilters({
   actionLabel = 'View',
   loading = false,
   showCountry = false,
+  showCustomer = true,
   value,
   options,
   onChange,
@@ -256,13 +259,15 @@ export function EnterpriseAnalyticsFilters({
           onChange={v => onChange({ location: v })}
           width={140}
         />
-        <SearchAutocomplete
-          label="Customer"
-          options={options.customers}
-          value={value.customer}
-          onChange={v => onChange({ customer: v })}
-          width={200}
-        />
+        {showCustomer && (
+          <SearchAutocomplete
+            label="Customer"
+            options={options.customers}
+            value={value.customer}
+            onChange={v => onChange({ customer: v })}
+            width={200}
+          />
+        )}
         <SearchAutocomplete
           label="Product"
           options={options.products}

@@ -165,11 +165,16 @@ class LLMHeaderResolver:
     ) -> None:
         del api_key
         self._explicit_model = resolve_model_id(model) if model is not None else None
-        settings = get_settings()
         runtime = self._runtime_settings()
         self._llm_enabled = bool(runtime.get("enabled", True))
-        self.timeout = float(
-            timeout if timeout is not None else runtime.get("timeout") or settings.bedrock_timeout or 30
+        self.timeout = (
+            float(timeout)
+            if timeout is not None
+            else (
+                float(runtime["timeout"])
+                if runtime.get("timeout") not in (None, "")
+                else None
+            )
         )
         self.last_token_count = 0
         self.last_prompt_tokens = 0
@@ -191,7 +196,7 @@ class LLMHeaderResolver:
             return {
                 "enabled": True,
                 "model": default_model_id(),
-                "timeout": float(settings.bedrock_timeout or 30),
+                "timeout": None,
             }
 
     def _model_for_request(self) -> str:

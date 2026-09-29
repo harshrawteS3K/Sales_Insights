@@ -462,26 +462,25 @@ class UniversalParserOrchestrator:
                     round(det_conf, 1),
                 )
                 try:
-                    llm_result, llm_tokens = run_bounded(
-                        "llm",
-                        lambda sheet=llm_sheet: self._semantic_resolve(
-                            sheet,
-                            reason=llm_reason,
-                            run_kwargs=run_kwargs,
-                            score_kwargs=score_kwargs,
-                            sheet_candidates=run_sheet_candidates(
-                                sheet["matrix"],
-                                sheet["sheet_name"],
-                                **run_kwargs,
-                            ),
-                            fingerprint=fingerprint,
+                    # No artificial run_bounded("llm") deadline — let Bedrock finish.
+                    llm_result, llm_tokens = self._semantic_resolve(
+                        llm_sheet,
+                        reason=llm_reason,
+                        run_kwargs=run_kwargs,
+                        score_kwargs=score_kwargs,
+                        sheet_candidates=run_sheet_candidates(
+                            llm_sheet["matrix"],
+                            llm_sheet["sheet_name"],
+                            **run_kwargs,
                         ),
+                        fingerprint=fingerprint,
                     )
-                except StageTimeout:
+                except Exception as exc:  # noqa: BLE001
                     logger.warning(
-                        "LLM Structure Assist unavailable | human review | fingerprint={} | sheet={}",
+                        "LLM Structure Assist failed | fingerprint={} | sheet={} | err={}",
                         fingerprint.digest,
                         llm_sheet.get("sheet_name"),
+                        exc,
                     )
                     llm_result = None
                     continue
@@ -537,13 +536,21 @@ class UniversalParserOrchestrator:
                 )
 
             if not accepted and winner is not None:
-                winner.llm_used = True
+                # Keep deterministic result authoritative; LLM failure is audit-only.
+                winner.llm_used = False
                 winner.llm_tokens = llm_tokens
                 winner.llm_reason = llm_reason or "Bedrock unavailable"
-                if scoring_timed_out or llm_result is None:
-                    winner.warnings.append(
-                        "Human review required. Structure assist was unavailable."
-                    )
+                winner.warnings.append(
+                    "LLM structure assist unavailable; deterministic parse retained."
+                )
+                logger.warning(
+                    "LLM Fallback Triggered | result=retained_deterministic | "
+                    "file={} | reason={} | accuracy={} | rows={}",
+                    file_path.name,
+                    fallback_reason,
+                    int(round(float(winner.confidence or 0))),
+                    len(winner.rows),
+                )
 
         if winner is None or not winner.rows:
             logger.info(
@@ -726,7 +733,7 @@ class UniversalParserOrchestrator:
             "detected_headers": headers,
             "title_rows": title_rows,
         }
-        resolver = LLMHeaderResolver(timeout=30)
+        resolver = LLMHeaderResolver()
         started_llm = time.perf_counter()
         try:
             llm = resolver.resolve_headers(

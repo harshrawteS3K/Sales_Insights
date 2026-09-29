@@ -16,8 +16,8 @@ STAGE_LIMIT_SECONDS = {
     "fingerprint": 10.0,
     "classifier": 10.0,
     "scoring": 90.0,
-    # Enough for 1–3 candidate sheets with Bedrock structure assist.
-    "llm": 45.0,
+    # LLM stages are not artificially bounded here — Bedrock completes naturally
+    # (network-level read ceiling lives in bedrock_client only).
 }
 
 HUMAN_REVIEW_TIMEOUT = "Human Review Required\n\nReason : Parser Timeout"

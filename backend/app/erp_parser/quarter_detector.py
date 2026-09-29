@@ -7,7 +7,6 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.llm.bedrock_client import BedrockError, complete
 from app.llm.model_registry import default_model_id, resolve_model_id
@@ -229,11 +228,10 @@ def _llm_detect_quarter(path: Union[str, Path]) -> Optional[Dict[str, Any]]:
         finally:
             _db.close()
     except Exception:  # noqa: BLE001
-        settings = get_settings()
         rt = {
             "enabled": True,
             "model": default_model_id(),
-            "timeout": float(settings.bedrock_timeout or 60),
+            "timeout": None,
         }
 
     if not rt.get("enabled"):
@@ -251,11 +249,13 @@ def _llm_detect_quarter(path: Union[str, Path]) -> Optional[Dict[str, Any]]:
         "{\"reporting_quarter\":\"FY 2025-26 • Q2\",\"confidence\":95}"
     )
     try:
+        # No artificial 30/60s ERP deadline — let Bedrock finish (network ceiling only).
+        q_timeout = rt.get("timeout")
         result = complete(
             system=system,
             user=json.dumps({"snippets": snippets}, ensure_ascii=True),
             model_id=model,
-            timeout=float(rt.get("timeout") or 60),
+            timeout=float(q_timeout) if q_timeout not in (None, "") else None,
             reason="Quarter detection",
         )
         usage = result.usage()

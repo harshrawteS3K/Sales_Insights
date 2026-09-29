@@ -20,6 +20,12 @@ from app.repositories.sales_record_repository import (
     mt_quantity_expr,
     reporting_month_expr,
 )
+from app.services.product_standardization import (
+    canonical_products,
+    expand_product_filter,
+    merge_product_quantities,
+    normalize_product_key,
+)
 from app.utils.period_calendar import (
     calendar_year_for_fy_month,
     format_period_display,
@@ -681,7 +687,8 @@ class SalesInsightsService:
             if r[0] is not None
         ]
         customers = [str(c) for c in self.db.scalars(cust_q).all() if c]
-        products = [str(p) for p in self.db.scalars(prod_q).all() if p]
+        raw_products = [str(p) for p in self.db.scalars(prod_q).all() if p]
+        products = canonical_products(raw_products)
         locations = [str(loc) for loc in self.db.scalars(loc_q).all() if loc]
         segments = [str(s) for s in self.db.scalars(seg_q).all() if s]
         return {
@@ -725,11 +732,15 @@ class SalesInsightsService:
             Report.is_deleted.is_(False),
             Distributor.is_deleted.is_(False),
         )
-        return self.sales._apply_filters(
+        # Expand canonical product selection to all raw DB aliases.
+        product_variants: Optional[List[str]] = None
+        if product and str(product).strip() and str(product).strip().lower() != "all":
+            product_variants = expand_product_filter(product, self.sales.distinct_products())
+        q = self.sales._apply_filters(
             q,
             distributor_id=distributor_id,
             customer=customer,
-            product=product,
+            product=None if product_variants else product,
             location=location,
             segment=segment,
             search=search,
@@ -737,6 +748,11 @@ class SalesInsightsService:
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
+        if product_variants:
+            lowers = [p.strip().lower() for p in product_variants if p and p.strip()]
+            if lowers:
+                q = q.where(func.lower(SalesRecord.product).in_(lowers))
+        return q
 
     def _with_filter(self, query, filt: AnalyticsFilter, **scope_kw):
         """Dimension filters plus the shared financial-year / period predicate."""
@@ -799,7 +815,6 @@ class SalesInsightsService:
             select(
                 func.coalesce(func.sum(mt_quantity_expr()), 0),
                 func.count(func.distinct(SalesRecord.customer_name)),
-                func.count(func.distinct(SalesRecord.product)),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -807,9 +822,20 @@ class SalesInsightsService:
             filt,
             **scope_kw,
         )
-        total_kg, total_customers, total_products = self.db.execute(kpi_q).one()
+        total_kg, total_customers = self.db.execute(kpi_q).one()
         total_kg_f = _to_float(total_kg)
         total_qty_f = round_mt(total_kg_f)
+        # Distinct products counted on canonical keys (formatting variants collapsed).
+        prod_distinct_q = self._with_filter(
+            select(distinct(SalesRecord.product))
+            .select_from(SalesRecord)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .join(Distributor, Distributor.id == SalesRecord.distributor_id),
+            filt,
+            **scope_kw,
+        )
+        raw_scoped_products = [str(p) for p in self.db.scalars(prod_distinct_q).all() if p]
+        total_products = len(canonical_products(raw_scoped_products))
         n_quarters = max(len(axis_months), 1)
         avg_monthly = total_qty_f / n_quarters
 
@@ -912,21 +938,23 @@ class SalesInsightsService:
             for name, qty_kg in self.db.execute(prod_q).all()
             if name
         ]
+        prod_kg = merge_product_quantities(prod_kg, name_key="product", qty_key="kg")
+        prod_kg = sorted(prod_kg, key=lambda row: float(row.get("kg") or 0), reverse=True)
         top_n = 8
         if len(prod_kg) > top_n:
-            others_kg = sum(row["kg"] for row in prod_kg[top_n:])
+            others_kg = sum(float(row["kg"]) for row in prod_kg[top_n:])
             prod_kg = prod_kg[:top_n]
             if others_kg:
                 prod_kg.append({"product": "Others", "kg": others_kg})
-        covered_products = sum(row["kg"] for row in prod_kg)
+        covered_products = sum(float(row["kg"]) for row in prod_kg)
         product_gap = total_kg_f - covered_products
         if product_gap > 0.001:
             others = next((row for row in prod_kg if row["product"] == "Others"), None)
             if others is None:
                 prod_kg.append({"product": "Others", "kg": product_gap})
             else:
-                others["kg"] += product_gap
-        product_mt = align_quantities([row["kg"] for row in prod_kg], total_kg=total_kg_f)
+                others["kg"] = float(others["kg"]) + product_gap
+        product_mt = align_quantities([float(row["kg"]) for row in prod_kg], total_kg=total_kg_f)
         product_contribution = [
             {"product": row["product"], "qty": qty, "quantity": qty, "unit": "MT"}
             for row, qty in zip(prod_kg, product_mt)
@@ -969,12 +997,17 @@ class SalesInsightsService:
             **scope_kw,
         )
         table_rows = []
+        display_by_key = {
+            normalize_product_key(name): name for name in canonical_products(raw_scoped_products)
+        }
         for customer_name, product_name, location, month, qty_kg, distributor in self.db.execute(rows_q).all():
             quantity_mt = round_mt(qty_kg)
+            raw_product = str(product_name or "")
+            display_product = display_by_key.get(normalize_product_key(raw_product), raw_product)
             table_rows.append(
                 {
                     "customer": str(customer_name or ""),
-                    "product": str(product_name or ""),
+                    "product": display_product,
                     "location": str(location or ""),
                     "month": format_period_display(str(month or "")),
                     "qty": quantity_mt,

@@ -51,9 +51,17 @@ export function SearchAutocomplete({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const norm = (s: string) => s.toLowerCase().replace(/-/g, '').replace(/\s+/g, ' ').trim();
     const base = options.filter(o => o && o !== allValue);
     if (!q) return base.slice(0, 40);
-    return base.filter(o => o.toLowerCase().includes(q)).slice(0, 40);
+    const nq = norm(q);
+    return base
+      .filter(o => {
+        const ol = o.toLowerCase();
+        if (ol.includes(q)) return true;
+        return norm(o).includes(nq);
+      })
+      .slice(0, 40);
   }, [options, query, allValue]);
 
   const select = (next: string) => {

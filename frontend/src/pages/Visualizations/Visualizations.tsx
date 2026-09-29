@@ -209,6 +209,7 @@ export function Visualizations() {
         title="Sales Insight Filters"
         actionLabel="View"
         loading={loading}
+        showCustomer={false}
         value={filters}
         options={filterOptions}
         onChange={patch => setFilters(prev => ({ ...prev, ...patch }))}

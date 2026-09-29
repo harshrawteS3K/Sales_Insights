@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 from botocore.config import Config
@@ -26,12 +26,28 @@ _RETRYABLE = {
     "ModelNotReadyException",
 }
 
+# Network-level ceiling only when the caller does not pass a timeout.
+# Not an ERP business deadline — prevents hung sockets.
+_DEFAULT_NETWORK_TIMEOUT = 900.0
+
 _client: Any = None
 _client_key: Optional[tuple[str, float]] = None
 
 
 class BedrockError(Exception):
-    """Raised when Bedrock does not return JSON text."""
+    """Raised when Bedrock does not return usable JSON text."""
+
+
+class BedrockEmptyResponse(BedrockError):
+    """Converse returned no content blocks / no usable payload."""
+
+
+class BedrockReasoningOnly(BedrockError):
+    """Model returned reasoningContent without a final text answer."""
+
+
+class BedrockMalformedResponse(BedrockError):
+    """Response shape is unexpected or has content without extractable text."""
 
 
 @dataclass
@@ -81,14 +97,23 @@ def complete(
     timeout: Optional[float] = None,
     reason: str = "",
 ) -> BedrockCompletion:
-    """Send one JSON-only chat completion. The prompt text is the caller's."""
+    """Send one JSON-only chat completion. The prompt text is the caller's.
+
+    ``timeout=None`` means no ERP artificial deadline — only a network-level
+    read ceiling (settings.bedrock_timeout, or 900s) so sockets cannot hang forever.
+    """
     settings = get_settings()
     region = (
         (settings.bedrock_region or settings.aws_region or "ap-south-1").strip()
         or "ap-south-1"
     )
     resolved_model = resolve_model_id(model_id or settings.default_model)
-    limit = float(timeout if timeout is not None else settings.bedrock_timeout or 30)
+    if timeout is not None:
+        limit = float(timeout)
+    else:
+        configured = float(settings.bedrock_timeout or 0) or 0.0
+        # Prefer a long network ceiling over short ERP defaults (30/45/60).
+        limit = configured if configured >= 120 else _DEFAULT_NETWORK_TIMEOUT
     client = get_bedrock_client(region, limit)
     started = time.perf_counter()
     last_error: Exception | None = None
@@ -101,9 +126,7 @@ def complete(
                 messages=[{"role": "user", "content": [{"text": user}]}],
                 inferenceConfig={"temperature": 0.0, "maxTokens": 800},
             )
-            text = _message_text(response)
-            if not text.strip():
-                raise BedrockError("Bedrock returned an empty response")
+            text = _extract_final_text(response, model_id=resolved_model)
             usage = response.get("usage") if isinstance(response, dict) else {}
             if not isinstance(usage, dict):
                 usage = {}
@@ -131,7 +154,12 @@ def complete(
                 reason or "",
             )
             return result
-        except (ClientError, BotoCoreError, ReadTimeoutError, BedrockError) as exc:
+        except (
+            ClientError,
+            BotoCoreError,
+            ReadTimeoutError,
+            BedrockError,
+        ) as exc:
             last_error = exc
             if attempt >= _MAX_RETRIES or not _retryable(exc):
                 break
@@ -141,19 +169,111 @@ def complete(
                 resolved_model,
                 exc,
             )
+    if isinstance(last_error, ReadTimeoutError):
+        raise BedrockError(f"Bedrock request timed out: {last_error}") from last_error
     raise BedrockError(f"Bedrock request failed: {last_error}") from last_error
 
 
-def _message_text(response: Any) -> str:
+def _block_keys(block: Any) -> List[str]:
+    if not isinstance(block, dict):
+        return [type(block).__name__]
+    return sorted(str(k) for k in block.keys())
+
+
+def _reasoning_text(block: Dict[str, Any]) -> str:
+    """Extract diagnostic text from reasoningContent without treating it as the answer."""
+    raw = block.get("reasoningContent")
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw.strip()
+    if isinstance(raw, dict):
+        for key in ("text", "reasoningText", "content"):
+            val = raw.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+            if isinstance(val, dict) and isinstance(val.get("text"), str):
+                return str(val.get("text") or "").strip()
+    return ""
+
+
+def _inspect_message(response: Any) -> Dict[str, Any]:
+    """Classify Converse message content without logging prompt/workbook data."""
     try:
-        content = response["output"]["message"]["content"]
+        message = response["output"]["message"]
+        content = message.get("content") if isinstance(message, dict) else None
     except (KeyError, TypeError) as exc:
-        raise BedrockError("Unexpected Bedrock response shape") from exc
-    parts = []
-    for block in content or []:
-        if isinstance(block, dict) and block.get("text"):
-            parts.append(str(block["text"]))
-    return "\n".join(parts).strip()
+        raise BedrockMalformedResponse("Unexpected Bedrock response shape") from exc
+
+    blocks = list(content or [])
+    text_parts: List[str] = []
+    has_reasoning = False
+    block_key_sets: List[List[str]] = []
+    for block in blocks:
+        keys = _block_keys(block)
+        block_key_sets.append(keys)
+        if not isinstance(block, dict):
+            continue
+        if block.get("text"):
+            text_parts.append(str(block["text"]))
+        if "reasoningContent" in block or _reasoning_text(block):
+            has_reasoning = True
+    text = "\n".join(text_parts).strip()
+    usage = response.get("usage") if isinstance(response, dict) else {}
+    if not isinstance(usage, dict):
+        usage = {}
+    return {
+        "text": text,
+        "has_text": bool(text),
+        "has_reasoning": has_reasoning,
+        "block_count": len(blocks),
+        "block_keys": block_key_sets,
+        "stop_reason": response.get("stopReason") if isinstance(response, dict) else None,
+        "input_tokens": int(usage.get("inputTokens") or 0),
+        "output_tokens": int(usage.get("outputTokens") or 0),
+    }
+
+
+def _log_no_text_diagnosis(info: Dict[str, Any], *, model_id: str) -> None:
+    logger.warning(
+        "Bedrock response without final text | model={} | stopReason={} | "
+        "block_count={} | block_keys={} | input_tokens={} | output_tokens={} | "
+        "has_text={} | has_reasoningContent={}",
+        model_id,
+        info.get("stop_reason"),
+        info.get("block_count"),
+        info.get("block_keys"),
+        info.get("input_tokens"),
+        info.get("output_tokens"),
+        info.get("has_text"),
+        info.get("has_reasoning"),
+    )
+
+
+def _extract_final_text(response: Any, *, model_id: str) -> str:
+    """
+    Return the final assistant text answer only.
+
+    reasoningContent is never accepted as the structured answer.
+    """
+    info = _inspect_message(response)
+    if info["has_text"]:
+        return str(info["text"])
+    _log_no_text_diagnosis(info, model_id=model_id)
+    if info["has_reasoning"]:
+        raise BedrockReasoningOnly(
+            "Bedrock returned reasoningContent without a final text answer"
+        )
+    if int(info.get("block_count") or 0) == 0:
+        raise BedrockEmptyResponse("Bedrock returned an empty response")
+    raise BedrockMalformedResponse(
+        "Bedrock returned content blocks without extractable text"
+    )
+
+
+def _message_text(response: Any) -> str:
+    """Backward-compatible helper used by health checks."""
+    return _extract_final_text(response, model_id="")
 
 
 def probe(model: str, message: str, *, timeout: float = 20.0) -> dict:
@@ -194,7 +314,12 @@ def probe(model: str, message: str, *, timeout: float = 20.0) -> dict:
             messages=[{"role": "user", "content": [{"text": text}]}],
             inferenceConfig={"temperature": 0.0, "maxTokens": 200},
         )
-        reply = _message_text(response) or "Bedrock connection successful."
+        try:
+            reply = _extract_final_text(response, model_id=resolved) or "Bedrock connection successful."
+        except BedrockReasoningOnly:
+            reply = "Bedrock connection successful (reasoning-only probe reply)."
+        except BedrockError:
+            reply = "Bedrock connection successful."
         latency = int(round((time.perf_counter() - started) * 1000))
         logger.info(
             "Bedrock health check | status=Connected | model={} | region={} | latency_ms={}",
@@ -266,10 +391,18 @@ def _probe_failure(exc: Exception) -> tuple[str, str]:
 
 
 def _retryable(exc: Exception) -> bool:
+    """Retry throttling/transient errors only — never retry content-shape failures."""
     if isinstance(exc, NoCredentialsError):
         return False
-    if isinstance(exc, (ReadTimeoutError, BedrockError)):
-        return not isinstance(exc, BedrockError) or "empty response" in str(exc).lower()
+    if isinstance(
+        exc,
+        (BedrockEmptyResponse, BedrockReasoningOnly, BedrockMalformedResponse),
+    ):
+        return False
+    if isinstance(exc, BedrockError):
+        return False
+    if isinstance(exc, ReadTimeoutError):
+        return True
     if isinstance(exc, BotoCoreError) and not isinstance(exc, ClientError):
         return True
     if isinstance(exc, ClientError):
