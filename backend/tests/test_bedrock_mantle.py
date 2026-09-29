@@ -1,129 +1,103 @@
-"""Registry provider routing and Mantle vs Converse paths."""
+"""Registry and Converse health-check routing for the three UAT models."""
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 from botocore.exceptions import ClientError, NoCredentialsError
 
-from app.llm.bedrock_client import BedrockError, complete, probe
+from app.llm.bedrock_client import complete, probe
 from app.llm.model_registry import (
-    display_name_for,
+    default_model,
     is_known_model,
     provider_for,
     public_model_names,
-    rates_for,
     resolve_model_id,
 )
 
 
-def test_gpt54_resolves_to_mantle_provider():
-    assert resolve_model_id("GPT-5.4") == "openai.gpt-5.4"
-    assert resolve_model_id("openai.gpt-5.4") == "openai.gpt-5.4"
-    assert provider_for("GPT-5.4") == "mantle"
-    assert provider_for("openai.gpt-5.4") == "mantle"
-    assert display_name_for("openai.gpt-5.4") == "GPT-5.4"
+def test_default_model_is_minimax_m2():
+    assert default_model().display_name == "MiniMax M2"
+    assert default_model().model_id == "minimax.minimax-m2"
 
 
-def test_existing_models_remain_converse():
-    assert provider_for("GLM 4.5") == "converse"
-    assert provider_for("GLM 4.5 Flash") == "converse"
-    assert provider_for("MiniMax M2") == "converse"
-    assert resolve_model_id("GLM 4.5") == "zhipu.glm-4.5"
-    assert resolve_model_id("MiniMax M2") == "minimax.m2"
+def test_resolve_exact_model_ids():
+    assert resolve_model_id("MiniMax M2") == "minimax.minimax-m2"
+    assert resolve_model_id("GLM 4.7") == "zai.glm-4.7"
+    assert resolve_model_id("GLM 4.7 Flash") == "zai.glm-4.7-flash"
 
 
-def test_registry_helpers_unchanged_for_unknown_and_pricing():
-    assert is_known_model("not-a-model") is False
-    assert resolve_model_id("not-a-model") == "openai.gpt-5.4"
-    assert provider_for("not-a-model") == "mantle"
-    assert rates_for("GPT-5.4") == (0.25, 2.00)
-    assert rates_for("GLM 4.5") == (0.50, 1.50)
-    assert "GPT-5.4" in public_model_names()
+def test_all_models_use_converse():
+    for name in ("MiniMax M2", "GLM 4.7", "GLM 4.7 Flash"):
+        assert provider_for(name) == "converse"
 
 
-def test_complete_routes_gpt54_through_mantle_not_converse():
-    mantle = MagicMock()
-    mantle.chat_completions.return_value = {
-        "choices": [{"message": {"content": '{"ok":true}'}}],
-        "usage": {"prompt_tokens": 11, "completion_tokens": 4},
-    }
-    with patch("app.llm.bedrock_client._get_mantle_client", return_value=mantle) as get_mantle:
-        with patch("app.llm.bedrock_client.get_bedrock_client") as get_runtime:
-            result = complete(system="sys", user="usr", model_id="GPT-5.4", reason="unit")
-    get_mantle.assert_called_once()
-    get_runtime.assert_not_called()
-    mantle.chat_completions.assert_called_once()
-    payload = mantle.chat_completions.call_args.kwargs
-    assert payload["model"] == "openai.gpt-5.4"
-    assert payload["messages"] == [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "usr"},
-    ]
-    assert result.text == '{"ok":true}'
-    assert result.model_id == "openai.gpt-5.4"
-    assert result.input_tokens == 11
-    assert result.output_tokens == 4
+def test_public_model_names_exact():
+    assert public_model_names() == ["MiniMax M2", "GLM 4.7", "GLM 4.7 Flash"]
 
 
-def test_complete_routes_glm_through_converse():
+def test_removed_models_are_unknown():
+    assert is_known_model("GPT-5.4") is False
+    assert is_known_model("GLM 4.5") is False
+    assert is_known_model("GLM 4.5 Flash") is False
+    assert is_known_model("openai.gpt-5.4") is False
+    assert is_known_model("zhipu.glm-4.5") is False
+
+
+def test_complete_uses_converse_for_all_three():
     runtime = MagicMock()
     runtime.converse.return_value = {
-        "output": {"message": {"content": [{"text": "hello"}]}},
-        "usage": {"inputTokens": 3, "outputTokens": 2},
+        "output": {"message": {"content": [{"text": "ok"}]}},
+        "usage": {"inputTokens": 1, "outputTokens": 1},
     }
-    with patch("app.llm.bedrock_client.get_bedrock_client", return_value=runtime) as get_runtime:
-        with patch("app.llm.bedrock_client._get_mantle_client") as get_mantle:
-            result = complete(system="sys", user="usr", model_id="GLM 4.5")
-    get_runtime.assert_called_once()
-    get_mantle.assert_not_called()
-    runtime.converse.assert_called_once()
-    assert result.text == "hello"
-    assert result.model_id == "zhipu.glm-4.5"
-    assert result.input_tokens == 3
-    assert result.output_tokens == 2
+    for name, model_id in (
+        ("MiniMax M2", "minimax.minimax-m2"),
+        ("GLM 4.7", "zai.glm-4.7"),
+        ("GLM 4.7 Flash", "zai.glm-4.7-flash"),
+    ):
+        runtime.reset_mock()
+        with patch("app.llm.bedrock_client.get_bedrock_client", return_value=runtime):
+            result = complete(system="sys", user="usr", model_id=name)
+        runtime.converse.assert_called_once()
+        assert runtime.converse.call_args.kwargs["modelId"] == model_id
+        assert result.model_id == model_id
 
 
-def test_probe_gpt54_uses_mantle():
-    with patch("app.llm.bedrock_client._probe_mantle", return_value="pong") as mantle:
-        with patch("app.llm.bedrock_client._probe_converse") as converse:
-            data = probe("GPT-5.4", "Hello")
-    mantle.assert_called_once()
-    converse.assert_not_called()
-    assert data["status"] == "Connected"
-    assert data["reply"] == "pong"
-    assert data["model"] == "GPT-5.4"
-    assert data["model_id"] == "openai.gpt-5.4"
-
-
-def test_probe_glm_uses_converse():
-    with patch("app.llm.bedrock_client._probe_converse", return_value="ok") as converse:
-        with patch("app.llm.bedrock_client._probe_mantle") as mantle:
-            data = probe("GLM 4.5 Flash", "Hello")
-    converse.assert_called_once()
-    mantle.assert_not_called()
-    assert data["status"] == "Connected"
-    assert data["model_id"] == "zhipu.glm-4.5-flash"
+def test_probe_routes_all_three_through_converse():
+    for name, model_id in (
+        ("MiniMax M2", "minimax.minimax-m2"),
+        ("GLM 4.7", "zai.glm-4.7"),
+        ("GLM 4.7 Flash", "zai.glm-4.7-flash"),
+    ):
+        with patch("app.llm.bedrock_client.boto3.client") as client_factory:
+            client = MagicMock()
+            client.converse.return_value = {
+                "output": {"message": {"content": [{"text": "pong"}]}},
+            }
+            client_factory.return_value = client
+            data = probe(name, "Hello")
+        client.converse.assert_called_once()
+        assert client.converse.call_args.kwargs["modelId"] == model_id
+        assert data["status"] == "Connected"
+        assert data["model_id"] == model_id
+        assert data["model"] == name
 
 
 def test_probe_maps_auth_and_access_errors():
-    with patch("app.llm.bedrock_client._probe_mantle", side_effect=NoCredentialsError()):
-        auth = probe("GPT-5.4", "Hello")
+    with patch(
+        "app.llm.bedrock_client.boto3.client",
+        side_effect=NoCredentialsError(),
+    ):
+        auth = probe("MiniMax M2", "Hello")
     assert auth["status"] == "Authentication Failed"
 
     denied = ClientError(
         {"Error": {"Code": "AccessDeniedException", "Message": "denied"}, "ResponseMetadata": {}},
-        "ChatCompletions",
+        "Converse",
     )
-    with patch("app.llm.bedrock_client._probe_mantle", side_effect=denied):
-        access = probe("GPT-5.4", "Hello")
+    with patch("app.llm.bedrock_client.boto3.client") as client_factory:
+        client = MagicMock()
+        client.converse.side_effect = denied
+        client_factory.return_value = client
+        access = probe("GLM 4.7", "Hello")
     assert access["status"] == "Access Denied"
-
-
-def test_complete_mantle_raises_bedrock_error_on_empty():
-    mantle = MagicMock()
-    mantle.chat_completions.return_value = {"choices": [{"message": {"content": ""}}]}
-    with patch("app.llm.bedrock_client._get_mantle_client", return_value=mantle):
-        with pytest.raises(BedrockError):
-            complete(system="sys", user="usr", model_id="GPT-5.4")

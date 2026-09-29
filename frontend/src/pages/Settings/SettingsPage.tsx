@@ -62,7 +62,7 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [healthModel, setHealthModel] = useState('GPT-5.4');
+  const [healthModel, setHealthModel] = useState('MiniMax M2');
   const [healthMessage, setHealthMessage] = useState('Hello');
   const [healthBusy, setHealthBusy] = useState(false);
   const [healthResult, setHealthResult] = useState<{
@@ -86,7 +86,7 @@ export function SettingsPage() {
       setSettings(sRes.data);
       setProvider(sRes.data.provider || 'bedrock');
       setModel(sRes.data.model || sRes.data.available_models?.[0] || '');
-      setHealthModel(sRes.data.model || sRes.data.available_models?.[0] || 'GPT-5.4');
+      setHealthModel(sRes.data.model || sRes.data.available_models?.[0] || 'MiniMax M2');
       setEnabled(Boolean(sRes.data.enabled));
       setUsage(uRes.data);
     } catch (err) {
@@ -390,7 +390,7 @@ export function SettingsPage() {
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#374151' }}>Active Model</span>
             <select value={healthModel} onChange={event => setHealthModel(event.target.value)} style={inputStyle}>
-              {(settings?.available_models || ['GPT-5.4', 'GLM 4.5', 'GLM 4.5 Flash', 'MiniMax M2']).map(name => (
+              {(settings?.available_models || ['MiniMax M2', 'GLM 4.7', 'GLM 4.7 Flash']).map(name => (
                 <option key={name} value={name}>
                   {name}
                 </option>

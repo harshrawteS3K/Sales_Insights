@@ -19,10 +19,9 @@ class BedrockModel:
 
 
 _MODELS: tuple[BedrockModel, ...] = (
-    BedrockModel("GPT-5.4", "openai.gpt-5.4", 0.25, 2.00, provider="mantle"),
-    BedrockModel("GLM 4.5", "zhipu.glm-4.5", 0.50, 1.50, provider="converse"),
-    BedrockModel("GLM 4.5 Flash", "zhipu.glm-4.5-flash", 0.20, 0.80, provider="converse"),
-    BedrockModel("MiniMax M2", "minimax.m2", 0.50, 1.50, provider="converse"),
+    BedrockModel("MiniMax M2", "minimax.minimax-m2", 0.50, 1.50, provider="converse"),
+    BedrockModel("GLM 4.7", "zai.glm-4.7", 0.50, 1.50, provider="converse"),
+    BedrockModel("GLM 4.7 Flash", "zai.glm-4.7-flash", 0.20, 0.80, provider="converse"),
 )
 
 
