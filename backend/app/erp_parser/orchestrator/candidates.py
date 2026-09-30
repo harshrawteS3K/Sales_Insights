@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from app.erp_parser.block_parser import extract_product_block_rows
+from app.erp_parser.grouped_product_parser import extract_grouped_product_rows
 from app.erp_parser.cross_product_matrix import extract_cross_product_rows
 from app.erp_parser.cross_tab import (
     detect_product_month_matrix,
@@ -28,6 +29,7 @@ PARSER_LABEL = {
     "metadata": "Metadata Parser",
     "stock_item_register": "Stock Item Register Parser",
     "product_blocks": "Block Product Parser",
+    "grouped_product_transactions": "Grouped Product Transaction Parser",
     "matrix_month": "Matrix Month Parser",
     "cross_product_matrix": "Cross Product Matrix",
     "header": "Header Parser",
@@ -42,6 +44,7 @@ PRIORITY = {
     "metadata": 6,
     "stock_item_register": 5,
     "product_blocks": 4,
+    "grouped_product_transactions": 5,
     "matrix_month": 3,
     "cross_product_matrix": 3,
     "product_month_matrix": 2,
@@ -163,6 +166,39 @@ def run_stock(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: Any) -
         )
 
     return _guard("stock_item_register", sheet_name, _run)
+
+
+def run_grouped_products(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: Any) -> ParserResult:
+    def _run() -> ParserResult:
+        extracted = extract_grouped_product_rows(
+            matrix,
+            fiscal_year_start=kwargs.get("fiscal_year_start"),
+            reporting_quarter=kwargs.get("reporting_quarter"),
+        )
+        field_conf = {"customer": 98.0, "product": 98.0, "quantity": 98.0}
+        result = _result(
+            "grouped_product_transactions",
+            extracted,
+            _mapped(
+                customer=None,
+                product=None,
+                quantity=None,
+                originals={
+                    "customer": "CUSTOMER",
+                    "product": "PRODUCT section",
+                    "quantity": "QUANTITY",
+                },
+                method="grouped_product_transactions",
+                field_conf=field_conf,
+            ),
+            sheet_name=sheet_name,
+            reason="Customer, Doc Date, Quantity, and PRODUCT sections",
+        )
+        result.confidence = float(extracted.get("confidence") or 0)
+        result.layout = "grouped_product_transactions"
+        return result
+
+    return _guard("grouped_product_transactions", sheet_name, _run)
 
 
 def run_blocks(matrix: Sequence[Sequence[Any]], sheet_name: str, **kwargs: Any) -> ParserResult:
@@ -458,6 +494,7 @@ def run_monthly_sheets(
 _SHEET_RUNNERS = {
     "metadata": run_metadata,
     "stock_item_register": run_stock,
+    "grouped_product_transactions": run_grouped_products,
     "product_blocks": run_blocks,
     "matrix_month": run_matrix,
     "cross_product_matrix": run_cross_product,

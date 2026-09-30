@@ -547,6 +547,7 @@ class ERPParserService:
         breakdown = result.confidence_breakdown or {}
         block_mode = breakdown.get("layout") in {
             "product_blocks",
+            "grouped_product_transactions",
             "metadata_sales",
             "stock_item_register",
             "matrix_month",

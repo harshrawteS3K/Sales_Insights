@@ -11,6 +11,7 @@ from app.models.distributor import Distributor
 from app.models.report import Report
 from app.models.sales_record import SalesRecord
 from app.repositories.base import BaseRepository
+from app.utils.quantity import _COUNT_UNITS
 
 
 def company_expr():
@@ -44,16 +45,19 @@ def mt_quantity_expr():
     There is no separate quantity_mt column. Consolidation writes MT and sets
     ``unit`` to MT. Rows whose ``unit`` is still KG are kilograms and are
     divided by 1000. A row already marked MT is used as stored, even when
-    ``original_unit`` records that the workbook was KG.
+    ``original_unit`` records that the workbook was KG. Piece counts
+    (Units, Nos, Pcs) are not weight and contribute 0.
     """
     unit_norm = func.upper(func.trim(func.coalesce(SalesRecord.unit, "")))
     origin_norm = func.upper(func.trim(func.coalesce(SalesRecord.original_unit, "")))
+    count_unit = or_(unit_norm.in_(_COUNT_UNITS), origin_norm.in_(_COUNT_UNITS))
     stored_as_mt = unit_norm.in_(_MT_UNIT_LABELS)
     stored_as_kg = or_(
         unit_norm.in_(_KG_UNIT_LABELS),
         and_(not_(stored_as_mt), origin_norm.in_(_KG_UNIT_LABELS)),
     )
     return case(
+        (count_unit, 0),
         (stored_as_kg, SalesRecord.quantity / 1000),
         else_=SalesRecord.quantity,
     )

@@ -176,7 +176,13 @@ class ValidationMixin:
                     quantity_display=qty_disp,
                     period=period,
                     source_month=source_month or None,
-                    unit="KG" if str(applied_unit).strip().upper().startswith("KG") else "MT",
+                    unit=(
+                        "KG"
+                        if str(applied_unit).strip().upper().startswith("KG")
+                        else "UNITS"
+                        if str(applied_unit).strip().upper() in {"UNIT", "UNITS"}
+                        else "MT"
+                    ),
                     original_unit=(row_unit or source_unit or "MT").strip().upper() or "MT",
                     company=company,
                     row_hash=build_sales_row_hash(

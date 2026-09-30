@@ -1,27 +1,22 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import {
   Play,
-  Eye,
   Loader2,
   Inbox,
   ArrowRight,
   Trash2,
   X,
-  CheckCircle2,
 } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { BLUE, BORDER, RED, TEAL } from '../../constants/theme';
 import type { EmailRecord } from '../../types';
 import {
   EmailsService,
-  type ERPMappingItem,
   type ERPPreviewResponse,
 } from '../../services/emails.service';
 import { ApiError, getSession } from '../../api';
 import { isAdminRole } from '../../utils/rbac';
-import { formatMt, formatPeriodDisplay, fyQuarterLabel } from '../../utils/quarter';
-
-const MAP_OPTIONS = ['Customer Name', 'Product', 'Sales Quantity', 'Ignored'] as const;
+import { formatPeriodDisplay, fyQuarterLabel } from '../../utils/quarter';
 
 /** Max unread emails per Sync Outlook click; max ready emails per Proceed batch. */
 const BATCH_LIMIT = 5;
@@ -159,17 +154,7 @@ export function EmailsModule() {
   const [error, setError] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
-  const [previewEmail, setPreviewEmail] = useState<EmailRecord | null>(null);
-  const [preview, setPreview] = useState<ERPPreviewResponse | null>(null);
-  const [rowActions, setRowActions] = useState<Record<number, 'replace' | 'keep' | 'add'>>({});
-  const [previewBusy, setPreviewBusy] = useState(false);
-  const [importBusy, setImportBusy] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const [mappings, setMappings] = useState<ERPMappingItem[]>([]);
-  const [distributorId, setDistributorId] = useState<number | ''>('');
   const [fiscalYearStart, setFiscalYearStart] = useState(2025);
-  const [importDone, setImportDone] = useState<string | null>(null);
-  const [confirmAddPending, setConfirmAddPending] = useState(false);
   const [selectedEmailId, setSelectedEmailId] = useState<number | null>(null);
   const [consolidateOpen, setConsolidateOpen] = useState(false);
   const [consolidateBusy, setConsolidateBusy] = useState(false);
@@ -213,11 +198,6 @@ export function EmailsModule() {
     return () => window.clearInterval(id);
   }, [emails]);
 
-  useEffect(() => {
-    setRowActions({});
-    setConfirmAddPending(false);
-  }, [previewEmail?.id, preview?.incremental_analysis?.analysed]);
-
   const handleExtract = async () => {
     setExtracting(true);
     setError(null);
@@ -255,179 +235,6 @@ export function EmailsModule() {
       setError(err instanceof ApiError ? err.message : 'Failed to sync / load emails');
     } finally {
       setExtracting(false);
-    }
-  };
-
-  const openPreview = async (email: EmailRecord) => {
-    setPreviewEmail(email);
-    setPreview(null);
-    setPreviewError(null);
-    setImportDone(null);
-    setConfirmAddPending(false);
-    setPreviewBusy(true);
-    try {
-      const data = await EmailsService.previewEmail(email.id);
-      setPreview(data);
-      setMappings(data.mapping || []);
-      setDistributorId(data.distributor_id ?? '');
-      if (data.fiscal_year_start) setFiscalYearStart(Number(data.fiscal_year_start));
-      await refreshEmails();
-    } catch (err) {
-      setPreviewError(err instanceof ApiError ? err.message : 'Failed to parse workbook');
-    } finally {
-      setPreviewBusy(false);
-    }
-  };
-
-  const recomputeWithMappings = async (next: ERPMappingItem[]) => {
-    if (!previewEmail) return;
-    setMappings(next);
-    setPreviewBusy(true);
-    setPreviewError(null);
-    try {
-      const data = await EmailsService.previewEmail(previewEmail.id, next);
-      setPreview(data);
-      setMappings(data.mapping || next);
-      if (data.distributor_id && !distributorId) {
-        setDistributorId(data.distributor_id);
-      }
-    } catch (err) {
-      setPreviewError(err instanceof ApiError ? err.message : 'Failed to recompute mapping');
-    } finally {
-      setPreviewBusy(false);
-    }
-  };
-
-  const onChangeMapped = (index: number, mapped: string) => {
-    const next = mappings.map((m, i) => (i === index ? { ...m, mapped } : m));
-    // Prevent duplicate target fields (except Ignored)
-    if (mapped !== 'Ignored') {
-      for (let i = 0; i < next.length; i++) {
-        if (i !== index && next[i].mapped === mapped) {
-          next[i] = { ...next[i], mapped: 'Ignored' };
-        }
-      }
-    }
-    void recomputeWithMappings(next);
-  };
-
-  const onChangeColumn = (index: number, column: number) => {
-    const colMeta = preview?.available_columns?.find(c => c.column === column);
-    const next = mappings.map((m, i) =>
-      i === index
-        ? {
-            ...m,
-            column,
-            original: colMeta?.header || m.original,
-          }
-        : m,
-    );
-    void recomputeWithMappings(next);
-  };
-
-  const overall = preview?.confidence?.overall ?? 0;
-  const detectedQuarter =
-    preview?.detected_quarter ||
-    previewEmail?.quarter ||
-    preview?.rows?.find(r => r.period || r.reporting_quarter)?.period ||
-    preview?.rows?.find(r => r.period || r.reporting_quarter)?.reporting_quarter ||
-    '';
-
-  const canImport =
-    overall >= 75 &&
-    Boolean(distributorId) &&
-    Boolean(preview?.subject_valid !== false) &&
-    (preview?.monthly_pivot ? Boolean(fiscalYearStart) : Boolean(detectedQuarter)) &&
-    !previewBusy;
-
-  const approveImport = async (replaceExisting = false, confirmAdd = false) => {
-    if (!previewEmail || !preview || !distributorId) return;
-    const analysis = preview.incremental_analysis;
-    const needsConfirmAdd =
-      !confirmAdd &&
-      !replaceExisting &&
-      (analysis?.status === 'confirm_add' ||
-        analysis?.status === 'human_review' ||
-        (analysis != null &&
-          ((analysis.exact_count || 0) > 0 || (analysis.modified_count || 0) > 0) &&
-          (analysis.new_count || 0) > 0));
-    if (needsConfirmAdd) {
-      setConfirmAddPending(true);
-      setPreviewError(null);
-      return;
-    }
-    const modified = analysis?.modified_rows || [];
-    if (!replaceExisting && !confirmAdd && modified.length) {
-      const missing = modified.some(row => !rowActions[row.row_index]);
-      if (missing) {
-        setPreviewError('Choose Replace, Keep Existing, or Add Anyway for every modified row.');
-        return;
-      }
-      if (modified.some(row => rowActions[row.row_index] === 'add')) {
-        const confirmed = window.confirm(
-          'Add Anyway inserts the incoming row as an additional record. Continue?',
-        );
-        if (!confirmed) return;
-      }
-    }
-    setImportBusy(true);
-    setPreviewError(null);
-    setConfirmAddPending(false);
-    try {
-      const result = await EmailsService.importErp({
-        email_id: previewEmail.id,
-        distributor_id: Number(distributorId),
-        reporting_quarter: preview.monthly_pivot
-          ? fyQuarterLabel(fiscalYearStart, 1)
-          : detectedQuarter || undefined,
-        fiscal_year_start: preview.monthly_pivot ? fiscalYearStart : undefined,
-        mapping: mappings,
-        rows: preview.rows,
-        replace_existing: replaceExisting,
-        confirm_add: confirmAdd,
-        row_decisions: confirmAdd
-          ? []
-          : modified.map(row => ({
-              row_index: row.row_index,
-              action: rowActions[row.row_index],
-            })),
-      });
-      if (result.duplicate_upload) {
-        setImportDone('Duplicate Upload. No records inserted.');
-        await refreshEmails();
-        return;
-      }
-      if (result.requires_review && result.duplicate_review?.detected && !confirmAdd) {
-        setPreview(current =>
-          current
-            ? {
-                ...current,
-                duplicate_review: result.duplicate_review,
-                incremental_analysis: result.incremental_analysis || current.incremental_analysis,
-              }
-            : current,
-        );
-        setConfirmAddPending(true);
-        return;
-      }
-      const qLabel =
-        result.quarters_imported?.length
-          ? result.quarters_imported.map(formatPeriodDisplay).join(', ')
-          : formatPeriodDisplay(result.reporting_quarter || '');
-      setImportDone(
-        `Imported ${result.records_inserted} rows` +
-          (result.records_updated ? `, updated ${result.records_updated}` : '') +
-          (result.duplicates_skipped ? `, skipped ${result.duplicates_skipped} duplicates` : '') +
-          (result.workbooks_imported && result.workbooks_imported.length > 1
-            ? ` from ${result.workbooks_imported.length} workbooks`
-            : '') +
-          ` into Consolidated Data (${qLabel}).`,
-      );
-      await refreshEmails();
-    } catch (err) {
-      setPreviewError(err instanceof ApiError ? err.message : 'Import failed');
-    } finally {
-      setImportBusy(false);
     }
   };
 
@@ -493,7 +300,7 @@ export function EmailsModule() {
     if (!batch.length) {
       if (pendingLowAccuracyCount > 0) {
         setError(
-          `${pendingLowAccuracyCount} email(s) need Preview (accuracy < ${MIN_IMPORT_ACCURACY}%). Fix mappings there before consolidating.`,
+          `${pendingLowAccuracyCount} email(s) are below ${MIN_IMPORT_ACCURACY}% accuracy and were not consolidated.`,
         );
       } else {
         setError(
@@ -530,7 +337,7 @@ export function EmailsModule() {
               emailId: email.id,
               subject: email.subject,
               status: 'skipped',
-              detail: `Accuracy ${Math.round(accuracy)}% — use Preview`,
+              detail: `Accuracy ${Math.round(accuracy)}% — below the consolidate threshold`,
             });
             setBatchResults([...results]);
             continue;
@@ -541,7 +348,7 @@ export function EmailsModule() {
               emailId: email.id,
               subject: email.subject,
               status: 'skipped',
-              detail: 'Distributor not matched — use Preview to map',
+              detail: 'Distributor not matched',
             });
             setBatchResults([...results]);
             continue;
@@ -556,7 +363,7 @@ export function EmailsModule() {
               subject: email.subject,
               status: 'skipped',
               detail:
-                'Confirmation required — open Preview to add new records for this distributor/period.',
+                'Confirmation required before adding records for this distributor/period.',
             });
             setBatchResults([...results]);
             continue;
@@ -568,7 +375,7 @@ export function EmailsModule() {
               emailId: email.id,
               subject: email.subject,
               status: 'skipped',
-              detail: 'Quarter not detected — use Preview',
+              detail: 'Quarter not detected',
             });
             setBatchResults([...results]);
             continue;
@@ -662,7 +469,7 @@ export function EmailsModule() {
         }, 1100);
       } else {
         setConsolidateError(
-          'No emails were imported. Fix skipped items via Preview, then try again.',
+          'No emails were imported. Skipped items stay in the list with their accuracy and status.',
         );
       }
     } finally {
@@ -670,14 +477,6 @@ export function EmailsModule() {
       setBatchProgress(null);
     }
   };
-
-  const distributorOptions = useMemo(() => {
-    const matches = preview?.distributor_matches || [];
-    const all = preview?.all_distributors || [];
-    if (matches.length > 1) return matches;
-    if (matches.length === 1 && !preview?.distributor_unknown) return matches;
-    return all.length ? all : matches;
-  }, [preview]);
 
   return (
     <div style={{ padding: '28px 32px', fontFamily: "'Inter', system-ui, sans-serif", maxWidth: 1200 }}>
@@ -696,8 +495,7 @@ export function EmailsModule() {
             Email Extraction
           </h1>
           <p style={{ fontSize: '0.875rem', color: '#6B7280', margin: 0 }}>
-            Sync Outlook ERP Excel attachments, preview AI column mapping, then approve import into
-            Consolidated Data.
+            Sync Outlook ERP attachments, then consolidate ready emails into Consolidated Data.
           </p>
         </div>
         <button
@@ -1030,14 +828,6 @@ export function EmailsModule() {
                       </td>
                       <td style={{ padding: '12px 14px' }}>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'nowrap' }}>
-                          <button
-                            type="button"
-                            style={{ ...btnSecondary, padding: '5px 8px', fontSize: '0.75rem' }}
-                            disabled={!email.hasExcel}
-                            onClick={() => void openPreview(email)}
-                          >
-                            <Eye size={12} /> Preview
-                          </button>
                           {isAdmin && (
                             <button
                               type="button"
@@ -1065,567 +855,6 @@ export function EmailsModule() {
           </div>
         )}
       </div>
-
-      {(previewEmail || previewBusy) && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(15,23,42,0.45)',
-            zIndex: 1000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 16,
-          }}
-          onClick={() => {
-            if (!previewBusy && !importBusy) {
-              setPreviewEmail(null);
-              setPreview(null);
-            }
-          }}
-        >
-          <div
-            style={{
-              background: 'white',
-              borderRadius: 12,
-              width: '100%',
-              maxWidth: 920,
-              maxHeight: '92vh',
-              overflowY: 'auto',
-              padding: 24,
-              boxShadow: '0 20px 40px rgba(0,0,0,0.15)',
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h2 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 700 }}>AI Mapping Preview</h2>
-              <button
-                type="button"
-                onClick={() => {
-                  setPreviewEmail(null);
-                  setPreview(null);
-                }}
-                style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#6B7280' }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {previewBusy && !preview && (
-              <div style={{ padding: 40, textAlign: 'center', color: '#6B7280' }}>
-                <Loader2 size={22} style={{ marginBottom: 8 }} /> Parsing workbook…
-              </div>
-            )}
-
-            {previewError && (
-              <div
-                style={{
-                  padding: 12,
-                  marginBottom: 12,
-                  borderRadius: 8,
-                  background: 'rgba(217,58,47,0.08)',
-                  color: RED,
-                  fontSize: '0.8125rem',
-                }}
-              >
-                {previewError}
-              </div>
-            )}
-
-            {importDone && (
-              <div
-                style={{
-                  padding: 12,
-                  marginBottom: 12,
-                  borderRadius: 8,
-                  background: 'rgba(16,185,129,0.1)',
-                  color: '#065F46',
-                  fontSize: '0.875rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                }}
-              >
-                <CheckCircle2 size={16} /> {importDone}
-              </div>
-            )}
-
-            {preview && (
-              <>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-                    gap: 12,
-                    marginBottom: 16,
-                    padding: 14,
-                    background: '#F9FAFB',
-                    borderRadius: 8,
-                    border: `1px solid ${BORDER}`,
-                  }}
-                >
-                  <Info label="Workbook" value={preview.workbook_name || '—'} />
-                  <Info label="Sheet" value={preview.sheet_name} />
-                  <Info label="Total Rows" value={String(preview.row_count)} />
-                  <Info
-                    label="Mapping Source"
-                    value={
-                      preview.mapping_source === 'llm'
-                        ? 'LLM Assisted'
-                        : preview.mapping_source === 'manual'
-                          ? 'Manual'
-                          : 'Python'
-                    }
-                    valueColor={preview.mapping_source === 'llm' ? '#1D4ED8' : '#111827'}
-                  />
-                  <Info
-                    label="Overall Confidence"
-                    value={`${Math.round(overall)}%`}
-                    valueColor={confColor(overall)}
-                  />
-                </div>
-
-                {overall < 75 && (
-                  <div
-                    style={{
-                      padding: 12,
-                      marginBottom: 14,
-                      borderRadius: 8,
-                      background: 'rgba(220,38,38,0.08)',
-                      color: RED,
-                      fontSize: '0.8125rem',
-                    }}
-                  >
-                    Low accuracy detected. Please review column mappings before importing.
-                  </div>
-                )}
-
-                <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#6B7280', marginBottom: 8 }}>
-                  COLUMN MAPPING
-                </div>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem', marginBottom: 16 }}>
-                  <thead>
-                    <tr style={{ background: '#F3F4F6' }}>
-                      <th style={th}>Original Column</th>
-                      <th style={th}>AI Mapping</th>
-                      <th style={th}>Accuracy</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {mappings.map((m, idx) => (
-                      <tr key={`${m.original}-${idx}`} style={{ borderBottom: `1px solid ${BORDER}` }}>
-                        <td style={td}>
-                          <select
-                            value={m.column ?? ''}
-                            onChange={e => onChangeColumn(idx, Number(e.target.value))}
-                            style={selectStyle}
-                            disabled={previewBusy}
-                          >
-                            {(preview.available_columns || []).map(c => (
-                              <option key={c.column} value={c.column}>
-                                {c.header}
-                              </option>
-                            ))}
-                            {!preview.available_columns?.length && (
-                              <option value={m.column ?? ''}>{m.original}</option>
-                            )}
-                          </select>
-                        </td>
-                        <td style={td}>
-                          <select
-                            value={m.mapped}
-                            onChange={e => onChangeMapped(idx, e.target.value)}
-                            style={selectStyle}
-                            disabled={previewBusy}
-                          >
-                            {MAP_OPTIONS.map(opt => (
-                              <option key={opt} value={opt}>
-                                {opt}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        <td style={{ ...td, fontWeight: 700, color: confColor(m.confidence || 0) }}>
-                          {Math.round(m.confidence || 0)}%
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-
-                <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-                  <div style={{ flex: '1 1 220px' }}>
-                    <label style={labelStyle}>Distributor</label>
-                    <select
-                      value={distributorId}
-                      onChange={e =>
-                        setDistributorId(e.target.value ? Number(e.target.value) : '')
-                      }
-                      style={selectStyle}
-                    >
-                      <option value="">
-                        {preview.distributor_unknown ? 'Unknown Distributor — select…' : 'Select distributor'}
-                      </option>
-                      {distributorOptions.map(d => (
-                        <option key={d.id} value={d.id}>
-                          {d.company}
-                          {d.email ? ` (${d.email})` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div style={{ flex: '0 1 180px' }}>
-                    <label style={labelStyle}>
-                      {preview.monthly_pivot ? 'Fiscal Year Start' : 'Detected Quarter (AI)'}
-                    </label>
-                    {preview.monthly_pivot ? (
-                      <select
-                        value={fiscalYearStart}
-                        onChange={e => {
-                          const y = Number(e.target.value);
-                          setFiscalYearStart(y);
-                          if (previewEmail) {
-                            setPreviewBusy(true);
-                            EmailsService.previewEmail(previewEmail.id, mappings, y)
-                              .then(data => {
-                                setPreview(data);
-                                setMappings(data.mapping || mappings);
-                              })
-                              .catch(err =>
-                                setPreviewError(
-                                  err instanceof ApiError ? err.message : 'Failed to refresh quarters',
-                                ),
-                              )
-                              .finally(() => setPreviewBusy(false));
-                          }
-                        }}
-                        style={selectStyle}
-                      >
-                        {[2024, 2025, 2026, 2027].map(y => (
-                          <option key={y} value={y}>
-                            FY {y}–{String((y + 1) % 100).padStart(2, '0')}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <div
-                        style={{
-                          padding: '9px 12px',
-                          border: `1px solid ${BORDER}`,
-                          borderRadius: 8,
-                          fontSize: '0.875rem',
-                          background: '#F9FAFB',
-                          color: detectedQuarter ? '#111827' : RED,
-                        }}
-                      >
-                        {detectedQuarter ? formatPeriodDisplay(detectedQuarter) : 'Detecting…'}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {preview.monthly_pivot && (
-                  <div
-                    style={{
-                      padding: 10,
-                      marginBottom: 14,
-                      borderRadius: 8,
-                      background: 'rgba(31,95,168,0.06)',
-                      color: BLUE,
-                      fontSize: '0.8125rem',
-                    }}
-                  >
-                    Workbook columns are stored as Indian FY quarters only.
-                  </div>
-                )}
-
-                {(preview.attachment_summary || []).length > 0 && (
-                  <>
-                    <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#6B7280', marginBottom: 8 }}>
-                      ATTACHMENT SUMMARY
-                    </div>
-                    <div style={{ maxHeight: 180, overflow: 'auto', marginBottom: 16, border: `1px solid ${BORDER}`, borderRadius: 8 }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
-                        <thead>
-                          <tr style={{ background: '#F3F4F6' }}>
-                            <th style={th}>Attachment Name</th>
-                            <th style={th}>Product Name</th>
-                            <th style={th}>Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(preview.attachment_summary || []).map(item => (
-                            <tr key={item.attachment_name} style={{ borderBottom: `1px solid ${BORDER}` }}>
-                              <td style={td}>{item.attachment_name}</td>
-                              <td style={td}>{item.product_name}</td>
-                              <td style={{ ...td, fontWeight: 700, color: item.status === 'Parsed' ? '#059669' : RED }}>
-                                {item.status}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </>
-                )}
-
-                <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#6B7280', marginBottom: 8 }}>
-                  NORMALIZED ROWS
-                </div>
-                <div style={{ maxHeight: 240, overflow: 'auto', marginBottom: 16, border: `1px solid ${BORDER}`, borderRadius: 8 }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
-                    <thead>
-                      <tr style={{ background: '#F3F4F6' }}>
-                        <th style={th}>Sr No</th>
-                        {preview.monthly_pivot && <th style={th}>Quarter</th>}
-                        <th style={th}>Customer</th>
-                        <th style={th}>Product</th>
-                        <th style={{ ...th, textAlign: 'right' }}>Sales Qty (MT)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {preview.rows.map((r, i) => (
-                        <tr key={`${r.customer_name}-${r.period || ''}-${i}`} style={{ borderBottom: `1px solid ${BORDER}` }}>
-                          <td style={td}>{i + 1}</td>
-                          {preview.monthly_pivot && (
-                            <td style={td}>
-                              {r.period ? formatPeriodDisplay(r.period) : '—'}
-                            </td>
-                          )}
-                          <td style={td}>{r.customer_name}</td>
-                          <td style={td}>{r.product}</td>
-                          <td style={{ ...td, textAlign: 'right' }}>
-                            {formatMt(r.sales_quantity_mt ?? 0)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {preview.incremental_analysis && !importDone && (
-                  <div
-                    style={{
-                      marginTop: 14,
-                      padding: '12px 14px',
-                      borderRadius: 8,
-                      background: preview.incremental_analysis.modified_count > 0 ? '#FFFBEB' : '#F8FAFC',
-                      border: `1px solid ${preview.incremental_analysis.modified_count > 0 ? '#FCD34D' : BORDER}`,
-                      color: '#0F172A',
-                      fontSize: '0.8125rem',
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    <div style={{ fontWeight: 700, marginBottom: 8 }}>Duplicate Analysis</div>
-                    <div>{preview.incremental_analysis.analysed} Records Analysed</div>
-                    <div>New Records: {preview.incremental_analysis.new_count}</div>
-                    <div>Exact Duplicates: {preview.incremental_analysis.exact_count}</div>
-                    <div>Modified Transactions: {preview.incremental_analysis.modified_count}</div>
-                    <div style={{ marginTop: 8, fontWeight: 600 }}>
-                      {preview.incremental_analysis.status === 'confirm_add' ||
-                      preview.incremental_analysis.status === 'human_review'
-                        ? 'Confirmation Required'
-                        : preview.incremental_analysis.status === 'duplicate_upload'
-                          ? 'Duplicate Upload'
-                          : 'Ready to import'}
-                    </div>
-                    <div style={{ marginTop: 4 }}>{preview.incremental_analysis.recommendation}</div>
-                    {preview.incremental_analysis.modified_rows.length > 0 && (
-                      <div style={{ marginTop: 12, overflowX: 'auto' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
-                          <thead>
-                            <tr style={{ background: '#F3F4F6' }}>
-                              {['Customer', 'Product', 'Date', 'Existing Qty', 'Incoming Qty', 'Difference', 'Action'].map(heading => (
-                                <th key={heading} style={{ ...th, textAlign: heading.includes('Qty') || heading === 'Difference' ? 'right' : 'left' }}>
-                                  {heading}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {preview.incremental_analysis.modified_rows.map(row => (
-                              <tr key={row.row_index} style={{ borderBottom: `1px solid ${BORDER}` }}>
-                                <td style={td}>{row.customer}</td>
-                                <td style={td}>{row.product}</td>
-                                <td style={td}>{row.date}</td>
-                                <td style={{ ...td, textAlign: 'right' }}>{row.existing_qty}</td>
-                                <td style={{ ...td, textAlign: 'right' }}>{row.incoming_qty}</td>
-                                <td style={{ ...td, textAlign: 'right' }}>{row.difference}</td>
-                                <td style={td}>
-                                  <select
-                                    value={rowActions[row.row_index] || ''}
-                                    onChange={event =>
-                                      setRowActions(current => ({
-                                        ...current,
-                                        [row.row_index]: event.target.value as 'replace' | 'keep' | 'add',
-                                      }))
-                                    }
-                                    style={{ fontSize: '0.75rem', padding: '4px 6px' }}
-                                  >
-                                    <option value="">Choose</option>
-                                    <option value="replace">Replace</option>
-                                    <option value="keep">Keep Existing</option>
-                                    <option value="add">Add Anyway</option>
-                                  </select>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {preview.duplicate_review?.detected && !preview.incremental_analysis && !importDone && (
-                  <div
-                    style={{
-                      marginTop: 14,
-                      padding: '12px 14px',
-                      borderRadius: 8,
-                      background: '#FFFBEB',
-                      border: '1px solid #FCD34D',
-                      color: '#92400E',
-                      fontSize: '0.8125rem',
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    <div style={{ fontWeight: 700, marginBottom: 6 }}>
-                      {preview.duplicate_review.message}
-                    </div>
-                    <div>
-                      Distributor : {preview.duplicate_review.distributor || '—'}
-                      <br />
-                      FY : {preview.duplicate_review.financial_year || '—'}
-                      <br />
-                      Quarter : {preview.duplicate_review.quarter || '—'}
-                      <br />
-                      Existing Rows : {preview.duplicate_review.existing_rows}
-                      <br />
-                      New Rows : {preview.duplicate_review.new_rows}
-                    </div>
-                  </div>
-                )}
-
-                {confirmAddPending && !importDone && (
-                  <div
-                    style={{
-                      marginTop: 14,
-                      padding: '12px 14px',
-                      borderRadius: 8,
-                      background: '#FFFBEB',
-                      border: '1px solid #FCD34D',
-                      color: '#92400E',
-                      fontSize: '0.8125rem',
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    <div style={{ fontWeight: 700, marginBottom: 10 }}>
-                      {preview.duplicate_review?.message ||
-                        preview.incremental_analysis?.recommendation ||
-                        'Some records for this distributor/period already exist. Do you want to add the new records?'}
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                      <button
-                        type="button"
-                        style={btnSecondary}
-                        disabled={importBusy}
-                        onClick={() => setConfirmAddPending(false)}
-                      >
-                        No, Cancel
-                      </button>
-                      <button
-                        type="button"
-                        style={{
-                          ...btnPrimary,
-                          background: canImport ? TEAL : '#9CA3AF',
-                          cursor: canImport && !importBusy ? 'pointer' : 'not-allowed',
-                        }}
-                        disabled={!canImport || importBusy}
-                        onClick={() => void approveImport(false, true)}
-                      >
-                        {importBusy ? 'Adding…' : 'Yes, Add'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
-                  <button
-                    type="button"
-                    style={btnSecondary}
-                    onClick={() => {
-                      setPreviewEmail(null);
-                      setPreview(null);
-                      setConfirmAddPending(false);
-                    }}
-                  >
-                    {preview.duplicate_review?.detected && !importDone ? 'Cancel Import' : 'Close'}
-                  </button>
-                  {!importDone && !confirmAddPending && preview.incremental_analysis && (
-                    <button
-                      type="button"
-                      style={{
-                        ...btnPrimary,
-                        background: canImport ? TEAL : '#9CA3AF',
-                        cursor: canImport && !importBusy ? 'pointer' : 'not-allowed',
-                      }}
-                      disabled={!canImport || importBusy}
-                      onClick={() => void approveImport(false)}
-                    >
-                      {importBusy ? 'Importing…' : 'Proceed to Consolidation'}
-                    </button>
-                  )}
-                  {!importDone &&
-                    !confirmAddPending &&
-                    !preview.incremental_analysis &&
-                    preview.duplicate_review?.detected && (
-                    <button
-                      type="button"
-                      style={{
-                        ...btnPrimary,
-                        background: canImport ? TEAL : '#9CA3AF',
-                        cursor: canImport && !importBusy ? 'pointer' : 'not-allowed',
-                      }}
-                      disabled={!canImport || importBusy}
-                      onClick={() => void approveImport(true)}
-                    >
-                      {importBusy ? 'Replacing…' : 'Replace Existing Records'}
-                    </button>
-                  )}
-                  {!importDone &&
-                    !confirmAddPending &&
-                    !preview.incremental_analysis &&
-                    !preview.duplicate_review?.detected && (
-                    <button
-                      type="button"
-                      style={{
-                        ...btnPrimary,
-                        background: canImport ? TEAL : '#9CA3AF',
-                        cursor: canImport && !importBusy ? 'pointer' : 'not-allowed',
-                      }}
-                      disabled={!canImport || importBusy}
-                      onClick={() => void approveImport(false)}
-                    >
-                      {importBusy ? 'Importing…' : 'Approve Import'}
-                    </button>
-                  )}
-                  {importDone && (
-                    <button
-                      type="button"
-                      style={{ ...btnPrimary, background: TEAL }}
-                      onClick={() => navigate('/consolidated-data')}
-                    >
-                      Open Consolidated Data
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
 
       {consolidateOpen && (
         <div
@@ -1684,7 +913,7 @@ export function EmailsModule() {
             </div>
             <p style={{ margin: '0 0 16px', fontSize: '0.875rem', color: '#6B7280' }}>
               Importing up to {BATCH_LIMIT} ready emails (Excel + accuracy ≥ {MIN_IMPORT_ACCURACY}% +
-              matched distributor). Others stay for Preview.
+              matched distributor). Emails that are not ready stay in the list.
             </p>
 
             {batchProgress && (

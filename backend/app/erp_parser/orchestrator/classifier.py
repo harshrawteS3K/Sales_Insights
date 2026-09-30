@@ -12,6 +12,7 @@ _LABELS = {
     "metadata": "Sales Analysis Metadata",
     "stock_item_register": "Stock Item Register",
     "product_blocks": "Block Product",
+    "grouped_product_transactions": "Grouped Product Transactions",
     "cross_product_matrix": "Cross Product Matrix",
     "matrix_month": "Matrix Monthly",
     "header": "Standard Header",

@@ -29,15 +29,29 @@ export type SalesInsightsQuery = {
   page_size?: number;
 };
 
+export type QuarterlyTotal = {
+  label: string;
+  display_label?: string;
+  quarter: number;
+  financial_year_start: number;
+  record_count: number;
+  sales_mt: number;
+  sales_mt_display: string;
+};
+
 export type SalesInsightsPayload = {
   kpis: {
     total_sales_mt: number;
     total_sales_mt_display: string;
     total_customers: number;
     total_products: number;
+    average_quarterly_sales_mt?: number;
+    average_quarterly_sales_mt_display?: string;
     avg_monthly_sales_mt: number;
     avg_monthly_sales_mt_display: string;
   };
+  quarterly_totals?: QuarterlyTotal[];
+  record_count?: number;
   monthly_trend: Array<{ month: string; qty: number; tooltip?: string }>;
   top_customers: Array<{ customer: string; qty: number; quantity: number; unit: string }>;
   product_contribution: Array<{ product: string; qty: number; quantity: number; unit: string }>;

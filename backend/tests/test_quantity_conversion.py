@@ -100,3 +100,5 @@ def test_e_mixed_records_respect_each_source_unit():
     assert quantity_as_mt(Decimal("65.12"), unit="MT", original_unit="KG") == Decimal("65.12")
     # KG-only (unit still KG) must divide
     assert quantity_as_mt(Decimal("65.12"), unit="KG", original_unit="KG") == Decimal("0.065120")
+    # Piece counts stored as MT must not be treated as tonnes
+    assert quantity_as_mt(Decimal("33040"), unit="MT", original_unit="UNITS") == Decimal("0")

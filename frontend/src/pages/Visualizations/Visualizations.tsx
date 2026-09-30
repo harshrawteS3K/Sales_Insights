@@ -246,10 +246,55 @@ export function Visualizations() {
             <KpiCard label="Total Products" value={String(kpis?.total_products ?? 0)} />
             <KpiCard
               label="Average Quarterly Sales (MT)"
-              value={kpis?.avg_monthly_sales_mt_display || '0'}
+              value={
+                kpis?.average_quarterly_sales_mt_display ||
+                kpis?.avg_monthly_sales_mt_display ||
+                '0'
+              }
               valueColor={TEAL}
             />
           </div>
+
+          <ChartCard
+            title="Quarterly Overview"
+            subtitle="Sales Quantity (MT) by quarter for the selected filters"
+            style={{ marginBottom: 20 }}
+          >
+            {(data.quarterly_totals || []).length === 0 ? (
+              <div style={{ color: '#94A3B8', fontSize: '0.875rem' }}>
+                No quarterly sales for the selected filters.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {(data.quarterly_totals || []).map(quarter => (
+                  <div
+                    key={quarter.label}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 16,
+                      flexWrap: 'wrap',
+                      fontSize: '0.8125rem',
+                      color: '#374151',
+                      padding: '6px 0',
+                      borderBottom: `1px solid ${BORDER}`,
+                    }}
+                  >
+                    <span style={{ fontWeight: 700, minWidth: 180, color: '#111827' }}>
+                      {quarter.display_label || formatPeriodDisplay(quarter.label)}
+                    </span>
+                    <span style={{ color: '#6B7280' }}>
+                      {quarter.record_count.toLocaleString()} record
+                      {quarter.record_count === 1 ? '' : 's'}
+                    </span>
+                    <span style={{ marginLeft: 'auto', fontWeight: 700, color: BLUE }}>
+                      {quarter.sales_mt_display}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </ChartCard>
 
           <ChartCard
             title="Sales Trend"

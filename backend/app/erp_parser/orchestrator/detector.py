@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Sequence
 
 from app.erp_parser.block_parser import detect_block_product_layout
+from app.erp_parser.grouped_product_parser import detect_grouped_product_layout
 from app.erp_parser.cross_product_matrix import detect_cross_product_matrix
 from app.erp_parser.matrix_month_parser import detect_matrix_month_layout
 from app.erp_parser.metadata_parser import detect_metadata_layout
@@ -30,6 +31,15 @@ def fingerprint_sheet(matrix: Sequence[Sequence[Any]]) -> List[Dict[str, Any]]:
                 "layout": "Stock Register",
                 "fingerprint_confidence": 90.0,
                 "reason": "Particulars with Outwards or Qty. Out sales quantity",
+            }
+        )
+    if detect_grouped_product_layout(matrix):
+        found.append(
+            {
+                "parser_name": "grouped_product_transactions",
+                "layout": "Grouped Product Transactions",
+                "fingerprint_confidence": 96.0,
+                "reason": "Customer, Doc Date, Quantity, and PRODUCT sections",
             }
         )
     if detect_block_product_layout(matrix):

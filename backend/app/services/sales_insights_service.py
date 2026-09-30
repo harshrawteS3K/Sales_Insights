@@ -83,6 +83,141 @@ def _to_float(value: Any) -> float:
         return 0.0
 
 
+def _customer_identity_expr():
+    """Distinct customer identity: trim, collapse whitespace, case-fold.
+
+    Matches ``customer_name_key`` so casing variants of one customer count once.
+    """
+    collapsed = func.regexp_replace(
+        func.coalesce(SalesRecord.customer_name, ""),
+        r"\s+",
+        " ",
+        "g",
+    )
+    return func.nullif(func.lower(func.trim(collapsed)), "")
+
+
+def _quarter_of_record(
+    reporting: Optional[str], source_month: Optional[str]
+) -> Optional[Tuple[int, int]]:
+    """Map one consolidated row to a single FY quarter.
+
+    A quarter label on the consolidated period wins. Month labels map to the
+    Indian FY quarter. An annual FY label falls back to the source month.
+    Returns None when the row names a year but no quarter or month.
+    """
+    reporting_text = str(reporting or "").strip()
+    spec = parse_quarter_label(reporting_text) if reporting_text else None
+    if spec and spec.kind == "quarter" and spec.year and spec.quarter:
+        return int(spec.year), int(spec.quarter)
+    candidates: List[str] = []
+    if not (spec and spec.kind == "year"):
+        if reporting_text:
+            candidates.append(reporting_text)
+    source_text = str(source_month or "").strip()
+    if source_text:
+        candidates.append(source_text)
+    for candidate in candidates:
+        parsed = parse_quarter_label(candidate)
+        if parsed and parsed.kind == "quarter" and parsed.year and parsed.quarter:
+            return int(parsed.year), int(parsed.quarter)
+    return None
+
+
+def _fy_of_annual_label(reporting: Optional[str]) -> Optional[int]:
+    spec = parse_quarter_label(str(reporting or "").strip())
+    if spec and spec.kind == "year" and spec.year:
+        return int(spec.year)
+    return None
+
+
+def _empty_quarter_bucket(year: int, quarter: int) -> Dict[str, Any]:
+    return {
+        "financial_year_start": year,
+        "quarter": quarter,
+        "label": fy_quarter_label(year, quarter),
+        "record_count": 0,
+        "sales_mt": 0.0,
+    }
+
+
+def _rollup_quarter_groups(
+    groups: List[Tuple[Optional[str], Optional[str], int, float]],
+    window_labels: List[str],
+) -> List[Dict[str, Any]]:
+    """Sum each consolidated group into exactly one quarter.
+
+    Quantity is the MT amount already computed for the group (KG rows converted
+    once, MT rows unchanged). A row is never added to two quarters.
+
+    Rows whose consolidated period is only a financial year, with no month, have
+    no quarter of their own. Their MT is shared evenly across that year's
+    quarters inside the selected window so it is still counted once. Those
+    quarters are marked populated only when the year has no quarterly rows;
+    otherwise an annual remainder must not turn a genuinely empty quarter into
+    a quarter "with data".
+    """
+    buckets: Dict[Tuple[int, int], Dict[str, Any]] = {}
+
+    def ensure(year: int, quarter: int) -> Dict[str, Any]:
+        key = (year, quarter)
+        bucket = buckets.get(key)
+        if bucket is None:
+            bucket = _empty_quarter_bucket(year, quarter)
+            buckets[key] = bucket
+        return bucket
+
+    for label in window_labels:
+        spec = parse_quarter_label(label)
+        if spec and spec.kind == "quarter" and spec.year and spec.quarter:
+            ensure(int(spec.year), int(spec.quarter))
+
+    annual: Dict[int, Dict[str, float]] = {}
+    for reporting, source_month, count, qty in groups:
+        placed = _quarter_of_record(reporting, source_month)
+        amount = _to_float(qty)
+        rows = int(count or 0)
+        if placed is not None:
+            bucket = ensure(placed[0], placed[1])
+            bucket["record_count"] = int(bucket["record_count"]) + rows
+            bucket["sales_mt"] = float(bucket["sales_mt"]) + amount
+            continue
+        fy_year = _fy_of_annual_label(reporting) or _fy_of_annual_label(source_month)
+        if fy_year is None and buckets:
+            fy_year = sorted(buckets)[-1][0]
+        if fy_year is None:
+            continue
+        slot = annual.setdefault(fy_year, {"qty": 0.0, "rows": 0.0})
+        slot["qty"] += amount
+        slot["rows"] += rows
+
+    for fy_year, slot in annual.items():
+        targets = [key for key in buckets if key[0] == fy_year]
+        if not targets:
+            for quarter in (1, 2, 3, 4):
+                ensure(fy_year, quarter)
+            targets = [(fy_year, quarter) for quarter in (1, 2, 3, 4)]
+        direct = [key for key in targets if int(buckets[key]["record_count"]) > 0]
+        share_keys = direct or targets
+        remaining = Decimal(str(slot["qty"]))
+        share = remaining / Decimal(len(share_keys))
+        rows_left = int(slot["rows"])
+        base_rows = rows_left // len(share_keys) if share_keys else 0
+        for index, key in enumerate(share_keys):
+            part = remaining if index == len(share_keys) - 1 else min(share, remaining)
+            buckets[key]["sales_mt"] = float(buckets[key]["sales_mt"]) + float(part)
+            remaining -= part
+            # Each annual row is counted in exactly one share quarter.
+            add_rows = rows_left - base_rows * (len(share_keys) - index - 1)
+            if index < len(share_keys) - 1:
+                add_rows = base_rows
+            buckets[key]["record_count"] = int(buckets[key]["record_count"]) + add_rows
+            rows_left -= add_rows
+
+    ordered = sorted(buckets)
+    return [buckets[key] for key in ordered]
+
+
 def _shift_month(year: int, month: int, delta: int) -> Tuple[int, int]:
     d = date(year, month, 1) + relativedelta(months=delta)
     return d.year, d.month
@@ -814,7 +949,8 @@ class SalesInsightsService:
         kpi_q = self._with_filter(
             select(
                 func.coalesce(func.sum(mt_quantity_expr()), 0),
-                func.count(func.distinct(SalesRecord.customer_name)),
+                func.count(distinct(_customer_identity_expr())),
+                func.count(SalesRecord.id),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -822,7 +958,7 @@ class SalesInsightsService:
             filt,
             **scope_kw,
         )
-        total_kg, total_customers = self.db.execute(kpi_q).one()
+        total_kg, total_customers, _record_count = self.db.execute(kpi_q).one()
         total_kg_f = _to_float(total_kg)
         total_qty_f = round_mt(total_kg_f)
         # Distinct products counted on canonical keys (formatting variants collapsed).
@@ -836,8 +972,58 @@ class SalesInsightsService:
         )
         raw_scoped_products = [str(p) for p in self.db.scalars(prod_distinct_q).all() if p]
         total_products = len(canonical_products(raw_scoped_products))
-        n_quarters = max(len(axis_months), 1)
-        avg_monthly = total_qty_f / n_quarters
+
+        quarter_q = self._with_filter(
+            select(
+                reporting_month_expr().label("reporting"),
+                SalesRecord.source_month,
+                func.count(SalesRecord.id),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
+            )
+            .select_from(SalesRecord)
+            .join(Report, Report.id == SalesRecord.report_id)
+            .join(Distributor, Distributor.id == SalesRecord.distributor_id)
+            .group_by(reporting_month_expr(), SalesRecord.source_month),
+            filt,
+            **scope_kw,
+        )
+        quarter_buckets = _rollup_quarter_groups(
+            [
+                (reporting, source_month, int(count or 0), _to_float(qty))
+                for reporting, source_month, count, qty in self.db.execute(quarter_q).all()
+            ],
+            axis_months,
+        )
+        # Same MT total, rounded per quarter, with drift applied once so the
+        # displayed quarters still add up to Total Sales.
+        aligned = align_quantities(
+            [float(bucket["sales_mt"]) for bucket in quarter_buckets],
+            total_kg=total_kg_f,
+        )
+        quarterly_totals: List[Dict[str, Any]] = []
+        for bucket, qty in zip(quarter_buckets, aligned):
+            quarterly_totals.append(
+                {
+                    "label": bucket["label"],
+                    "display_label": format_period_display(bucket["label"]),
+                    "quarter": int(bucket["quarter"]),
+                    "financial_year_start": int(bucket["financial_year_start"]),
+                    "record_count": int(bucket["record_count"]),
+                    "sales_mt": qty,
+                    "sales_mt_display": format_mt(qty),
+                }
+            )
+        populated = [
+            row
+            for row in quarterly_totals
+            if int(row["record_count"]) > 0 or float(row["sales_mt"]) > 0
+        ]
+        if populated:
+            avg_quarterly = round_mt(
+                sum(float(row["sales_mt"]) for row in populated) / len(populated)
+            )
+        else:
+            avg_quarterly = 0.0
 
         trend_q = self._with_filter(
             select(
@@ -1024,9 +1210,13 @@ class SalesInsightsService:
                 "total_sales_mt_display": format_mt(total_qty_f),
                 "total_customers": int(total_customers or 0),
                 "total_products": int(total_products or 0),
-                "avg_monthly_sales_mt": round_mt(avg_monthly),
-                "avg_monthly_sales_mt_display": format_mt(avg_monthly),
+                "average_quarterly_sales_mt": avg_quarterly,
+                "average_quarterly_sales_mt_display": format_mt(avg_quarterly),
+                "avg_monthly_sales_mt": avg_quarterly,
+                "avg_monthly_sales_mt_display": format_mt(avg_quarterly),
             },
+            "quarterly_totals": quarterly_totals,
+            "record_count": int(_record_count or 0),
             "monthly_trend": monthly_trend,
             "top_customers": top_customers,
             "product_contribution": product_contribution,

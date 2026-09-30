@@ -36,10 +36,8 @@ import { SearchAutocomplete } from '../../components/ui/SearchAutocomplete';
 import {
   applyPeriodSummaries,
   buildYearQuarterTimeline,
-  formatMt,
   formatPeriodDisplay,
   fyShortDisplay,
-  overviewFromPeriodSummaries,
   parseQuarter,
 } from '../../utils/quarter';
 import type { PeriodSummaryItem } from '../../types';
@@ -254,11 +252,6 @@ export function ConsolidatedData() {
     const built = buildYearQuarterTimeline(reportGroups);
     return applyPeriodSummaries(built, periodSummaries);
   }, [reportGroups, periodSummaries]);
-
-  const quarterOverview = useMemo(() => {
-    if (periodSummaries.length) return overviewFromPeriodSummaries(periodSummaries);
-    return timeline.flatMap(y => y.quarters);
-  }, [periodSummaries, timeline]);
 
   const toggleQuarter = (label: string) => {
     setExpandedQuarters(prev => {
@@ -770,58 +763,6 @@ export function ConsolidatedData() {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {quarterOverview.length > 0 && (
-                <div
-                  style={{
-                    background: 'white',
-                    border: `1px solid ${BORDER}`,
-                    borderRadius: 12,
-                    padding: '16px 18px',
-                    marginBottom: 8,
-                  }}
-                >
-                  <div
-                    style={{
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                      color: '#6B7280',
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.05em',
-                      marginBottom: 10,
-                    }}
-                  >
-                    Quarterly Overview
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {quarterOverview.map(q => (
-                      <div
-                        key={`ov-${q.label}`}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 16,
-                          flexWrap: 'wrap',
-                          fontSize: '0.8125rem',
-                          color: '#374151',
-                          padding: '6px 0',
-                          borderBottom: `1px solid ${BORDER}`,
-                        }}
-                      >
-                        <span style={{ fontWeight: 700, minWidth: 140, color: '#111827' }}>
-                          {q.displayLabel || formatPeriodDisplay(q.label)}
-                        </span>
-                        <span style={{ color: '#6B7280' }}>
-                          {q.distributorCount} distributor{q.distributorCount === 1 ? '' : 's'}
-                        </span>
-                        <span style={{ marginLeft: 'auto', fontWeight: 700, color: BLUE }}>
-                          {formatMt(q.totalQuantity)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               {timeline.map(yearBucket => (
                 <div key={`year-${yearBucket.year}`} style={{ marginBottom: 8 }}>
                   <div
@@ -908,8 +849,6 @@ export function ConsolidatedData() {
                               <div style={{ marginTop: 2, fontSize: '0.75rem', color: '#6B7280' }}>
                                 {qBucket.distributorCount} distributor
                                 {qBucket.distributorCount === 1 ? '' : 's'}
-                                {' · '}
-                                {formatMt(qBucket.totalQuantity)}
                                 {typeof qBucket.reportCountFull === 'number' &&
                                   qBucket.reports.length < qBucket.reportCountFull && (
                                     <span style={{ color: '#9CA3AF' }}>

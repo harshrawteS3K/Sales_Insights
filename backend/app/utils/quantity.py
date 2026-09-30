@@ -17,6 +17,26 @@ _QTY_PATTERN = re.compile(r"[^0-9.\-]")
 KG_PER_MT = Decimal("1000")
 CANONICAL_UNIT = "MT"
 DEFAULT_SOURCE_UNIT = "MT"
+# Tally "Units" / piece counts are not a weight. They must not be summed as MT.
+_COUNT_UNITS = frozenset(
+    {
+        "UNIT",
+        "UNITS",
+        "NOS",
+        "NO",
+        "PCS",
+        "PC",
+        "PIECE",
+        "PIECES",
+        "NUMBER",
+        "NUMBERS",
+    }
+)
+
+
+def is_count_unit(unit: Optional[str]) -> bool:
+    """True when the label is a piece count, not KG or MT."""
+    return (unit or "").strip().upper() in _COUNT_UNITS
 
 
 def normalize_unit(unit: Optional[str]) -> str:
@@ -188,6 +208,8 @@ def quantity_as_mt(
     amount = Decimal(str(value or 0))
     stored = normalize_unit(unit or "")
     source = normalize_unit(original_unit or "")
+    if is_count_unit(unit) or is_count_unit(original_unit):
+        return Decimal("0")
     if stored == "KG" or (stored != "MT" and source == "KG"):
         return kg_to_mt(amount)
     return amount

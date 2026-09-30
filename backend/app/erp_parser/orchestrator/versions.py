@@ -6,6 +6,7 @@ PARSER_VERSION = {
     "metadata": "v2.0",
     "stock_item_register": "v2.4",
     "product_blocks": "v2.2",
+    "grouped_product_transactions": "v1.0",
     "matrix_month": "v3.0",
     "cross_product_matrix": "v3.1",
     "product_month_matrix": "v2.1",
