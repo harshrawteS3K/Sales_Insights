@@ -260,7 +260,22 @@ export function applyPeriodSummaries<T extends TimelineReport>(
   for (const s of summaries) {
     const parsed = parseQuarter(s.label);
     const key = (parsed?.label || s.label).trim().toLowerCase();
-    byLabel.set(key, s);
+    const prev = byLabel.get(key);
+    if (!prev) {
+      byLabel.set(key, {
+        label: parsed?.label || s.label,
+        distributorCount: s.distributorCount,
+        reportCount: s.reportCount,
+        totalQuantity: Number(s.totalQuantity) || 0,
+      });
+    } else {
+      byLabel.set(key, {
+        ...prev,
+        totalQuantity: (Number(prev.totalQuantity) || 0) + (Number(s.totalQuantity) || 0),
+        reportCount: (prev.reportCount || 0) + (s.reportCount || 0),
+        distributorCount: Math.max(prev.distributorCount || 0, s.distributorCount || 0),
+      });
+    }
   }
 
   return timeline.map(year => {
@@ -299,20 +314,53 @@ export function overviewFromPeriodSummaries(
     'label' | 'displayLabel' | 'range' | 'distributorCount' | 'totalQuantity' | 'year' | 'quarter'
   >
 > {
-  const items = summaries.map(s => {
+  const merged = new Map<
+    string,
+    {
+      label: string;
+      displayLabel: string;
+      year: number;
+      quarter: number;
+      range: string;
+      distributorCount: number;
+      totalQuantity: number;
+      reportCount: number;
+    }
+  >();
+
+  for (const s of summaries) {
     const parsed = parseQuarter(s.label);
     const label = parsed?.label ?? s.label;
-    return {
-      label,
-      displayLabel: formatPeriodDisplay(label),
-      year: parsed?.year ?? 0,
-      quarter: parsed?.quarter ?? 0,
-      range: getQuarterRange(parsed?.quarter || s.label),
-      distributorCount: s.distributorCount,
-      totalQuantity: s.totalQuantity,
-      reports: [] as TimelineReport[],
-    };
-  });
+    const key = label.trim().toLowerCase();
+    const prev = merged.get(key);
+    if (!prev) {
+      merged.set(key, {
+        label,
+        displayLabel: formatPeriodDisplay(label),
+        year: parsed?.year ?? 0,
+        quarter: parsed?.quarter ?? 0,
+        range: getQuarterRange(parsed?.quarter || s.label),
+        distributorCount: s.distributorCount,
+        totalQuantity: Number(s.totalQuantity) || 0,
+        reportCount: s.reportCount || 0,
+      });
+    } else {
+      prev.totalQuantity += Number(s.totalQuantity) || 0;
+      prev.reportCount += s.reportCount || 0;
+      prev.distributorCount = Math.max(prev.distributorCount, s.distributorCount || 0);
+    }
+  }
+
+  const items = Array.from(merged.values()).map(item => ({
+    label: item.label,
+    displayLabel: item.displayLabel,
+    year: item.year,
+    quarter: item.quarter,
+    range: item.range,
+    distributorCount: item.distributorCount,
+    totalQuantity: item.totalQuantity,
+    reports: [] as TimelineReport[],
+  }));
   items.sort((a, b) => {
     if (a.year !== b.year) return b.year - a.year;
     if (a.quarter !== b.quarter) return b.quarter - a.quarter;

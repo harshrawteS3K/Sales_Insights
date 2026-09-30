@@ -531,16 +531,22 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
         """
         Accurate per-period rollups for the full filtered set (not the current page).
 
-        Used so quarter headers never under-count distributors due to pagination.
+        Quarterly Overview / Consolidated Data totals use ``SUM(quantity)`` as stored.
+        Consolidated Data already stores MT — no KG→MT conversion here.
+        Month labels are rolled into Indian FY quarter labels so Q1 = Apr+May+Jun.
         """
+        from app.utils.period_calendar import parse_quarter_label
+
         period_col = reporting_month_expr()
         company_col = company_expr()
+        # Per-report grain so quarter rollups keep distinct distributors/reports.
+        # Quantity is already consolidated MT — sum as stored (no ÷1000).
         query = (
             select(
                 period_col.label("period"),
-                func.count(distinct(SalesRecord.report_id)).label("report_count"),
-                func.count(distinct(func.lower(company_col))).label("distributor_count"),
-                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
+                func.lower(company_col).label("company_key"),
+                SalesRecord.report_id.label("report_id"),
+                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -551,8 +557,7 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
                 period_col.is_not(None),
                 period_col != "",
             )
-            .group_by(period_col)
-            .order_by(period_col.desc())
+            .group_by(period_col, func.lower(company_col), SalesRecord.report_id)
         )
         query = self._apply_filters(
             query,
@@ -573,19 +578,44 @@ class SalesRecordRepository(BaseRepository[SalesRecord]):
             allowed_segments=allowed_segments,
             allowed_companies=allowed_companies,
         )
-        out: List[Dict[str, Any]] = []
+
+        rolled: Dict[str, Dict[str, Any]] = {}
         for row in self.db.execute(query).all():
-            label = str(row.period or "").strip()
-            if not label:
+            raw_label = str(row.period or "").strip()
+            if not raw_label:
                 continue
+            spec = parse_quarter_label(raw_label)
+            if spec is not None and spec.kind in {"quarter", "year"} and spec.label:
+                label = spec.label
+            else:
+                label = raw_label
+            bucket = rolled.get(label)
+            if bucket is None:
+                bucket = {
+                    "label": label,
+                    "totalQuantity": 0.0,
+                    "_reports": set(),
+                    "_companies": set(),
+                }
+                rolled[label] = bucket
+            bucket["totalQuantity"] = float(bucket["totalQuantity"]) + float(row.qty or 0)
+            if row.report_id is not None:
+                bucket["_reports"].add(int(row.report_id))
+            company_key = str(row.company_key or "").strip()
+            if company_key:
+                bucket["_companies"].add(company_key)
+
+        out: List[Dict[str, Any]] = []
+        for label, bucket in rolled.items():
             out.append(
                 {
                     "label": label,
-                    "reportCount": int(row.report_count or 0),
-                    "distributorCount": int(row.distributor_count or 0),
-                    "totalQuantity": float(row.qty or 0),
+                    "reportCount": len(bucket["_reports"]),
+                    "distributorCount": len(bucket["_companies"]),
+                    "totalQuantity": float(bucket["totalQuantity"]),
                 }
             )
+        out.sort(key=lambda item: str(item.get("label") or ""), reverse=True)
         return out
 
     def count_by_distributor_period(self, distributor_name: str, period: str) -> int:
