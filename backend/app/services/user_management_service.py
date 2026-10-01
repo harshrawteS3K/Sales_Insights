@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from openpyxl import Workbook
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -82,6 +83,15 @@ class UserManagementService:
     def get_user(self, user_id: int) -> User:
         return self.users.get_or_raise(user_id)
 
+    @staticmethod
+    def _is_super_admin(role: Optional[str]) -> bool:
+        return (role or "").strip().lower() == UserRole.SUPER_ADMIN.value
+
+    def _ensure_can_manage(self, user: User, *, actor_role: Optional[str]) -> None:
+        """A Super Admin account may only be changed by a Super Admin."""
+        if user.role == UserRole.SUPER_ADMIN.value and not self._is_super_admin(actor_role):
+            raise ForbiddenError("Only a Super Admin can manage a Super Admin account")
+
     def list_distributors_for_user(self, user_id: int) -> list[int]:
         """Return list of assigned distributor IDs for a user."""
         return self.user_distributors.list_ids_for_user(user_id)
@@ -96,9 +106,11 @@ class UserManagementService:
         *,
         actor: str,
         assigned_by: Optional[int] = None,
+        actor_role: Optional[str] = None,
     ) -> list[int]:
         """Assign distributors to a user (many-to-many)."""
         user = self.users.get_or_raise(user_id)
+        self._ensure_can_manage(user, actor_role=actor_role)
         cleaned = self.user_distributors.replace_for_user(
             user_id, distributor_ids, assigned_by=assigned_by
         )
@@ -121,9 +133,11 @@ class UserManagementService:
         *,
         actor: str,
         assigned_by: Optional[int] = None,
+        actor_role: Optional[str] = None,
     ) -> list[str]:
         """Assign segments to a user."""
         user = self.users.get_or_raise(user_id)
+        self._ensure_can_manage(user, actor_role=actor_role)
         cleaned = self.user_segments.assign_segments_to_user(
             user_id, segments, assigned_by=assigned_by
         )
@@ -311,8 +325,16 @@ class UserManagementService:
         logger.info("Created user id={} username={} role={}", created.id, created.username, role)
         return created
 
-    def update_user(self, user_id: int, payload: UserUpdate, *, actor: str) -> User:
+    def update_user(
+        self,
+        user_id: int,
+        payload: UserUpdate,
+        *,
+        actor: str,
+        actor_role: Optional[str] = None,
+    ) -> User:
         user = self.users.get_or_raise(user_id)
+        self._ensure_can_manage(user, actor_role=actor_role)
         data = payload.model_dump(exclude_unset=True)
 
         if "username" in data and data["username"]:
@@ -368,8 +390,17 @@ class UserManagementService:
             )
         return updated
 
-    def update_username(self, user_id: int, payload: UsernameUpdate, *, actor: str) -> User:
-        return self.update_user(user_id, UserUpdate(username=payload.username), actor=actor)
+    def update_username(
+        self,
+        user_id: int,
+        payload: UsernameUpdate,
+        *,
+        actor: str,
+        actor_role: Optional[str] = None,
+    ) -> User:
+        return self.update_user(
+            user_id, UserUpdate(username=payload.username), actor=actor, actor_role=actor_role
+        )
 
     def set_role(
         self,
@@ -430,6 +461,7 @@ class UserManagementService:
         actor_role: str = UserRole.ADMIN.value,
     ) -> User:
         user = self.users.get_or_raise(user_id)
+        self._ensure_can_manage(user, actor_role=actor_role)
         # Only Super Admin may change an Admin's password
         if user.role == UserRole.ADMIN.value and (actor_role or "").strip().lower() != UserRole.SUPER_ADMIN.value:
             raise ForbiddenError("Only Super Admin can change an Admin password")
@@ -443,8 +475,19 @@ class UserManagementService:
         )
         return updated
 
-    def set_status(self, user_id: int, payload: StatusUpdate, *, actor: str) -> User:
+    def set_status(
+        self,
+        user_id: int,
+        payload: StatusUpdate,
+        *,
+        actor: str,
+        actor_role: Optional[str] = None,
+        actor_id: Optional[int] = None,
+    ) -> User:
         user = self.users.get_or_raise(user_id)
+        self._ensure_can_manage(user, actor_role=actor_role)
+        if not payload.is_active and actor_id is not None and user.id == actor_id:
+            raise ForbiddenError("You cannot deactivate your own account")
         updated = self.users.update(user, {"is_active": payload.is_active})
         verb = "Enabled" if payload.is_active else "Disabled"
         self._audit(
@@ -455,19 +498,83 @@ class UserManagementService:
         )
         return updated
 
-    def delete_user(self, user_id: int, *, actor: str) -> User:
+    def delete_user(
+        self,
+        user_id: int,
+        *,
+        actor: str,
+        actor_role: Optional[str] = None,
+        actor_id: Optional[int] = None,
+    ) -> User:
+        """
+        Soft-delete a user and remove only their distributor links.
+
+        Super Admin > Admin > Sales Owner: Super Admin accounts cannot be deleted,
+        only a Super Admin may delete an Admin, and nobody may delete themselves.
+        Distributors, reports, and sales rows are never touched.
+        """
+        from app.models.auth_session import AuthSession
+        from app.models.distributor import Distributor
+        from app.models.user_distributor import UserDistributor
+        from app.utils.datetime_utils import utc_now
+
         user = self.users.get_or_raise(user_id)
         if user.role == UserRole.SUPER_ADMIN.value:
             raise ForbiddenError("Cannot delete the Super Admin")
-        snapshot_name = user.full_name
-        snapshot_role = user.role
+        if actor_id is not None and user.id == actor_id:
+            raise ForbiddenError("You cannot delete your own account")
+        if user.role == UserRole.ADMIN.value and not self._is_super_admin(actor_role):
+            raise ForbiddenError("Only Super Admin can delete an Admin")
+
+        assignments = [
+            {"distributor_id": int(did), "distributor": name}
+            for did, name in self.db.execute(
+                select(UserDistributor.distributor_id, Distributor.company)
+                .join(Distributor, Distributor.id == UserDistributor.distributor_id)
+                .where(UserDistributor.user_id == user.id)
+                .order_by(UserDistributor.distributor_id)
+            ).all()
+        ]
+        snapshot = {
+            "deleted_user_id": user.id,
+            "deleted_username": user.username,
+            "deleted_full_name": user.full_name,
+            "deleted_role": user.role,
+            "distributor_assignments": assignments,
+            "actor_user_id": actor_id,
+            "actor_role": actor_role,
+            "deleted_at": utc_now().isoformat(),
+            "action": "soft_delete_user",
+        }
+
+        self.db.execute(delete(UserDistributor).where(UserDistributor.user_id == user.id))
+        self.db.execute(
+            update(AuthSession)
+            .where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
+            .values(revoked_at=utc_now())
+        )
+        user.is_active = False
         deleted = self.users.soft_delete(user)
         self._audit(
             actor=actor,
+            actor_role=actor_role,
             action="Deleted User",
-            description=f'Super Admin deleted {snapshot_role} "{snapshot_name}"',
+            description=(
+                f'{actor} deleted {snapshot["deleted_role"]} "{snapshot["deleted_full_name"]}" '
+                f'(@{snapshot["deleted_username"]}, id {snapshot["deleted_user_id"]}); '
+                f"removed {len(assignments)} distributor assignment(s)"
+            ),
             affected=deleted,
             status=AuditStatus.WARNING.value,
+            extra_metadata=snapshot,
+        )
+        logger.info(
+            "User soft-deleted | user_id={} username={} role={} distributor_links_removed={} actor_id={}",
+            snapshot["deleted_user_id"],
+            snapshot["deleted_username"],
+            snapshot["deleted_role"],
+            len(assignments),
+            actor_id,
         )
         return deleted
 
@@ -519,6 +626,7 @@ class UserManagementService:
         status: str = AuditStatus.SUCCESS.value,
         entity_id: Optional[str] = None,
         extra_metadata: Optional[dict] = None,
+        actor_role: Optional[str] = None,
     ) -> None:
         meta = None
         if affected or extra_metadata:
@@ -532,7 +640,7 @@ class UserManagementService:
         self.audit.log(
             AuditTrailCreate(
                 user_name=actor,
-                user_role=UserRole.ADMIN.value,
+                user_role=actor_role or UserRole.ADMIN.value,
                 action=action,
                 details=description,
                 module=AuditModule.USER_MANAGEMENT.value,
@@ -583,8 +691,22 @@ class UserService(UserManagementService):
     def create_user(self, payload: UserCreate, *, actor: str = "system") -> User:  # type: ignore[override]
         return super().create_user(payload, actor=actor)
 
-    def update_user(self, user_id: int, payload: UserUpdate, *, actor: str = "system") -> User:  # type: ignore[override]
-        return super().update_user(user_id, payload, actor=actor)
+    def update_user(  # type: ignore[override]
+        self,
+        user_id: int,
+        payload: UserUpdate,
+        *,
+        actor: str = "system",
+        actor_role: Optional[str] = None,
+    ) -> User:
+        return super().update_user(user_id, payload, actor=actor, actor_role=actor_role)
 
-    def delete_user(self, user_id: int, *, actor: str = "system") -> User:  # type: ignore[override]
-        return super().delete_user(user_id, actor=actor)
+    def delete_user(  # type: ignore[override]
+        self,
+        user_id: int,
+        *,
+        actor: str = "system",
+        actor_role: Optional[str] = None,
+        actor_id: Optional[int] = None,
+    ) -> User:
+        return super().delete_user(user_id, actor=actor, actor_role=actor_role, actor_id=actor_id)

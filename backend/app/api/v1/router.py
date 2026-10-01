@@ -13,6 +13,7 @@ from app.api.v1.endpoints import (
     erp,
     health,
     master_data,
+    normalization,
     outlook,
     personas,
     reports,
@@ -39,3 +40,4 @@ api_router.include_router(consolidated_data.router)
 api_router.include_router(visualizations.router)
 api_router.include_router(analytics.router)
 api_router.include_router(settings.router)
+api_router.include_router(normalization.router)

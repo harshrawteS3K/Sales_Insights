@@ -26,6 +26,7 @@ import { StatusBanner } from '../../components/common/StatusBanner';
 import { UserManagementService } from '../../services/userManagement.service';
 import { DistributorService } from '../../services/distributor.service';
 import { ApiError } from '../../api';
+import { getSession } from '../../api/session';
 import { BLUE, BORDER, RED, TEAL } from '../../constants/theme';
 import { isAdminRole, isSuperAdminRole } from '../../utils/rbac';
 import type { ManagedUser } from '../../types';
@@ -91,6 +92,14 @@ type ActiveTab = 'matrix' | 'users';
 
 export function UserManagement() {
   const { userRole } = useLayoutContext();
+  const currentUserId = getSession()?.user_id ?? null;
+  // Mirrors backend delete rules; the API still enforces them.
+  const canDeleteUser = (target: { id: number; role: string }) => {
+    if (target.role === 'super_admin') return false;
+    if (currentUserId != null && target.id === currentUserId) return false;
+    if (target.role === 'admin') return isSuperAdminRole(userRole);
+    return true;
+  };
   const [activeTab, setActiveTab] = useState<ActiveTab>('matrix');
   const [rows, setRows] = useState<ManagedUser[]>([]);
   const [loading, setLoading] = useState(false);
@@ -848,15 +857,20 @@ export function UserManagement() {
   };
 
   const handleDeleteUser = async (userToDelete: any) => {
-    if (userToDelete.role === 'admin' || userToDelete.role === 'super_admin') {
-      setError('Admin accounts cannot be deleted');
+    if (!canDeleteUser(userToDelete)) {
+      setError(
+        userToDelete.role === 'admin'
+          ? 'Only Super Admin can delete Admin accounts'
+          : 'This account cannot be deleted',
+      );
       return;
     }
     const name = userToDelete.fullName || userToDelete.full_name || userToDelete.username;
-    if (!window.confirm(`Are you sure you want to delete employee "${name}"?`)) return;
+    const label = userToDelete.role === 'admin' ? 'Admin' : 'employee';
+    if (!window.confirm(`Are you sure you want to delete ${label} "${name}"?`)) return;
     try {
       await UserManagementService.remove(userToDelete.id);
-      setSuccessMsg(`Employee account "${name}" deleted`);
+      setSuccessMsg(`${label === 'Admin' ? 'Admin' : 'Employee'} account "${name}" deleted`);
       await loadUsers();
       await loadMatrix();
     } catch (err) {
@@ -1208,7 +1222,7 @@ export function UserManagement() {
                                 </div>
                               </div>
 
-                              {!isAdmin && (
+                              {canDeleteUser(user) && (
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
@@ -1640,7 +1654,7 @@ export function UserManagement() {
                               )}
                             </div>
 
-                            {!isAdmin && (
+                            {canDeleteUser(user) && (
                               <button
                                 type="button"
                                 onClick={() => handleDeleteUser(user)}

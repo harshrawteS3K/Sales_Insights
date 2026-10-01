@@ -7,6 +7,7 @@ from app.models.distributor import Distributor
 from app.models.distributor_parser_profile import DistributorParserProfile
 from app.models.distributor_customer_mapping import DistributorCustomerMapping
 from app.models.email_message import EmailAttachment, EmailMessage
+from app.models.product_alias_mapping import ProductAliasMapping
 from app.models.product_master import ProductMaster
 from app.models.report import Report
 from app.models.sales_record import SalesRecord
@@ -32,6 +33,7 @@ __all__ = [
     "EmailAttachment",
     "CustomerMaster",
     "ProductMaster",
+    "ProductAliasMapping",
     "SyncJob",
     "SystemSetting",
     "LlmUsageLog",

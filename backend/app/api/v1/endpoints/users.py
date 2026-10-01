@@ -50,6 +50,10 @@ def _to_response(
     return payload
 
 
+def _role(current) -> str:
+    return current.role.value if hasattr(current.role, "value") else str(current.role)
+
+
 @router.get("/access-mode", summary="Get Access Control Mode")
 def get_access_mode(
     current: RequireAdmin,
@@ -203,7 +207,7 @@ def update_user(
     service: UserServiceDep,
     current: RequireAdmin,
 ) -> DataResponse[UserResponse]:
-    user = service.update_user(user_id, payload, actor=current.name)
+    user = service.update_user(user_id, payload, actor=current.name, actor_role=_role(current))
     segments = (
         ["*"]
         if user.role == "admin"
@@ -232,6 +236,7 @@ def set_outlook_sync_permission(
         user_id,
         UserUpdate(outlook_sync_permission=payload.outlook_sync_permission),
         actor=current.name,
+        actor_role=_role(current),
     )
     segments = (
         ["*"]
@@ -260,7 +265,7 @@ def update_username(
     service: UserServiceDep,
     current: RequireAdmin,
 ) -> DataResponse[UserResponse]:
-    user = service.update_username(user_id, payload, actor=current.name)
+    user = service.update_username(user_id, payload, actor=current.name, actor_role=_role(current))
     segments = (
         ["*"]
         if user.role == "admin"
@@ -331,7 +336,9 @@ def assign_segments(
     current: RequireAdmin,
 ) -> DataResponse[UserResponse]:
     user = service.get_user(user_id)
-    segments = service.assign_segments(user_id, payload.segments, actor=current.name)
+    segments = service.assign_segments(
+        user_id, payload.segments, actor=current.name, actor_role=_role(current)
+    )
     dist_ids = service.list_distributors_for_user(user_id) if user.role != "admin" else []
     return DataResponse(
         data=_to_response(user, segments if user.role != "admin" else ["*"], dist_ids),
@@ -356,6 +363,7 @@ def assign_distributors(
         payload.distributor_ids,
         actor=current.name,
         assigned_by=current.user_id,
+        actor_role=_role(current),
     )
     segments = (
         ["*"]
@@ -379,7 +387,13 @@ def set_status(
     service: UserServiceDep,
     current: RequireAdmin,
 ) -> DataResponse[UserResponse]:
-    user = service.set_status(user_id, payload, actor=current.name)
+    user = service.set_status(
+        user_id,
+        payload,
+        actor=current.name,
+        actor_role=_role(current),
+        actor_id=current.user_id,
+    )
     segments = (
         ["*"]
         if user.role == "admin"
@@ -398,5 +412,10 @@ def delete_user(
     service: UserServiceDep,
     current: RequireAdmin,
 ) -> MessageResponse:
-    service.delete_user(user_id, actor=current.name)
+    service.delete_user(
+        user_id,
+        actor=current.name,
+        actor_role=_role(current),
+        actor_id=current.user_id,
+    )
     return MessageResponse(message=f"User {user_id} deleted")

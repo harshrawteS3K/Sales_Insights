@@ -126,7 +126,8 @@ def require_roles(*allowed_roles: UserRole) -> Callable:
     return _dependency
 
 
-RequireSuperAdmin = Annotated[RequestUser, Depends(require_roles(UserRole.SUPER_ADMIN))]
+require_superadmin = require_roles(UserRole.SUPER_ADMIN)
+RequireSuperAdmin = Annotated[RequestUser, Depends(require_superadmin)]
 RequireAdmin = Annotated[
     RequestUser,
     Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)),

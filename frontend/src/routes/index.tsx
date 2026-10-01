@@ -12,6 +12,7 @@ import { MarketResearchDashboard } from '../pages/MarketResearch/MarketResearchD
 import { MarketResearchCompanion } from '../pages/MarketResearch/MarketResearchCompanion';
 import { DistributorManagement } from '../pages/DistributorManagement/DistributorManagement';
 import { HeaderDictionaryPage } from '../pages/Admin/HeaderDictionaryPage';
+import { NormalizationPage } from '../pages/Normalization/NormalizationPage';
 import { PlaceholderPage } from '../pages/Settings/PlaceholderPage';
 import { SettingsPage } from '../pages/Settings/SettingsPage';
 import type { OutlookSyncPermission, UserRole } from '../types';
@@ -50,6 +51,9 @@ export const createAppRouter = (
         { path: 'audit-trail', Component: AuditTrail },
         { path: 'user-management', Component: UserManagement },
         { path: 'admin/header-dictionary', Component: HeaderDictionaryPage },
+        ...(userRole === 'super_admin'
+          ? [{ path: 'normalization', Component: NormalizationPage }]
+          : []),
         { path: 'existing-reports', Component: ExistingReports },
         { path: 'market-research-dashboard', Component: MarketResearchDashboard },
         { path: 'market-research-companion', Component: MarketResearchCompanion },
