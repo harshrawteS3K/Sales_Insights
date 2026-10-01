@@ -5,9 +5,12 @@ from typing import Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.logging import get_logger
 from app.models.distributor import Distributor
 from app.repositories.base import BaseRepository
 from app.utils.distributor_name import normalize_company_name, normalize_distributor_name
+
+logger = get_logger(__name__)
 
 
 class DistributorRepository(BaseRepository[Distributor]):
@@ -87,6 +90,13 @@ class DistributorRepository(BaseRepository[Distributor]):
         existing = self.get_by_company(company_norm)
         if existing is None and rep_norm:
             existing = self.get_by_name(rep_norm)
+        logger.info(
+            f"Distributor resolution original={company!r} "
+            f"normalized={normalize_distributor_name(company_norm)!r} "
+            f"matched_id={existing.id if existing else None} "
+            f"matched_name={((existing.company or existing.name) if existing else None)!r} "
+            f"action={'reused' if existing else 'created'}"
+        )
         if existing:
             updates: Dict[str, object] = {}
             cleaned_company = normalize_company_name(existing.company)

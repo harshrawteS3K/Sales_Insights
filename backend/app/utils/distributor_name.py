@@ -10,26 +10,53 @@ _LEGAL_SUFFIX = re.compile(
     re.IGNORECASE,
 )
 
+# Truncated / joined legal-form tokens, stripped only from the END of the name
+# ("Reda pvt lt", "Reda Pvt.Ltd", "Reda (P) Ltd", "REDA PVTLTD").
+_TRAILING_LIMITED = frozenset({"LTD", "LT", "LIMITED", "LIMITE", "LIMTED", "LMT"})
+_TRAILING_PRIVATE = frozenset(
+    {"PVT", "PRIVATE", "PRIV", "PVTLTD", "PVTLIMITED", "PLTD", "CO", "COMPANY"}
+)
+
+
+def _strip_trailing_legal_form(tokens: list[str]) -> list[str]:
+    stripped_limited = False
+    while len(tokens) > 1:
+        last = tokens[-1]
+        if last in _TRAILING_LIMITED:
+            stripped_limited = True
+        elif last in _TRAILING_PRIVATE or (last == "P" and stripped_limited):
+            pass
+        else:
+            break
+        tokens = tokens[:-1]
+    return tokens
+
 
 def normalize_distributor_name(name: str | None) -> str:
     """
     Match key used before every distributor lookup.
 
     Uppercase, drop punctuation, collapse spaces, then remove
-    COMPANY / CO / PVT / PRIVATE LIMITED / LTD. ``S.K.TRADING``,
-    ``SK Trading`` and ``S.K.TRADING COMPANY`` share one key.
+    COMPANY / CO / PVT / PRIVATE LIMITED / LTD (and truncated trailing
+    forms such as ``PVT LT``). ``S.K.TRADING``, ``SK Trading`` and
+    ``S.K.TRADING COMPANY`` share one key; ``Reda pvt lt`` and
+    ``REDA Private Ltd`` share one key.
     """
     if not name:
         return ""
     text = str(name).upper().replace("&", " AND ")
     text = re.sub(r"[^\w\s]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
+    base = text
+    text = " ".join(_strip_trailing_legal_form(text.split())) if text else ""
     previous = None
     while previous != text:
         previous = text
         text = _LEGAL_SUFFIX.sub(" ", text)
         text = re.sub(r"\s+", " ", text).strip()
-    return re.sub(r"[^A-Z0-9]", "", text)
+    tokens = _strip_trailing_legal_form(text.split()) if text else []
+    key = re.sub(r"[^A-Z0-9]", "", "".join(tokens))
+    return key or re.sub(r"[^A-Z0-9]", "", base)
 
 
 def normalize_company_name(company: str | None) -> str:

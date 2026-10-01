@@ -34,6 +34,12 @@ _CUSTOMER = {"customer", "customer name", "party", "party name", "particulars", 
 _PRODUCT = {"product", "product name", "item", "item name", "material", "material name"}
 _IGNORE = {"total", "grand total", "sub total", "subtotal", "unit", "uom", "qty", "quantity"}
 _SKIP_ROW = re.compile(r"^(grand\s+|sub\s+)?totals?\b", re.IGNORECASE)
+# "Altek Total Sales", "Total Qty", "Party Total" — summary labels, never customers.
+# Merged summary labels are unwrapped onto every row of their block.
+_SUMMARY_LABEL = re.compile(
+    r"^(grand\s+|sub\s+)?totals?\b|\btotal\s+(sales|qty|quantity|amount|value)\b|\btotals?\s*$",
+    re.IGNORECASE,
+)
 _MONTH_TOKEN = (
     r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
     r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
@@ -249,6 +255,7 @@ def extract_matrix_month_rows(
     qty_ok = 0
     qty_fail = 0
     short_months: List[str] = []
+    customers_detected: List[Dict[str, Optional[str]]] = []
 
     for col, _label, key, year in months:
         month_num = month_number_from_key(key)
@@ -266,9 +273,11 @@ def extract_matrix_month_rows(
         if not customer and not product:
             skipped_blank += 1
             continue
-        if _SKIP_ROW.match(customer) or _SKIP_ROW.match(product):
+        if _SUMMARY_LABEL.search(customer) or _SKIP_ROW.match(product):
             skipped_total += 1
             continue
+        if customer and _norm(customer) not in _CUSTOMER:
+            customers_detected.append({"customer": customer, "product": product or None})
         if not customer or not product:
             skipped_blank += 1
             continue
@@ -316,6 +325,7 @@ def extract_matrix_month_rows(
 
     return {
         "rows": rows,
+        "customers_detected": customers_detected,
         "months_detected": short_months,
         "quarter": quarter,
         "distributor": (distributor_label or "").strip(),

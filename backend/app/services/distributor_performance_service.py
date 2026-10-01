@@ -7,12 +7,14 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.logging import get_logger
 from app.models.distributor import Distributor
 from app.models.report import Report
 from app.models.sales_record import SalesRecord
 from app.repositories.sales_record_repository import (
     SalesRecordRepository,
     company_expr,
+    mt_quantity_expr,
 )
 from app.services.analytics_aggregation import AnalyticsFilter
 from app.services.sales_insights_service import (
@@ -30,6 +32,8 @@ from app.services.sales_insights_service import (
 from app.services.distributor_service import DistributorService
 from app.utils.distributor_location import country_group, country_label, normalize_location
 from app.utils.quantity import format_mt, round_mt
+
+logger = get_logger(__name__)
 
 
 class DistributorPerformanceService:
@@ -173,7 +177,8 @@ class DistributorPerformanceService:
         agg_q = (
             select(
                 SalesRecord.distributor_id.label("distributor_id"),
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
+                func.count(SalesRecord.id).label("records"),
                 func.count(func.distinct(SalesRecord.customer_name)).label("customers"),
                 func.count(func.distinct(SalesRecord.product)).label("products"),
             )
@@ -195,6 +200,7 @@ class DistributorPerformanceService:
             did = int(row.distributor_id)
             stats_by_id[did] = {
                 "qty": _to_float(row.qty),
+                "records": int(row.records or 0),
                 "customers": int(row.customers or 0),
                 "products": int(row.products or 0),
             }
@@ -204,7 +210,7 @@ class DistributorPerformanceService:
             select(
                 SalesRecord.distributor_id.label("distributor_id"),
                 SalesRecord.location.label("location"),
-                func.sum(SalesRecord.quantity).label("qty"),
+                func.sum(mt_quantity_expr()).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -238,7 +244,7 @@ class DistributorPerformanceService:
                 SalesRecord.distributor_id.label("distributor_id"),
                 SalesRecord.customer_name.label("customer"),
                 func.count(func.distinct(SalesRecord.product)).label("product_count"),
-                func.coalesce(func.sum(SalesRecord.quantity), 0).label("qty"),
+                func.coalesce(func.sum(mt_quantity_expr()), 0).label("qty"),
             )
             .select_from(SalesRecord)
             .join(Report, Report.id == SalesRecord.report_id)
@@ -254,7 +260,7 @@ class DistributorPerformanceService:
             .group_by(SalesRecord.distributor_id, SalesRecord.customer_name)
             .order_by(
                 SalesRecord.distributor_id.asc(),
-                func.sum(SalesRecord.quantity).desc(),
+                func.sum(mt_quantity_expr()).desc(),
             )
         )
         cust_q = filt.restrict(self.sales._apply_filters(cust_q, **filter_kw))
@@ -313,6 +319,14 @@ class DistributorPerformanceService:
         ranking.sort(key=lambda r: (-r["sales_mt"], r["distributor"].casefold()))
         for i, row in enumerate(ranking, start=1):
             row["rank"] = i
+
+        ranked_ids = {r["distributor_id"] for r in ranking}
+        record_count = sum(s["records"] for did, s in stats_by_id.items() if did in ranked_ids)
+        logger.info(
+            f"Distributor Performance distributors={len(ranking)} records={record_count} "
+            "quantity_source=sales_records.quantity via mt_quantity_expr (Consolidated Data MT) "
+            f"total_mt={format_mt(sum(r['sales_mt'] for r in ranking))}"
+        )
 
         total = len(ranking)
         submitted = sum(1 for r in ranking if r["has_sales"])
